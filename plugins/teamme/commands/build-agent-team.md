@@ -171,16 +171,20 @@ the paths must resolve.
 8. Verify: list the created files and confirm each frontmatter parses, including `intake.md`; if the
    project is a git repo, stage on a branch and show the diff (commit/push only if I ask).
 
-## Phase 6 — Offer to install this workflow as a reusable user-level slash command
-After the team is set up, offer (don't assume) to save THIS entire workflow as a **user-level
-slash command** so it's available in every future project:
-- Ask whether to install it. If yes, write this prompt verbatim to
-  `~/.claude/commands/build-agent-team.md` (create the dir if missing) with a short YAML
-  frontmatter `description:` line so it shows up as `/build-agent-team`.
-- If a file already exists there, show the diff and ask before overwriting.
-- Confirm the install path and that it's user-level (global, not committed to any repo), then
-  tell me I can run `/build-agent-team` in any project to repeat this process.
-- This is the ONLY step that may write outside the current project, and only with my approval.
+## Phase 6 — Hand over
+This command ships as the **teamme** plugin, so it is already available in every project — there is
+nothing to install per repo. Close out by telling me:
+- Which files you created, and that `.claude/` is where Claude Code reads project agents and
+  commands from, so it has to live inside the repo.
+- **Whether I want it committed.** Do not assume. Agent-team scaffolding is often personal tooling
+  that should stay out of a shared repo; `.git/info/exclude` keeps it local without the exclusion
+  itself being committed, whereas `.gitignore` is a tracked file. Ask, and follow the answer — an
+  approval to commit one thing never carries forward to later work.
+- How to start: `/intake <what you want>`, and that everything else routes through it.
+- Anything the hooks need that this machine lacks, and whether `/hooks` or a restart is required for
+  them to go live.
+
+Do NOT write outside the current project in this phase.
 
 Constraints: read-only until Phase 5; choose the minimum agents the project actually needs (no
 filler roles); keep tool lists tight; `/intake` is always created, is always the only sanctioned way
