@@ -20,6 +20,7 @@ plugins/teamme/
   .mcp.json                       the MCP server this plugin ships
   commands/init-team.md           the command that installs the team
   commands/team-doctor.md         the command that diagnoses/repairs an existing install
+  commands/queue.md               parks a request in the work log; no grounding, no phase interaction
   server/teamme_mcp.py            stdio JSON-RPC MCP server
   templates/                      scaffolding copied into a target project
     hooks/*.py                    project-agnostic; do not hard-code a project name
@@ -34,7 +35,9 @@ These run on other people's machines, inside their editing loop. They must:
 - **Fail open.** Missing, malformed or stale state, an unparseable payload, a path outside the
   project — every one of these allows the write. A broken guard must never block someone's work.
 - **Never loop.** An enforcement hook that can fire repeatedly on an unchanged condition will trap a
-  session. The `Stop` reminder stamps itself against the task's `updated` time for this reason.
+  session. The `Stop` reminder stamps itself against the task's `status_changed` time, not `updated`,
+  for this reason: only a real status transition re-arms it, so a `worklog.py note` — which moves
+  `updated` but not `status_changed` — can never re-trigger it.
 - **Assume nothing is installed.** `python3` only — no `jq`, no third-party packages. Pipe-test a
   command with a synthesized payload before wiring it into settings.
 - **Stay project-agnostic.** No project names, paths or stack assumptions in `templates/hooks/`.
@@ -52,6 +55,9 @@ lives here and in the commands' prompt text, and never in a hook.
 
 ## Changing the commands
 
-`commands/init-team.md` and `commands/team-doctor.md` are prompts, not code. Keep `init-team.md`
-explicit about what must be *copied* from `templates/` versus what must be *derived* from the
-project being analyzed — re-authoring scaffolding from memory is how installs end up subtly broken.
+`commands/init-team.md`, `commands/team-doctor.md` and `commands/queue.md` are prompts, not code.
+Keep `init-team.md` explicit about what must be *copied* from `templates/` versus what must be
+*derived* from the project being analyzed — re-authoring scaffolding from memory is how installs end
+up subtly broken. Keep `queue.md`'s one-line output contract intact when editing it: it exists so
+parking a request costs the user nothing (see `CLAUDE.md`'s "Decisions already made"), and anything
+that adds a second line of preamble, analysis or a follow-up question defeats that.

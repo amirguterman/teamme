@@ -8,10 +8,16 @@
   worklog-enforce.py stop      Stop - refuse to end the turn while a task is still
                                marked `active`, so status gets recorded rather than
                                drifting. Fires AT MOST ONCE per status change: the
-                               reminder is stamped against the task's `updated`
-                               time, so answering it (by marking done, blocked, or
-                               even just re-touching the task) re-arms it and a
-                               turn can always finish. It can never loop.
+                               reminder is stamped against the task's
+                               `status_changed` time, so only a real status
+                               transition (done, blocked, dispatched, ...) re-arms
+                               it and a turn can always finish. It can never loop.
+                               Adding a note does NOT re-arm it - noting progress is
+                               one of the remedies it suggests, so re-arming on a
+                               note would guarantee it interrupted again next turn.
+                               `dispatched` tasks are never nagged about: nothing
+                               the model does this turn can advance work that is in
+                               flight with another agent.
 
 Both fail silent on any error - a broken ledger must never block work.
 """
@@ -39,6 +45,7 @@ def session(wl) -> None:
     if not pending and not parked:
         return
     blocked = [t for t in pending if t["status"] == "blocked"]
+    waiting = [t for t in pending if t["status"] == "dispatched"]
     if pending:
         head = (
             f"Unfinished work in the work log ({len(pending)} task(s)), highest priority first:\n"
@@ -48,6 +55,11 @@ def session(wl) -> None:
             head += (
                 f"\n{len(blocked)} of these are blocked and need an input or a decision before "
                 f"they can move."
+            )
+        if waiting:
+            head += (
+                f"\n{len(waiting)} of these are dispatched: in flight with another agent, waiting "
+                f"on that agent's result rather than on you. Check the outcome before re-dispatching."
             )
     else:
         head = "Nothing is open in the work log."
@@ -71,15 +83,22 @@ def session(wl) -> None:
 
 
 def stop(wl) -> None:
-    d = wl.load()
-    active = [t for t in d["tasks"] if t["status"] == "active"]
-    # Only nag about a task once per status change, so the turn can always end.
-    fresh = [t for t in active if t.get("nagged_at") != t.get("updated")]
-    if not fresh:
-        return
-    for t in fresh:
-        t["nagged_at"] = t.get("updated")
-    wl.save(d)
+    # Read-modify-write under the ledger's own lock: a parallel agent writing a
+    # note at the same moment must not lose it to the nag stamp, or vice versa.
+    with wl.lock():
+        d = wl.load()
+        # `dispatched` is deliberately not nagged about - it is unfinished, but it
+        # is waiting on another agent, so no action here could resolve it.
+        active = [t for t in d["tasks"] if t["status"] == "active"]
+        # Only nag once per status change, so the turn can always end. Stamped
+        # against status_changed, not updated: a note answers the nag without
+        # re-arming it, while start/block/done/dispatch re-arm it.
+        fresh = [t for t in active if t.get("nagged_at") != t.get("status_changed")]
+        if not fresh:
+            return
+        for t in fresh:
+            t["nagged_at"] = t.get("status_changed")
+        wl.save(d)
     names = ", ".join(f"{t['id']} ({t['title']})" for t in fresh)
     json.dump(
         {
@@ -87,9 +106,10 @@ def stop(wl) -> None:
             "reason": (
                 f"Still marked active in the work log: {names}. Before finishing, record where it "
                 f"actually stands - `worklog.py done <id>` if it is finished, "
-                f"`worklog.py block <id> \"<what it is waiting on>\"` if it is stuck, or "
-                f"`worklog.py note <id> \"<progress>\"` and keep going if there is more to do. "
-                f"If the work really is complete, mark it done and finish."
+                f"`worklog.py block <id> \"<what it is waiting on>\"` if it is stuck on an input "
+                f"or a decision, `worklog.py dispatch <id> \"<agent>\"` if it is now in flight with "
+                f"a specialist, or `worklog.py note <id> \"<progress>\"` and keep going if there is "
+                f"more to do. If the work really is complete, mark it done and finish."
             ),
         },
         sys.stdout,

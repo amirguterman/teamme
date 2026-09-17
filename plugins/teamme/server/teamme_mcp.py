@@ -331,8 +331,8 @@ PROJECT_DIR_PROP = {
     }
 }
 
-WORKLOG_ACTIONS = ["add", "list", "next", "show", "start", "block", "unblock", "done",
-                   "defer", "decline", "drop", "note", "priority", "lane", "stats"]
+WORKLOG_ACTIONS = ["add", "list", "next", "show", "start", "dispatch", "block", "unblock",
+                   "done", "defer", "decline", "drop", "note", "priority", "lane", "stats"]
 PHASE_ACTIONS = ["status", "show", "begin", "approve", "reground", "release", "clear"]
 
 TOOLS = [
@@ -376,7 +376,14 @@ TOOLS = [
                 PROJECT_DIR_PROP,
                 action={"type": "string", "enum": WORKLOG_ACTIONS},
                 id={"type": "string", "description": "Task id, e.g. T3. Required by every action except add, list, next, stats."},
-                text={"type": "string", "description": "Title for add; reason or note text for block, defer, decline, drop, note."},
+                text={
+                    "type": "string",
+                    "description": (
+                        "Title for add; reason or note text for block, defer, decline, drop, note; "
+                        "for dispatch, the agent it went to - optional, and it falls back to the "
+                        "task's lane."
+                    ),
+                },
                 priority={"type": "string", "enum": ["P0", "P1", "P2"]},
                 lane={"type": "string", "description": "Owning specialist agent."},
                 all={"type": "boolean", "description": "For list: include closed tasks."},

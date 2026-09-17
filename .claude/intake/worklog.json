@@ -1,19 +1,21 @@
 {
   "version": 1,
-  "next_id": 18,
+  "next_id": 22,
   "tasks": [
     {
       "id": "T1",
       "title": "Remove the two legacy build-agent-team command files that shadow the plugin",
-      "status": "open",
+      "status": "done",
       "priority": "P0",
       "lane": "teamme-docs-writer",
       "notes": [
-        "CONFIRMED by diff: both legacy copies are byte-identical to each other and a strict ancestor of the plugin version - they lack the 'do not re-author scaffolding' block and still carry the old Phase 6 that self-installs them. Nothing to salvage; delete both."
+        "CONFIRMED by diff: both legacy copies are byte-identical to each other and a strict ancestor of the plugin version - they lack the 'do not re-author scaffolding' block and still carry the old Phase 6 that self-installs them. Nothing to salvage; delete both.",
+        "ALREADY SATISFIED: both legacy copies were already removed from ~/.claude-personal/commands/ and ~/.claude/commands/ before I ran the deletion. Verified: find over both config dirs returns nothing outside the plugin cache."
       ],
       "blocked_on": "",
       "created": "2026-09-17T16:53:21+00:00",
-      "updated": "2026-09-17T17:00:49+00:00"
+      "updated": "2026-09-17T18:22:17+00:00",
+      "status_changed": "2026-09-17T18:22:17+00:00"
     },
     {
       "id": "T2",
@@ -27,7 +29,8 @@
       ],
       "blocked_on": "",
       "created": "2026-09-17T16:53:21+00:00",
-      "updated": "2026-09-17T17:00:49+00:00"
+      "updated": "2026-09-17T17:00:49+00:00",
+      "status_changed": "2026-09-17T17:00:49+00:00"
     },
     {
       "id": "T3",
@@ -38,7 +41,8 @@
       "notes": [],
       "blocked_on": "",
       "created": "2026-09-17T16:53:21+00:00",
-      "updated": "2026-09-17T16:53:21+00:00"
+      "updated": "2026-09-17T16:53:21+00:00",
+      "status_changed": "2026-09-17T16:53:21+00:00"
     },
     {
       "id": "T4",
@@ -52,7 +56,8 @@
       ],
       "blocked_on": "",
       "created": "2026-09-17T16:53:21+00:00",
-      "updated": "2026-09-17T17:00:49+00:00"
+      "updated": "2026-09-17T17:00:49+00:00",
+      "status_changed": "2026-09-17T17:00:49+00:00"
     },
     {
       "id": "T5",
@@ -63,7 +68,8 @@
       "notes": [],
       "blocked_on": "",
       "created": "2026-09-17T16:53:21+00:00",
-      "updated": "2026-09-17T18:02:08+00:00"
+      "updated": "2026-09-17T18:02:08+00:00",
+      "status_changed": "2026-09-17T18:02:08+00:00"
     },
     {
       "id": "T6",
@@ -74,7 +80,8 @@
       "notes": [],
       "blocked_on": "",
       "created": "2026-09-17T16:53:21+00:00",
-      "updated": "2026-09-17T18:02:08+00:00"
+      "updated": "2026-09-17T18:02:08+00:00",
+      "status_changed": "2026-09-17T18:02:08+00:00"
     },
     {
       "id": "T7",
@@ -89,7 +96,8 @@
       ],
       "blocked_on": "",
       "created": "2026-09-17T17:00:49+00:00",
-      "updated": "2026-09-17T18:18:34+00:00"
+      "updated": "2026-09-17T18:18:34+00:00",
+      "status_changed": "2026-09-17T18:18:34+00:00"
     },
     {
       "id": "T8",
@@ -113,40 +121,58 @@
       ],
       "blocked_on": "",
       "created": "2026-09-17T17:38:29+00:00",
-      "updated": "2026-09-17T18:18:34+00:00"
+      "updated": "2026-09-17T18:18:34+00:00",
+      "status_changed": "2026-09-17T18:18:34+00:00"
     },
     {
       "id": "T9",
       "title": "worklog.py has no locking: parallel agents' load-mutate-save can silently drop each other's notes",
-      "status": "open",
+      "status": "done",
       "priority": "P1",
       "lane": "teamme-hook-engineer",
-      "notes": [],
+      "notes": [
+        "Anchor task for a combined worklog.py data-model brief: T9 (locking), T10 (split updated/nagged_at), T11 (async-dispatch status). One file, one coherent change.",
+        "Fixed T9/T10/T11 in one data model in templates/hooks/worklog.py + worklog-enforce.py: O_EXCL lockfile (bounded retries, 30s stale expiry, fails open and writes anyway) around every load-mutate-save, atomic save via temp+os.replace, new status_changed timestamp that only real transitions touch (notes no longer re-arm the Stop nag), and a dispatched status that is unfinished, exempt from the Stop nag and reported separately at SessionStart.",
+        "VERIFIED BY ME: 30/30 concurrent notes survived (old code dropped 3 of 24); note no longer re-arms Stop while a real status change still does; dispatched is not nagged and gets its own SessionStart sentence. No lock or temp files left behind.",
+        "Reopened as dispatched deliberately: its validate.sh assertions do not exist yet, and behaviour is not finished until the proof exists.",
+        "Added validate.sh coverage for the new worklog data model: (1) locking - 10 concurrent notes all survive, a 60s-old lockfile is broken (not wedged) and leaves no lock/tmp debris; (2) status_changed lifecycle - note answers the Stop nag without re-arming it, a real transition re-arms it (both polarities confirmed by deliberately reintroducing the note-rearms bug and a nag-never-rearms overcorrection, each caught), plus a hand-built pre-migration ledger (no status_changed, nagged_at==updated) loads/lists cleanly and does not spuriously re-nag; (3) dispatched - produces no Stop output, is counted unfinished, shows [@] in list, and gets distinct 'in flight with another agent' SessionStart wording, all confirmed to fail when the corresponding code path is broken. All 7 new failing/passing pairs observed by hand; hooks restored byte-identical (md5 verified) after each experiment. ./scripts/validate.sh -> ALL CHECKS PASSED, runtime ~5.4s (was 2.6s).",
+        "COVERAGE LANDED, verified by me: validate.sh ALL CHECKS PASSED in 4.1s; worklog.py and worklog-enforce.py are byte-identical to the installed copies (the lane mutated them for break/fix testing and restored them); live 19-task ledger loads clean."
+      ],
       "blocked_on": "",
       "created": "2026-09-17T17:58:27+00:00",
-      "updated": "2026-09-17T17:58:27+00:00"
+      "updated": "2026-09-17T18:40:21+00:00",
+      "status_changed": "2026-09-17T18:40:21+00:00",
+      "dispatched_to": ""
     },
     {
       "id": "T10",
       "title": "updated doubles as audit stamp and Stop re-arm trigger, so noting progress guarantees a repeat block",
-      "status": "open",
+      "status": "done",
       "priority": "P1",
       "lane": "teamme-hook-engineer",
-      "notes": [],
+      "notes": [
+        "Fixed under T9: Stop now stamps nagged_at against status_changed, not updated. note/lane/priority move updated only; start/dispatch/block/unblock/done/defer/decline/drop move status_changed and clear nagged_at. Old tasks default status_changed to their updated on load, so existing ledgers do not re-fire."
+      ],
       "blocked_on": "",
       "created": "2026-09-17T17:58:27+00:00",
-      "updated": "2026-09-17T17:58:27+00:00"
+      "updated": "2026-09-17T18:31:18+00:00",
+      "status_changed": "2026-09-17T18:31:18+00:00",
+      "dispatched_to": ""
     },
     {
       "id": "T11",
       "title": "No status for 'waiting on a dispatched agent'; blocked misreports it as needing the user's input",
-      "status": "open",
+      "status": "done",
       "priority": "P2",
       "lane": "teamme-hook-engineer",
-      "notes": [],
+      "notes": [
+        "Fixed under T9: added the dispatched status (mark [@], dispatch <id> \"<agent>\" action, dispatched_to field). Counted as unfinished, skipped by next, never nagged by Stop, and given its own SessionStart sentence distinct from the blocked-needs-your-input wording."
+      ],
       "blocked_on": "",
       "created": "2026-09-17T17:58:27+00:00",
-      "updated": "2026-09-17T17:58:27+00:00"
+      "updated": "2026-09-17T18:31:18+00:00",
+      "status_changed": "2026-09-17T18:31:18+00:00",
+      "dispatched_to": ""
     },
     {
       "id": "T12",
@@ -157,18 +183,23 @@
       "notes": [],
       "blocked_on": "",
       "created": "2026-09-17T17:58:27+00:00",
-      "updated": "2026-09-17T17:58:27+00:00"
+      "updated": "2026-09-17T17:58:27+00:00",
+      "status_changed": "2026-09-17T17:58:27+00:00"
     },
     {
       "id": "T13",
       "title": "route-to-intake.py nags on a null or empty prompt payload; one-line guard, harmless but noisy",
-      "status": "open",
+      "status": "done",
       "priority": "P2",
       "lane": "teamme-hook-engineer",
-      "notes": [],
+      "notes": [
+        "Router returns silently on a missing, null or blank prompt before the passthrough match; pipe-tested null, empty, whitespace-only, absent key, non-dict and unparseable payloads - all silent, exit 0."
+      ],
       "blocked_on": "",
       "created": "2026-09-17T18:02:08+00:00",
-      "updated": "2026-09-17T18:02:08+00:00"
+      "updated": "2026-09-17T18:40:55+00:00",
+      "status_changed": "2026-09-17T18:40:55+00:00",
+      "dispatched_to": ""
     },
     {
       "id": "T14",
@@ -185,33 +216,43 @@
       ],
       "blocked_on": "",
       "created": "2026-09-17T18:05:01+00:00",
-      "updated": "2026-09-17T18:20:55+00:00"
+      "updated": "2026-09-17T18:20:55+00:00",
+      "status_changed": "2026-09-17T18:20:55+00:00"
     },
     {
       "id": "T15",
       "title": "Add /queue: park a request as a work-log task with a one-line ack, no grounding, no brief, no analysis",
-      "status": "open",
+      "status": "done",
       "priority": "P1",
       "lane": "teamme-prompt-author",
       "notes": [
         "WHY: /intake on a parked request still burns a full grounding+analysis response (see T14). /queue should be the cheap path: record it, print the task id, stop.",
         "DESIGN NOTES: (1) thin wrapper over 'worklog.py add' with optional --priority; output is ONE line - the task id and title, nothing else. (2) Must be added to route-to-intake.py PASSTHROUGH or the hook will nag the user to run /intake on their own /queue call - same class of bug as T6. (3) Works regardless of phase: idle, grounding or approved - parking never touches intake-state. (4) /intake step 0's existing 'Queue' triage row is the same action taken autonomously; /queue exposes it to the user directly. Keep the two consistent. (5) Consider the inverse later: a command to pull a parked task INTO intake ('worklog.py next' already finds it).",
-        "REFINEMENT: /intake must short-circuit to the /queue path itself when the request signals deferral ('later', 'once you finish', 'after X', 'queue this'), instead of grounding it. Two distinct gaps: (1) step 0's Queue row only applies when an intake is ALREADY in flight - a deferral arriving at an idle phase still falls through to 0b and gets full grounding; the deferral test must run BEFORE the phase check. (2) The Queue row says 'tell the user the task id' but caps nothing, so the response stays long - see T14, correctly queued and still answered with paragraphs. The queue path must specify a ONE-LINE response as a hard output constraint, in both /queue and /intake's Queue row."
+        "REFINEMENT: /intake must short-circuit to the /queue path itself when the request signals deferral ('later', 'once you finish', 'after X', 'queue this'), instead of grounding it. Two distinct gaps: (1) step 0's Queue row only applies when an intake is ALREADY in flight - a deferral arriving at an idle phase still falls through to 0b and gets full grounding; the deferral test must run BEFORE the phase check. (2) The Queue row says 'tell the user the task id' but caps nothing, so the response stays long - see T14, correctly queued and still answered with paragraphs. The queue path must specify a ONE-LINE response as a hard output constraint, in both /queue and /intake's Queue row.",
+        "Prompt lane landed and verified by me: queue.md has valid frontmatter with a hard one-line output contract; intake.md gained step 0a (deferral test ahead of the phase check) and the Queue row now caps the response; all six placeholders intact; the only intake-state reference inside 0a is the prohibition itself. validate.sh passes. Blocked on the router passthrough before it is actually cheap.",
+        "route-to-intake.py PASSTHROUGH now lists 'queue', so /teamme:queue and /queue are silent; pipe-tested both forms plus a plain 'queue up the release' prompt, which is still nagged.",
+        "Folded day-2 work into existing 0.2.0 entry, updated date to 2026-09-18 (release date is when it ships, not when entry was written; 0.2.0 never pushed/tagged/installed so both days' work ship together). Added /teamme:queue, dispatched status, work log locking fixes, Stop reminder stamping fix, prompt router fix, preflight.py heartbeat fix, /intake deferral signal test. Validated: all checks passed."
       ],
       "blocked_on": "",
       "created": "2026-09-17T18:06:51+00:00",
-      "updated": "2026-09-17T18:08:23+00:00"
+      "updated": "2026-09-17T23:23:29+00:00",
+      "status_changed": "2026-09-17T18:40:55+00:00",
+      "dispatched_to": ""
     },
     {
       "id": "T16",
       "title": "preflight.py heartbeat calls sys.stdin.read() and can hang if stdin is not closed by the caller",
-      "status": "open",
+      "status": "done",
       "priority": "P2",
       "lane": "teamme-hook-engineer",
-      "notes": [],
+      "notes": [
+        "preflight heartbeat drains stdin through a bounded drain_stdin(): skips a tty, polls with select under a 0.5s deadline and a 1MiB cap, swallows every exception. Timed against a held-open pipe, a partial payload with no EOF, a real pty and an endless firehose - all exit 0 in <=0.53s; the previous version hung indefinitely on a pty."
+      ],
       "blocked_on": "",
       "created": "2026-09-17T18:10:40+00:00",
-      "updated": "2026-09-17T18:10:40+00:00"
+      "updated": "2026-09-17T18:40:55+00:00",
+      "status_changed": "2026-09-17T18:40:55+00:00",
+      "dispatched_to": ""
     },
     {
       "id": "T17",
@@ -222,7 +263,62 @@
       "notes": [],
       "blocked_on": "",
       "created": "2026-09-17T18:10:40+00:00",
-      "updated": "2026-09-17T18:10:40+00:00"
+      "updated": "2026-09-17T18:10:40+00:00",
+      "status_changed": "2026-09-17T18:10:40+00:00"
+    },
+    {
+      "id": "T18",
+      "title": "teamme_mcp.py WORKLOG_ACTIONS omits 'dispatch', so the new status is unreachable through the MCP tool",
+      "status": "done",
+      "priority": "P1",
+      "lane": "teamme-hook-engineer",
+      "notes": [
+        "Added 'dispatch' to WORKLOG_ACTIONS in teamme_mcp.py and documented the optional agent-name argument (falls back to the task lane) in the text field description. Drove the real server over JSON-RPC: dispatch with an explicit agent, dispatch falling back to the lane, missing-id refusal, and unknown-action refusal all behave."
+      ],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-17T18:31:18+00:00",
+      "updated": "2026-09-17T18:40:55+00:00",
+      "status_changed": "2026-09-17T18:40:55+00:00"
+    },
+    {
+      "id": "T19",
+      "title": "Status transitions silently reopen a closed task: dispatch/start/block on done/dropped/declined should warn or refuse",
+      "status": "open",
+      "priority": "P2",
+      "lane": "teamme-hook-engineer",
+      "notes": [],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-17T18:32:24+00:00",
+      "updated": "2026-09-17T18:32:24+00:00",
+      "status_changed": "2026-09-17T18:32:24+00:00"
+    },
+    {
+      "id": "T20",
+      "title": "Cover the new router/heartbeat branches in validate.sh: /queue passthrough, blank-prompt return, bounded heartbeat on a pty",
+      "status": "open",
+      "priority": "P2",
+      "lane": "teamme-validation-engineer",
+      "notes": [],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-17T18:40:55+00:00",
+      "updated": "2026-09-17T18:40:55+00:00",
+      "status_changed": "2026-09-17T18:40:55+00:00"
+    },
+    {
+      "id": "T21",
+      "title": "validate.sh runtime is dominated by ~100 python3 startups, making it very sensitive to a slow host",
+      "status": "open",
+      "priority": "P2",
+      "lane": "teamme-validation-engineer",
+      "notes": [],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-17T23:32:28+00:00",
+      "updated": "2026-09-17T23:32:28+00:00",
+      "status_changed": "2026-09-17T23:32:28+00:00"
     }
   ]
 }

@@ -57,7 +57,44 @@ the `teamme_install` MCP tool if it is available; otherwise `/teamme:init-team` 
 Be honest about what this is: a check this command runs and a refusal it chooses, not a gate the
 harness enforces. Do not describe it as something that blocks anyone.
 
-## 0. Triage: is something already in flight?
+## 0. Triage: is this even for now, and is something already in flight?
+
+### 0a. Does the request itself say "later"?
+
+Test this **before** you read the phase and before you read a line of spec. If the wording parks the
+work rather than asks for it, the whole flow below is wasted effort - the user is filing a note, not
+commissioning a brief.
+
+| The request says | Example |
+|---|---|
+| later, not now, some day, eventually | "later, add a dark mode toggle" |
+| after something else | "once you finish the parser", "after the release is out" |
+| file it | "queue this", "park this", "remind me to look at X", "when you get a chance" |
+
+Any of those: **take the queue path** and stop. Whatever the phase is - `idle`, `grounding` or
+`approved` - and whoever else is mid-flight.
+
+**The queue path**, identical to `/teamme:queue` and to the Queue row below:
+
+```bash
+python3 .claude/hooks/worklog.py add "<the request, minus the deferral wording>" --priority P1
+```
+
+Then say **exactly one line** about it - the task id and the title - and nothing else. No grounding,
+no classification, no brief, no disposition, no questions, no offer to start it now. That one-line
+cap is a hard output constraint, not a style preference: parking a request has to cost the user
+nothing, or they stop parking things and start dropping them. Judgement about whether the work should
+happen belongs to `/intake` on the day it is picked up, not today.
+
+The queue path moves **no phase transition at all** - it never runs `intake-state.py`. So an idle
+project stays idle and you stop after that line; an intake already in flight stays exactly where it
+was, and you carry on with the active work after that line.
+
+Only a request about *when the work happens* counts. A deferral word inside the subject matter - "a
+'read later' list", "a retry-after header" - is not a deferral. If it is genuinely ambiguous, treat
+it as a normal request and continue.
+
+### 0b. Is something already in flight?
 
 ```bash
 python3 .claude/hooks/intake-state.py show
@@ -65,8 +102,9 @@ python3 .claude/hooks/worklog.py list
 ```
 
 The first is the phase lock (transient); the second is the work log (durable, and the queue of
-record). If `phase` is `idle`, this is new work - go to step 0b, but check the log first in case it
-is already recorded as an open or deferred task.
+record). If `phase` is `idle`, this is new work - go to step 0c, but check the log first in case it
+is already recorded as an open or deferred task - a request you queued days ago is arriving for real
+now, so start it rather than filing a duplicate.
 
 If `phase` is `grounding` or `approved`, **you decide** what this new message is. Do not ask the
 user to choose, and do not start a second brief:
@@ -74,13 +112,13 @@ user to choose, and do not start a second brief:
 | Decision | When | Action |
 |---|---|---|
 | **Fold in** | It refines, constrains or corrects the active request, supplies an input a lane is blocked on, or would mean editing the same files twice. | `worklog.py note <active-id> "<text>"`. If it changes the plan, `intake-state.py reground` first so it is re-planned under the write lock, then re-approve. |
-| **Queue** | A separate goal with its own layers and no dependency on the active work. | `worklog.py add "<request>" --priority P1`, then resume. Tell the user the task id. |
+| **Queue** | A separate goal with its own layers and no dependency on the active work. | Take the queue path from 0a - `worklog.py add "<request>" --priority P1`, **one line** naming the task id and title, no phase transition - then resume the active work. Do not ground, classify or analyse the queued request; that happens the day it is picked up. |
 | **Redirect** | It makes the active brief *wrong*, not merely lower priority. | **Confirm first.** Then `worklog.py block <active-id> "superseded by <new-id>"`, add the new task at `P0`, `intake-state.py release`, and begin the new one. |
 
 Bias toward folding inside the active scope, queueing for anything that widens it. A plain question
 changes no state: answer it and stop.
 
-## 0b. Enter the read-only grounding phase
+## 0c. Enter the read-only grounding phase
 
 ```bash
 python3 .claude/hooks/worklog.py add "$ARGUMENTS" --priority P1
@@ -122,7 +160,7 @@ reason in one line, record it, then continue:
 | **Already satisfied** | It exists. | Say where, `worklog.py done <id>`, `intake-state.py release`, stop - or re-scope to the real change. |
 | **Defer, spec only** | Sound but not now. | Write the spec text, `worklog.py defer <id> "<reason>"`, `intake-state.py release`, stop. |
 | **Decline** | It would break a hard rule. | `worklog.py decline <id> "<reason>"`, `intake-state.py release`. Say why, offer the nearest legitimate alternative. |
-| **Needs input** | Undecidable without the user. | `worklog.py block <id> "<what you need>"`, ask, stop. Leave the phase at `grounding`: the answer arrives as a mid-flight message and folds in at step 0, and the lock expires on its own if it never comes. |
+| **Needs input** | Undecidable without the user. | `worklog.py block <id> "<what you need>"`, ask, stop. Leave the phase at `grounding`: the answer arrives as a mid-flight message and folds in at step 0b, and the lock expires on its own if it never comes. |
 
 Declining and deferring are real outcomes, not failures. Every one of them that stops here ends the
 flow, so release the phase on the way out - a `begin` with no matching `approve` or `release` leaves

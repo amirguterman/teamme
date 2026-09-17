@@ -28,7 +28,7 @@ import sys
 # matched generically rather than by plugin name, which teamme must never assume.
 PASSTHROUGH = re.compile(
     r"^\s*/(?:[A-Za-z0-9_.-]+:)?"
-    r"(intake|init-team|team-doctor"
+    r"(intake|queue|init-team|team-doctor"
     r"|clear|help|config|agents|hooks|mcp|model|cost|status|resume"
     r"|compact|rewind|context|doctor|login|logout|exit|quit|export|memory"
     r"|code-review|security-review|simplify|init)\b",
@@ -96,7 +96,9 @@ def main() -> None:
         return
 
     prompt = payload.get("prompt") or payload.get("user_prompt") or ""
-    if not isinstance(prompt, str) or PASSTHROUGH.match(prompt):
+    if not isinstance(prompt, str) or not prompt.strip():
+        return  # a missing, null or blank prompt asks for nothing; say nothing
+    if PASSTHROUGH.match(prompt):
         return
 
     state = current_state()

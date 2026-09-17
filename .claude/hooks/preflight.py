@@ -35,6 +35,7 @@ tool call or block a prompt.
 import json
 import os
 import pathlib
+import select
 import sys
 import time
 
@@ -92,6 +93,38 @@ def write_heartbeat(project_dir=None) -> bool:
         return True
     except Exception:
         return False  # a read-only checkout must still start a session
+
+
+def drain_stdin(limit_seconds: float = 0.5, max_bytes: int = 1 << 20) -> None:
+    """Consume a piped payload without ever waiting for one. Never raises.
+
+    Nothing here needs the SessionStart payload, but leaving it unread hands the
+    writer a broken pipe. A plain `sys.stdin.read()` waits for EOF, so any caller
+    whose stdin is a terminal - or a pipe held open by something else - would
+    hang a session start. So the drain is bounded twice: it stops at a deadline
+    and at a byte cap, it skips a terminal outright, and a platform that cannot
+    poll a pipe just reads nothing. Discarding a payload costs nothing; blocking
+    on one costs the session.
+    """
+    try:
+        stream = sys.stdin
+        if stream is None or stream.closed or stream.isatty():
+            return
+        fd = stream.fileno()
+        deadline = time.monotonic() + max(0.0, limit_seconds)
+        seen = 0
+        while seen < max_bytes:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return  # slow or silent writer: give up rather than wait
+            if not select.select([fd], [], [], remaining)[0]:
+                return  # nothing offered in time
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                return  # EOF: the normal path
+            seen += len(chunk)
+    except Exception:
+        return  # no fileno, no select on this handle, closed mid-read - all fine
 
 
 def read_heartbeat(project_dir=None) -> dict:
@@ -345,10 +378,7 @@ def main(argv=None) -> int:
     mode = argv[0] if argv and not argv[0].startswith("-") else "check"
 
     if mode == "heartbeat":
-        try:
-            sys.stdin.read()  # drain the SessionStart payload; nothing here needs it
-        except Exception:
-            pass
+        drain_stdin()  # bounded: this mode can never wait on its caller's stdin
         write_heartbeat()
         return 0  # ALWAYS. A session start is never blocked by this script.
 

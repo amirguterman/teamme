@@ -3,7 +3,7 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] - 2026-09-17
+## [0.2.0] - 2026-09-18
 
 ### Removed
 - `/build-agent-team` command — replaced with `/teamme:init-team` for clearer namespace.
@@ -11,12 +11,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 - `/teamme:init-team` — renamed install command that scaffolds the agent team and intake flow.
 - `/teamme:team-doctor` — diagnoses an existing install and offers to repair it.
+- `/teamme:queue` — parks a request in the work log and stops: one task, one line printed, no
+  grounding, no analysis, no brief. Never touches the phase lock.
 - MCP server (`teamme_mcp.py`) with tools: `teamme_status` (always available), `teamme_install`
   (scaffolds and repairs, idempotent), and `teamme_worklog` / `teamme_intake_phase` (guard-gated).
+  Added `dispatch` action to `teamme_worklog` for managing the new `dispatched` status.
 - Preflight check module (`preflight.py`) distinguishing three install states: not-installed,
   installed-not-live (hook state not yet proven), and live (validated by `SessionStart` heartbeat).
 - Preflight validation step at the start of every command, halting with a repair recommendation
   list when the install is broken.
+- `dispatched` work-log status — "in flight with another agent", counted as unfinished, skipped by
+  `next`, never nagged by the `Stop` hook, reported separately at session start. CLI
+  `worklog.py dispatch <id>` and MCP `teamme_worklog` tool.
 
 ### Fixed
 - `route-to-intake.py` no longer hard-codes project-specific document references
@@ -25,6 +31,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   trigger false intake routing.
 - Intake flow terminal dispositions now release the phase lock, avoiding write-locks that survived
   until the one-hour timeout.
+- Work log locking: parallel agents doing read-modify-write no longer silently drop each other's
+  notes. Writes are now atomic, guarded by a lock that expires on a crash and fails open.
+- `Stop` reminder was stamped against `updated`, which every mutation touched, so recording
+  progress re-armed it. It now stamps against `status_changed`, so only real status transitions
+  re-arm it.
+- Prompt router no longer injects full reminder for null, empty or whitespace-only prompts.
+- `preflight.py heartbeat` drained stdin with a blocking read and could hang indefinitely on a
+  pty; it now exits in well under a second in every case.
+- `/intake` now tests for a deferral signal ("later", "once you finish") before the phase check,
+  taking the cheap queue path instead of grounding the request.
 
 ### Changed
 - `validate.sh` now compiles the MCP server, validates `.mcp.json`, drives the server over a real

@@ -102,6 +102,88 @@ python3 $H/intake-state.py release >/dev/null
 echo 'garbage' | python3 $H/intake-guard.py | grep -q deny && fail "guard denied on malformed input"
 echo "  ok: fail-open, deny-during-grounding, lift-on-approve, Stop fires once"
 
+WLJSON="$PWD/.claude/intake/worklog.json"
+
+echo "== worklog: N concurrent notes on one task all survive (the lockfile earns its keep) =="
+LOCK_TASK=$(python3 $H/worklog.py add "lock stress task" --priority P2 | grep -oE 'T[0-9]+' | head -1)
+[ -n "$LOCK_TASK" ] || fail "could not create the lock stress task"
+for i in $(seq 1 10); do
+  python3 $H/worklog.py note "$LOCK_TASK" "note-$i" >/dev/null &
+done
+wait
+NOTE_COUNT=$(python3 -c "
+import json
+d = json.load(open('$WLJSON'))
+t = next(x for x in d['tasks'] if x['id'] == '$LOCK_TASK')
+print(len(t['notes']))
+")
+[ "$NOTE_COUNT" = "10" ] || fail "expected 10 notes after 10 concurrent writers, got $NOTE_COUNT (lost notes mean the lock regressed)"
+echo "  ok: 10/10 concurrent notes survived"
+
+echo "== worklog: a stale lockfile is broken rather than wedging the write, and leaves nothing behind =="
+LOCKFILE="$(dirname "$WLJSON")/worklog.lock"
+echo "999999 0" > "$LOCKFILE"
+touch -d "-60 seconds" "$LOCKFILE"
+STALE_TASK=$(python3 $H/worklog.py add "stale lock task" --priority P2 | grep -oE 'T[0-9]+' | head -1)
+[ -n "$STALE_TASK" ] || fail "add did not succeed with a stale (crashed-process) lockfile present"
+test -f "$LOCKFILE" && fail "the stale lockfile from a crashed process was never cleaned up (a live lock would still be here, but this one is 60s old)"
+LEFTOVER=$(find "$(dirname "$WLJSON")" -maxdepth 1 \( -name '*.lock' -o -name '.*.tmp' \) 2>/dev/null)
+[ -z "$LEFTOVER" ] || fail "leftover lock/tmp file(s) after a write: $LEFTOVER"
+echo "  ok: stale lock broken, write landed, no lock/tmp debris"
+
+echo "== worklog: status_changed - a note answers the Stop nag without re-arming it, a real transition does =="
+SC_TASK=$(python3 $H/worklog.py add "status changed task" --priority P1 | grep -oE 'T[0-9]+' | head -1)
+python3 $H/worklog.py start "$SC_TASK" >/dev/null
+echo '{}' | python3 $H/worklog-enforce.py stop | grep -q '"block"' \
+  || fail "Stop did not block on a freshly-active task"
+echo '{}' | python3 $H/worklog-enforce.py stop | grep -q '"block"' \
+  && fail "Stop nagged twice in a row with nothing changed (loop risk)"
+sleep 1  # force `updated` (bumped by note) to differ, at second resolution, from status_changed/nagged_at
+python3 $H/worklog.py note "$SC_TASK" "still working on it" >/dev/null
+NOTE_STOP=$(echo '{}' | python3 $H/worklog-enforce.py stop)
+[ -z "$NOTE_STOP" ] || fail "a note re-armed the Stop nag - this is the exact bug T10 fixed: $NOTE_STOP"
+sleep 1  # force the next status_changed stamp (second-resolution) to differ from the armed one
+python3 $H/worklog.py start "$SC_TASK" >/dev/null   # a real status transition, even to the same status
+echo '{}' | python3 $H/worklog-enforce.py stop | grep -q '"block"' \
+  || fail "a real status transition after the note did not re-arm the Stop nag (overcorrection: nag stopped enforcing)"
+echo "  ok: note leaves the nag armed, a real transition re-arms it"
+
+echo "== worklog: a pre-migration ledger with no status_changed loads, lists and does not spuriously re-nag =="
+mkdir -p compat-proj/.claude/hooks compat-proj/.claude/intake
+cp "$H"/*.py compat-proj/.claude/hooks/
+python3 -c "
+import json, pathlib
+d = {
+    'version': 1, 'next_id': 2,
+    'tasks': [{
+        'id': 'T1', 'title': 'pre-migration task', 'status': 'active',
+        'priority': 'P1', 'lane': '', 'notes': [], 'blocked_on': '', 'dispatched_to': '',
+        'created': '2024-01-01T00:00:00+00:00', 'updated': '2024-01-01T00:00:00+00:00',
+        'nagged_at': '2024-01-01T00:00:00+00:00',
+    }],
+}
+pathlib.Path('compat-proj/.claude/intake/worklog.json').write_text(json.dumps(d, indent=2) + chr(10))
+"
+COMPAT_LIST=$(CLAUDE_PROJECT_DIR="$PWD/compat-proj" python3 compat-proj/.claude/hooks/worklog.py list) \
+  || fail "worklog.py list crashed on a pre-migration ledger with no status_changed"
+echo "$COMPAT_LIST" | grep -q "T1" || fail "pre-migration task did not appear in list: $COMPAT_LIST"
+COMPAT_STOP=$(echo '{}' | CLAUDE_PROJECT_DIR="$PWD/compat-proj" python3 compat-proj/.claude/hooks/worklog-enforce.py stop)
+[ -z "$COMPAT_STOP" ] || fail "a pre-migration task already nagged (nagged_at == updated) spuriously re-fired after status_changed defaulted to updated: $COMPAT_STOP"
+echo "  ok: pre-migration ledger loads cleanly, status_changed defaults to updated, no spurious re-nag"
+
+echo "== worklog: dispatched tasks are unfinished-but-unnagged, and get their own SessionStart wording =="
+DISPATCH_TASK=$(python3 $H/worklog.py add "dispatch test task" --priority P1 | grep -oE 'T[0-9]+' | head -1)
+python3 $H/worklog.py dispatch "$DISPATCH_TASK" "teamme-hook-engineer" >/dev/null
+DISPATCH_STOP=$(echo '{}' | python3 $H/worklog-enforce.py stop)
+[ -z "$DISPATCH_STOP" ] || fail "Stop produced output while only a dispatched task was pending: $DISPATCH_STOP"
+python3 $H/worklog.py list | grep -q "\[@\] $DISPATCH_TASK" || fail "dispatched task missing its [@] mark in list"
+python3 $H/worklog.py stats | grep -qE "unfinished: [1-9]" || fail "dispatched task was not counted as unfinished in stats"
+SESSION_OUT=$(echo '{}' | python3 $H/worklog-enforce.py session)
+echo "$SESSION_OUT" | grep -q "$DISPATCH_TASK" || fail "SessionStart did not mention the dispatched task"
+echo "$SESSION_OUT" | grep -q "in flight with another agent" || fail "SessionStart did not use the dispatched-specific wording, distinct from blocked"
+echo "$SESSION_OUT" | grep -q "blocked and need an input" && fail "SessionStart used blocked wording for a dispatched-only task"
+echo "  ok: dispatched is unfinished, unnagged, listed, and worded distinctly at SessionStart"
+
 echo "== mcp server: teamme_worklog/teamme_intake_phase are gated on teamme_install =="
 mkdir -p gate-proj
 python3 - "$ROOT" "$PWD/gate-proj" <<'PY'

@@ -48,11 +48,23 @@ what to do with it.
    spec delta, risks, done criteria and how the work can actually be verified.
 6. **Dispatch** — specialists, in dependency order.
 
+`/intake` also recognizes a deferral before it does anything else: if the request itself says
+"later", "once you finish X", "after the release", or "queue this", it skips straight to the queue
+path below instead of grounding it — regardless of whether anything else is currently in flight.
+
+### The cheap path: `/teamme:queue`
+
+`/teamme:queue <request> [P0|P1|P2]` (priority defaults to `P1`) is for anything you want on record
+for later, not decided on now. It records one task in the work log and prints one line back — the
+task id and the title — with no grounding, no analysis, no brief and no questions. It never touches
+the phase lock, so it behaves identically whether intake is idle, mid-flight or approved. Judgement
+about whether the work should happen still waits for `/intake`, on the day it is actually picked up.
+
 ## The hooks
 
 | Hook | Event | What it does |
 |---|---|---|
-| `route-to-intake.py` | `UserPromptSubmit` | Routes work requests into `/intake`. Phase-aware: a mid-flight message is pointed at the triage rules rather than at starting a fresh brief |
+| `route-to-intake.py` | `UserPromptSubmit` | Routes work requests into `/intake`. Phase-aware: a mid-flight message is pointed at the triage rules rather than at starting a fresh brief. teamme's own commands, including `/teamme:queue`, pass through untouched |
 | `intake-guard.py` | `PreToolUse` | **Denies every project edit while a brief is still being written** |
 | `worklog-enforce.py session` | `SessionStart` | Surfaces unfinished and deferred work so nothing is lost across sessions |
 | `worklog-enforce.py stop` | `Stop` | Refuses to end a turn while a task is still marked active, so status gets recorded |
@@ -68,8 +80,9 @@ Every guard **fails open** — missing, malformed or stale state, an unparseable
 outside the project — and the phase expires on a timeout. A crashed session can never leave a
 repository write-locked. Edits under `.claude/` are always allowed so the flow can manage itself.
 
-The `Stop` hook reminds at most once per status change, so it enforces without any possibility of
-looping.
+The `Stop` hook reminds at most once per status change — recording a note does not itself count as
+one, so narrating progress never re-triggers the reminder — and it enforces without any possibility
+of looping.
 
 ## The work log
 
@@ -79,13 +92,18 @@ it shared, and independent of the transient phase lock.
 ```bash
 python3 .claude/hooks/worklog.py list
 python3 .claude/hooks/worklog.py add "..." --priority P0 --lane <agent>
+python3 .claude/hooks/worklog.py dispatch T4 "teamme-hook-engineer"
 python3 .claude/hooks/worklog.py block T3 "waiting on a decision"
 python3 .claude/hooks/worklog.py defer T5 "spec'd, build later"
 python3 .claude/hooks/worklog.py stats
 ```
 
-Statuses: `open`, `active`, `blocked` (unfinished); `deferred` (intentionally not now); `done`,
-`declined`, `dropped` (closed). Priorities: `P0` now, `P1` normal, `P2` someday.
+Statuses: `open`, `active`, `dispatched`, `blocked` (unfinished); `deferred` (intentionally not
+now); `done`, `declined`, `dropped` (closed). `dispatched` means the work is in flight with
+another agent — waiting on that agent's result, not on you. It counts as unfinished, `next` skips
+it, and the `Stop` hook never nags about it, since nothing this session does can advance it; a
+`SessionStart` report lists it separately from tasks that are `blocked` on your own input.
+Priorities: `P0` now, `P1` normal, `P2` someday.
 
 ## Install and verify
 

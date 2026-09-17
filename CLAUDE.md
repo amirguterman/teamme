@@ -15,6 +15,7 @@ plugins/teamme/
   .mcp.json                       the MCP server this plugin ships, launched with plain python3
   commands/init-team.md           installs the team; a prompt, not code
   commands/team-doctor.md         diagnoses/repairs an existing install on demand; a prompt, not code
+  commands/queue.md               parks a request in the work log; no grounding, no phase interaction
   server/teamme_mcp.py            stdio JSON-RPC MCP server: status/install/worklog/intake-phase tools
   templates/                      scaffolding the commands COPY into a target project
     hooks/*.py                    project-agnostic hook scripts, including preflight.py
@@ -47,8 +48,16 @@ JSON-RPC pipe — `teamme_worklog` refuses with an error naming `teamme_install`
 succeeds after — and drives `preflight.py` directly: `not-installed` with a non-zero exit on an
 empty project, `live` on a scaffolded-and-heartbeated one, and the `hooks`, `settings` and
 `intake_dir` checks each failing independently with a `fix:` line. `heartbeat` is proven silent and
-always exit-0, even with no `.claude/` and stdin closed. If you change a hook or the MCP server, this
-is the proof — not inspection.
+always exit-0, even with no `.claude/` and stdin closed.
+
+The worklog data model gets its own coverage: ten concurrent `note` calls on one task all survive
+the lockfile; a stale (crashed-process) lockfile is broken rather than wedging a write and leaves no
+lock/tmp debris behind; the nag lifecycle is checked in both directions — a note leaves the `Stop`
+reminder armed, a real status transition re-arms it; a pre-migration ledger with no `status_changed`
+field loads, lists and does not spuriously re-fire; and a `dispatched` task produces no `Stop`
+output, shows `[@]` in `list`, counts as unfinished in `stats`, and gets its own `SessionStart`
+wording distinct from `blocked`. If you change a hook or the MCP server, this is the proof — not
+inspection.
 
 ## Design invariants
 
@@ -58,8 +67,9 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
    the project — every one of these must ALLOW the write. A broken guard must never block work. The
    phase lock also expires on a timeout so a crashed session cannot leave a repo write-locked.
 2. **Enforcement hooks cannot loop.** A `Stop` hook that re-fires on an unchanged condition traps
-   the session. The reminder stamps itself against the task's `updated` time; a status change
-   re-arms it.
+   the session. The reminder stamps itself against the task's `status_changed` time, never against
+   `updated`: only a real status transition re-arms it, so recording a note — which moves `updated`
+   but not `status_changed` — never triggers a second nag.
 3. **Assume nothing is installed.** `python3` only. No `jq` — an early version used it and silently
    produced nothing on a machine without it, which is indistinguishable from a hook not firing.
    Pipe-test every command with a synthesized payload before wiring it into settings.
@@ -105,18 +115,36 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   restart), `live` (a `SessionStart` heartbeat proves hooks are firing). Before `preflight.py` these
   were indistinguishable from outside: a freshly registered, never-restarted install looked exactly
   like a broken one.
+- **`/teamme:queue` exists because `/intake`'s own "queue" outcome still cost a full response.**
+  The triage table always had a queue disposition, but reaching it still meant grounding,
+  classifying and briefing a request the user only wanted parked. `/queue` is that same outcome
+  taken directly, with a hard one-line output contract, so parking a request costs the user
+  nothing. `/intake` itself gained step 0a for the same reason: it tests for deferral wording
+  ("later", "once you finish X", "queue this") *before* it checks the phase, so a parked request
+  arriving through `/intake` gets the cheap path too, instead of being fully grounded because the
+  phase happened to be idle.
+- **A `dispatched` work-log status, distinct from `blocked`.** Async dispatch to another agent is
+  this team's normal mode, and it had no representation: `active` nagged every turn even though
+  nothing that session could do would advance it, and `blocked` told the user they owed an input
+  they did not owe. `dispatched` counts as unfinished, is skipped by `next`, is never nagged about
+  by the `Stop` hook, and is reported separately at `SessionStart` from tasks blocked on the user's
+  own input.
 
 ## Known gaps
 
 - No eval suite yet (`claude plugin eval`). The prompts (`init-team.md`, `team-doctor.md`,
-  `intake.md`) are checked only for parsable frontmatter; nothing tests what they instruct, and the
-  command-level preflight refusal they describe is prompt text, not a harness guarantee.
+  `intake.md`, `queue.md`) are checked only for parsable frontmatter; nothing tests what they
+  instruct. The command-level preflight refusal, `/teamme:queue`'s one-line output contract, and
+  `/intake`'s step 0a deferral short-circuit are all prompt text, not enforced behaviour.
 - `templates/intake.md` has been exercised on one real project (a Minecraft Fabric mod). The
   `{{PLACEHOLDER}}` set may not fit stacks with very different doc conventions.
 - The plugin ships no `agents/` of its own by design — teams are generated per project — so nothing
   validates the *generated* agent files beyond frontmatter parsing.
 - `route-to-intake.py`, `reground`, out-of-project paths and stale-state expiry remain unexercised
   by the smoke test.
+- `route-to-intake.py`'s new `/queue` passthrough and its blank-prompt return, and `preflight.py`'s
+  heartbeat under a real pty, have been checked by hand but are not yet asserted in `validate.sh`
+  (tracked as T20).
 - `teamme_intake_phase` is not separately gate-tested; only `teamme_worklog` exercises the shared
   gate-on-install path against the MCP server.
 - Version bumps are manual: `plugin.json` `version` plus a `CHANGELOG.md` entry.
