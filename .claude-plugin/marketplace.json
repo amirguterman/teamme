@@ -1,0 +1,21 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "teamme",
+  "description": "Give any Claude Code project a tailored subagent team, an /intake front door, and a work log that will not let work be forgotten.",
+  "owner": {
+    "name": "Amir Guterman",
+    "url": "https://github.com/amirguterman"
+  },
+  "plugins": [
+    {
+      "name": "teamme",
+      "description": "Analyze a project, propose a tailored team of Claude Code subagents, and install an /intake command that is the team's single entry point - with a harness-enforced read-only planning phase and a durable, prioritized work log.",
+      "author": {
+        "name": "Amir Guterman"
+      },
+      "category": "workflow",
+      "homepage": "https://github.com/amirguterman/teamme",
+      "source": "./plugins/teamme"
+    }
+  ]
+}

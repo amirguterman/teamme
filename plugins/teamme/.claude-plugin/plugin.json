@@ -1,0 +1,19 @@
+{
+  "name": "teamme",
+  "description": "Analyze a project, propose a tailored team of Claude Code subagents, and install an /intake command that is the team's single entry point - with a harness-enforced read-only planning phase and a durable, prioritized work log.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Amir Guterman"
+  },
+  "homepage": "https://github.com/amirguterman/teamme",
+  "repository": "https://github.com/amirguterman/teamme",
+  "license": "MIT",
+  "keywords": [
+    "subagents",
+    "workflow",
+    "intake",
+    "planning",
+    "hooks",
+    "work-log"
+  ]
+}
