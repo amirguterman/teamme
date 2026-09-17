@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "next_id": 8,
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Remove the two legacy build-agent-team command files that shadow the plugin",
+      "status": "open",
+      "priority": "P0",
+      "lane": "teamme-docs-writer",
+      "notes": [
+        "CONFIRMED by diff: both legacy copies are byte-identical to each other and a strict ancestor of the plugin version - they lack the 'do not re-author scaffolding' block and still carry the old Phase 6 that self-installs them. Nothing to salvage; delete both."
+      ],
+      "blocked_on": "",
+      "created": "2026-09-17T16:53:21+00:00",
+      "updated": "2026-09-17T17:00:49+00:00"
+    },
+    {
+      "id": "T2",
+      "title": "Rename the plugin command build-agent-team -> build-team",
+      "status": "dropped",
+      "priority": "P1",
+      "lane": "teamme-prompt-author",
+      "notes": [
+        "Naming is unresolved: the request says rename to /build-team but /migrate-to-teamme should point at /generate-team. One name must win.",
+        "dropped: retitled: the command name is /init-team, not /build-team - superseded by T7"
+      ],
+      "blocked_on": "",
+      "created": "2026-09-17T16:53:21+00:00",
+      "updated": "2026-09-17T17:00:49+00:00"
+    },
+    {
+      "id": "T3",
+      "title": "New /modify-team wizard: change the roster and migrate existing agents' state to comply",
+      "status": "open",
+      "priority": "P1",
+      "lane": "teamme-prompt-author",
+      "notes": [],
+      "blocked_on": "",
+      "created": "2026-09-17T16:53:21+00:00",
+      "updated": "2026-09-17T16:53:21+00:00"
+    },
+    {
+      "id": "T4",
+      "title": "New /migrate-to-teamme: adopt a legacy-built team, or redirect to team generation",
+      "status": "open",
+      "priority": "P1",
+      "lane": "teamme-prompt-author",
+      "notes": [
+        "Detection of a legacy team is the hard part - legacy agents have no marker distinguishing them from hand-written ones.",
+        "DECIDED: when no team is detected, redirect to /init-team (not /generate-team)."
+      ],
+      "blocked_on": "",
+      "created": "2026-09-17T16:53:21+00:00",
+      "updated": "2026-09-17T17:00:49+00:00"
+    },
+    {
+      "id": "T5",
+      "title": "route-to-intake.py hard-codes ARCHITECTURE.md, breaking the project-agnostic invariant",
+      "status": "open",
+      "priority": "P0",
+      "lane": "teamme-hook-engineer",
+      "notes": [],
+      "blocked_on": "",
+      "created": "2026-09-17T16:53:21+00:00",
+      "updated": "2026-09-17T16:53:21+00:00"
+    },
+    {
+      "id": "T6",
+      "title": "route-to-intake.py passthrough misses the plugin-prefixed /teamme:<cmd> form",
+      "status": "open",
+      "priority": "P1",
+      "lane": "teamme-hook-engineer",
+      "notes": [],
+      "blocked_on": "",
+      "created": "2026-09-17T16:53:21+00:00",
+      "updated": "2026-09-17T16:53:21+00:00"
+    },
+    {
+      "id": "T7",
+      "title": "Rename the plugin command build-agent-team -> init-team (clean break, no alias)",
+      "status": "open",
+      "priority": "P1",
+      "lane": "teamme-prompt-author",
+      "notes": [
+        "DECIDED: name is /init-team, invoked as /teamme:init-team. Clean break - the old name is deleted outright, not aliased. Needs a version bump and a CHANGELOG 'Removed' entry (teamme-release-manager), plus the passthrough regex in route-to-intake.py (T6) and every /build-agent-team reference in README.md, CLAUDE.md, CONTRIBUTING.md and plugins/teamme/README.md."
+      ],
+      "blocked_on": "",
+      "created": "2026-09-17T17:00:49+00:00",
+      "updated": "2026-09-17T17:00:49+00:00"
+    }
+  ]
+}

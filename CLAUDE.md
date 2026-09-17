@@ -20,6 +20,17 @@ plugins/teamme/
 scripts/validate.sh               manifests + hook syntax + end-to-end smoke test
 ```
 
+## Working in this repo: all requests go through `/intake`
+
+This repo has teamme installed on itself (`.claude/agents/`, `.claude/commands/intake.md`,
+`.claude/hooks/`). Every request for work enters through `/intake <what you want>` — it grounds the
+request in the invariants below, decides whether it should happen, writes a brief, and dispatches the
+owning specialist. A request made directly to an agent belongs in the intake flow instead. See
+`.claude/agents/README.md` for the roster and dependency order.
+
+`.claude/hooks/*.py` are **copies** of `plugins/teamme/templates/hooks/*.py`. Change the template,
+then `cp plugins/teamme/templates/hooks/*.py .claude/hooks/`. Editing the copy alone ships nothing.
+
 ## Verify before you claim anything works
 
 ```bash
