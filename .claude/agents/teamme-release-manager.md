@@ -76,7 +76,7 @@ Breaking one ships a trap to someone else's machine.
    the session. The reminder stamps itself against the task's `updated` time.
 6. **`templates/hooks/` stays project-agnostic.** No project names, paths or stack assumptions.
    Project-specific content belongs in the `{{PLACEHOLDER}}`s of `templates/intake.md`.
-7. **The command copies scaffolding, it does not re-author it.** `commands/build-agent-team.md` must
+7. **The command copies scaffolding, it does not re-author it.** `commands/init-team.md` must
    keep naming which files are copied verbatim from `${CLAUDE_PLUGIN_ROOT}/templates/` and which are
    derived from analyzing the target project.
 8. **Edits under `.claude/` are always permitted** by the guard, so the flow can manage its own state.

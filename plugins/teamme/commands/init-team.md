@@ -6,6 +6,34 @@ You are setting up a tailored **team of Claude Code subagents** for THIS project
 **`/intake` command** that is the team's single entry point, plus trimming environment bloat. Do NOT
 create or change anything until I approve via the questionnaire in Phase 3. Work in this order.
 
+## Phase 0 — Preflight (before anything else)
+
+Run this first, before reading a single project file:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/templates/hooks/preflight.py" check
+```
+
+It prints one `PASS`/`FAIL` line per item — `python3`, `hook scripts`, `intake command`, `hook
+registration`, `intake state dir`, `hooks firing` — a `fix:` line under each failure, and a final
+`state:` of `not-installed`, `installed-not-live` or `live`. Exit 0 iff everything passed. Show me
+that output verbatim rather than paraphrasing it, then act on the state:
+
+| State | What it means | What to do |
+|---|---|---|
+| the command itself fails — `python3: command not found` | The check could not run. Every hook, the work log and the phase lock are `python3` scripts. | **Halt.** Nothing teamme ships can run here. Tell me to install python3 (system package manager, or python.org) and re-run this command. Offer no repair — there is nothing to repair with. |
+| `not-installed` | The project has never been scaffolded. | **Expected here — this command is the installer.** Say so in one line and continue to Phase 1; Phase 5 creates all of it. Do not halt. |
+| `installed-not-live` | The scripts and the `hooks` block are both present, but no `SessionStart` has fired here, usually because `.claude/` held no settings file when the session started. Nothing is being enforced right now. | Continue — Phase 5 re-copies the scaffolding — but tell me at hand-over that `/hooks` or a restart is required before the phase lock is real. |
+| `live` but some check still `FAIL`s (a missing script, an unparseable `settings.json`, an unwritable `.claude/intake/`) | A previous install was interrupted, or files were deleted or edited by hand. | Name the exact failing items, then **offer to repair and ask before writing**: re-copy the missing scripts from `${CLAUDE_PLUGIN_ROOT}/templates/hooks/`, merge the `hooks` block from `${CLAUDE_PLUGIN_ROOT}/templates/settings.hooks.json` into the existing settings file without disturbing anything else, create `.claude/intake/`. A JSON syntax error in a settings file is mine to fix — report it, do not rewrite the file around it. Re-run the check afterwards. |
+
+If the MCP tools are available, `teamme_status` gives the same diagnosis and `teamme_install`
+performs the repair. Prefer them when present; the script is the fallback. `teamme_worklog` and
+`teamme_intake_phase` refuse to run until the install is complete, which is a second confirmation of
+the same state, not a different opinion.
+
+Be honest about what this is: a check you run and a refusal you choose, not a gate the harness
+enforces. Nothing stops a later turn from skipping it. Say that plainly if I ask.
+
 ## Phase 1 — Analyze the codebase (read-only)
 Discover what this project actually is. Do not assume a stack.
 1. Read the root context files if present: `AGENTS.md`, `CLAUDE.md`, `README*`, `CONTRIBUTING*`,
@@ -79,7 +107,8 @@ anything risky to remove. Prefer reversible disables over deletion.
 **Do not re-author the scaffolding.** This command ships working, tested copies at
 `${CLAUDE_PLUGIN_ROOT}/templates/`. Copy them verbatim rather than writing them from memory:
 - `templates/hooks/*.py` → `<project>/.claude/hooks/` (the routing hook, the read-only guard, the
-  phase lock, the work log and its enforcement hooks). These are project-agnostic - do not edit them.
+  phase lock, the work log and its enforcement hooks, and the preflight check the installed
+  `/intake` runs). These are project-agnostic - do not edit them.
 - `templates/settings.hooks.json` → merge its `hooks` block into `<project>/.claude/settings.json`,
   preserving anything already there.
 - `templates/intake.md` → `<project>/.claude/commands/intake.md`, replacing every `{{PLACEHOLDER}}`
@@ -97,6 +126,9 @@ the paths must resolve.
    requests go through `/intake <request>`. Tailor it to THIS project, and give it at minimum:
    - YAML frontmatter with a `description:` line and an `argument-hint:`; accept the request as
      `$ARGUMENTS`, and ask for it if empty.
+   - **Preflight** — the block the template already carries: run `.claude/hooks/preflight.py check`
+     before anything else and halt with a per-failure remediation if the install is not live. Leave
+     it at the top; do not move it below grounding.
    - **Ground** — read the project's authoritative spec/docs FIRST and quote what already governs
      the request. Say plainly when it is already specified, already implemented, or contradicts a
      documented rule. Never design before reading.
@@ -169,7 +201,9 @@ the paths must resolve.
    context reduction.
 7. If a docs tree exists and the project requires it, document the new team there.
 8. Verify: list the created files and confirm each frontmatter parses, including `intake.md`; if the
-   project is a git repo, stage on a branch and show the diff (commit/push only if I ask).
+   project is a git repo, stage on a branch and show the diff (commit/push only if I ask). Re-run
+   `python3 "${CLAUDE_PLUGIN_ROOT}/templates/hooks/preflight.py" check` — after a successful install
+   it must exit 0, apart from the "not live until `/hooks` or a restart" case.
 
 ## Phase 6 — Hand over
 This command ships as the **teamme** plugin, so it is already available in every project — there is
@@ -182,7 +216,8 @@ nothing to install per repo. Close out by telling me:
   approval to commit one thing never carries forward to later work.
 - How to start: `/intake <what you want>`, and that everything else routes through it.
 - Anything the hooks need that this machine lacks, and whether `/hooks` or a restart is required for
-  them to go live.
+  them to go live. `/teamme:team-doctor` re-runs the preflight on demand if anything looks wrong
+  later.
 
 Do NOT write outside the current project in this phase.
 

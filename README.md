@@ -13,10 +13,10 @@ front door, and a **work log that will not let work be forgotten**.
 Then, in any project:
 
 ```
-/build-agent-team
+/teamme:init-team
 ```
 
-## What `/build-agent-team` does
+## What `/teamme:init-team` does
 
 It reads the project first — manifests, docs, CI, the real build and test commands, the "never do X"
 rules — and proposes a roster derived from *that project's* actual layer boundaries, not a fixed list
@@ -56,6 +56,7 @@ what to do with it.
 | `intake-guard.py` | `PreToolUse` | **Denies every project edit while a brief is still being written** |
 | `worklog-enforce.py session` | `SessionStart` | Surfaces unfinished and deferred work so nothing is lost across sessions |
 | `worklog-enforce.py stop` | `Stop` | Refuses to end a turn while a task is still marked active, so status gets recorded |
+| `preflight.py heartbeat` | `SessionStart` | Stamps evidence that hooks are firing here. Never blocks; always exits 0 |
 
 ### Why the read-only phase is not plan mode
 
@@ -86,10 +87,32 @@ python3 .claude/hooks/worklog.py stats
 Statuses: `open`, `active`, `blocked` (unfinished); `deferred` (intentionally not now); `done`,
 `declined`, `dropped` (closed). Priorities: `P0` now, `P1` normal, `P2` someday.
 
-## Requirements
+## Install and verify
 
-`python3` on `PATH`. The hooks deliberately avoid `jq` and other optional tools, so they work on a
-bare machine.
+Requirements: `python3` on `PATH`, and nothing else. The hooks and the bundled MCP server
+deliberately avoid `jq` and any third-party package, so they work on a bare machine.
+
+A project's teamme install is always in one of three states:
+
+| State | Meaning |
+|---|---|
+| `not-installed` | `/teamme:init-team` has never been run here |
+| `installed-not-live` | the hook scripts and `.claude/settings.json` hooks block both exist, but no `SessionStart` has fired them yet — usually because `.claude/` held no settings file when the session started |
+| `live` | a `SessionStart` heartbeat proves the hooks are actually running |
+
+Check the state at any time with **`/teamme:team-doctor`** — it reports every check with a `fix:`
+line for each failure, and offers to repair a partial install (missing hook scripts, a missing
+`hooks` block, a missing `.claude/intake/`), asking before it writes anything.
+
+teamme also ships an MCP server, declared in the plugin's `.mcp.json` and launched with plain
+`python3`. If
+`python3` is missing, that process never starts, and Claude Code reports it in `/mcp` — that is
+what makes a missing `python3` visible instead of silently indistinguishable from a working, but
+inactive, hook. When the server is connected, `teamme_status` reports the same three-state diagnosis
+and `teamme_install` performs the same repair as `/teamme:team-doctor`; `teamme_worklog` and
+`teamme_intake_phase` refuse to run until the install is complete, naming `teamme_install` in the
+refusal. None of this changes the hooks' own fail-open behaviour — with `python3` missing, the hooks
+are still inert either way.
 
 ## License
 

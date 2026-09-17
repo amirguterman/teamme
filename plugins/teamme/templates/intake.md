@@ -4,7 +4,7 @@ argument-hint: <what you want, in plain words>
 ---
 
 <!--
-TEMPLATE. /build-agent-team tailors this per project. Replace every {{PLACEHOLDER}}:
+TEMPLATE. /teamme:init-team tailors this per project. Replace every {{PLACEHOLDER}}:
   {{PROJECT}}        project name
   {{SPEC_DOCS}}      the authoritative spec/docs to read first
   {{LANE_TABLE}}     layer -> owning agent rows
@@ -17,11 +17,45 @@ TEMPLATE. /build-agent-team tailors this per project. Replace every {{PLACEHOLDE
 
 The request: **$ARGUMENTS**
 
-If that is empty, ask what the user wants and stop until they answer.
-
 This is the **only sanctioned way to request work** from the agent team. You are not implementing
 anything yet. Turn a plain-language request into a grounded, approved brief, then dispatch it. Do
 not write code in this command.
+
+Run the preflight first even when the request is empty - a broken install is worth reporting either
+way. Then, if it is empty, ask what the user wants and stop until they answer.
+
+## Preflight: is teamme actually working here?
+
+Run this before anything else - before triage, before reading a line of spec:
+
+```bash
+python3 .claude/hooks/preflight.py check
+```
+
+It prints one `PASS`/`FAIL` line per item, a `fix:` line under each failure, and a final `state:` of
+`not-installed`, `installed-not-live` or `live`. Exit 0 iff everything passed.
+
+Exit 0: go to step 0. Non-zero, or the script is missing: **halt.** Show the output, name the fix
+from the table, offer the repair, and do not continue into triage. Everything below this line runs
+on those hooks - the work log, the phase lock, and the `PreToolUse` guard that makes grounding
+read-only. Without them the brief has no write lock behind it and the task never reaches the log, so
+a half-working intake is worse than a refusal.
+
+| State | The fix |
+|---|---|
+| the command itself fails - `python3: command not found` | Nothing teamme ships can run; every hook is a `python3` script. Tell the user to install python3 (system package manager, or python.org). No repair is possible from here. |
+| `not-installed` - hook scripts or the `hooks` block in `.claude/settings.json` are missing | Run `/teamme:init-team` in this project to scaffold the team, the hooks and this command. Do not hand-assemble a partial install. |
+| `installed-not-live` - everything registered, no `SessionStart` has fired here | The session started before the settings file existed, so no hook is loaded and the grounding guard would deny nothing. Run `/hooks`, or restart the session, then re-run this command. |
+| `live` but an item still `FAIL`s - a missing script, an unparseable settings file, an unwritable `.claude/intake/` | Repairable: see below. An invalid `settings.json` is the user's to fix - report it, never rewrite the file around it. |
+
+**Offer the repair, ask before writing.** For a partial install, say exactly which files you would
+restore - missing scripts under `.claude/hooks/`, the missing `hooks` block merged into
+`.claude/settings.json`, the `.claude/intake/` directory - and get the user's go-ahead first. Use
+the `teamme_install` MCP tool if it is available; otherwise `/teamme:init-team` is the installer.
+`teamme_status` gives the same diagnosis and works even when the script is gone.
+
+Be honest about what this is: a check this command runs and a refusal it chooses, not a gate the
+harness enforces. Do not describe it as something that blocks anyone.
 
 ## 0. Triage: is something already in flight?
 
@@ -85,12 +119,14 @@ reason in one line, record it, then continue:
 |---|---|---|
 | **Do now** | Unblocks something, is a live correctness or safety problem, or the user is waiting. | `worklog.py priority <id> P0`, continue. |
 | **Do next** | Ordinary work, nothing blocked behind it. | Leave `P1`, continue. |
-| **Already satisfied** | It exists. | Say where, `worklog.py done <id>`, stop - or re-scope to the real change. |
-| **Defer, spec only** | Sound but not now. | Write the spec text, `worklog.py defer <id> "<reason>"`, stop. |
-| **Decline** | It would break a hard rule. | `worklog.py decline <id> "<reason>"`. Say why, offer the nearest legitimate alternative. |
-| **Needs input** | Undecidable without the user. | `worklog.py block <id> "<what you need>"`, ask, stop. |
+| **Already satisfied** | It exists. | Say where, `worklog.py done <id>`, `intake-state.py release`, stop - or re-scope to the real change. |
+| **Defer, spec only** | Sound but not now. | Write the spec text, `worklog.py defer <id> "<reason>"`, `intake-state.py release`, stop. |
+| **Decline** | It would break a hard rule. | `worklog.py decline <id> "<reason>"`, `intake-state.py release`. Say why, offer the nearest legitimate alternative. |
+| **Needs input** | Undecidable without the user. | `worklog.py block <id> "<what you need>"`, ask, stop. Leave the phase at `grounding`: the answer arrives as a mid-flight message and folds in at step 0, and the lock expires on its own if it never comes. |
 
-Declining and deferring are real outcomes, not failures.
+Declining and deferring are real outcomes, not failures. Every one of them that stops here ends the
+flow, so release the phase on the way out - a `begin` with no matching `approve` or `release` leaves
+the repo write-locked until the timeout.
 
 ## 3. Write the intake brief
 
@@ -108,8 +144,8 @@ python3 .claude/hooks/intake-state.py approve
 python3 .claude/hooks/worklog.py start <task-id>
 ```
 
-Writes stay denied until you do. If the outcome was defer or decline, record that and
-`intake-state.py release` instead.
+Writes stay denied until you do. If step 2b ended the flow instead - already satisfied, defer or
+decline - it has already released the phase, and you never reach this step.
 
 ## 5. Dispatch
 

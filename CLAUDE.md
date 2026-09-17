@@ -12,12 +12,15 @@ Install (for users): `/plugin marketplace add amirguterman/teamme` then
 .claude-plugin/marketplace.json   the marketplace this repo publishes
 plugins/teamme/
   .claude-plugin/plugin.json      the plugin manifest (name must match the marketplace entry)
-  commands/build-agent-team.md    the command users invoke; a prompt, not code
-  templates/                      scaffolding the command COPIES into a target project
-    hooks/*.py                    project-agnostic hook scripts
+  .mcp.json                       the MCP server this plugin ships, launched with plain python3
+  commands/init-team.md           installs the team; a prompt, not code
+  commands/team-doctor.md         diagnoses/repairs an existing install on demand; a prompt, not code
+  server/teamme_mcp.py            stdio JSON-RPC MCP server: status/install/worklog/intake-phase tools
+  templates/                      scaffolding the commands COPY into a target project
+    hooks/*.py                    project-agnostic hook scripts, including preflight.py
     intake.md                     skeleton with {{PLACEHOLDER}}s the command fills in
     settings.hooks.json           the hooks block merged into the project's settings.json
-scripts/validate.sh               manifests + hook syntax + end-to-end smoke test
+scripts/validate.sh               manifests + hook/MCP syntax + preflight states + end-to-end smoke test
 ```
 
 ## Working in this repo: all requests go through `/intake`
@@ -37,9 +40,15 @@ then `cp plugins/teamme/templates/hooks/*.py .claude/hooks/`. Editing the copy a
 ./scripts/validate.sh
 ```
 
-CI runs exactly this. It compiles every hook and exercises the scaffolding in a throwaway project:
-fail-open with no intake active, deny during grounding, lift on approval, `Stop` firing exactly
-once. If you change a hook, this is the proof — not inspection.
+CI runs exactly this. It compiles every hook and the MCP server, checks that `.mcp.json` parses, and
+exercises the scaffolding in a throwaway project: fail-open with no intake active, deny during
+grounding, lift on approval, `Stop` firing exactly once. It also drives the MCP server over a real
+JSON-RPC pipe — `teamme_worklog` refuses with an error naming `teamme_install` before install and
+succeeds after — and drives `preflight.py` directly: `not-installed` with a non-zero exit on an
+empty project, `live` on a scaffolded-and-heartbeated one, and the `hooks`, `settings` and
+`intake_dir` checks each failing independently with a `fix:` line. `heartbeat` is proven silent and
+always exit-0, even with no `.claude/` and stdin closed. If you change a hook or the MCP server, this
+is the proof — not inspection.
 
 ## Design invariants
 
@@ -56,8 +65,8 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
    Pipe-test every command with a synthesized payload before wiring it into settings.
 4. **`templates/hooks/` stays project-agnostic.** No project names, paths or stack assumptions.
    Project-specific content belongs in the `{{PLACEHOLDER}}`s of `templates/intake.md`.
-5. **The command copies scaffolding, it does not re-author it.** Re-deriving five hook scripts from
-   memory each run is how an install ends up subtly broken. `commands/build-agent-team.md` must keep
+5. **The command copies scaffolding, it does not re-author it.** Re-deriving the hook scripts from
+   memory each run is how an install ends up subtly broken. `commands/init-team.md` must keep
    saying which files are copied verbatim from `${CLAUDE_PLUGIN_ROOT}/templates/` and which are
    derived from analyzing the project.
 6. **Edits under `.claude/` are always permitted** by the guard, so the flow can manage its own
@@ -70,23 +79,46 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   guarantee with its own phase lock and lifts it exactly at approval. Do not "simplify" this back
   into `EnterPlanMode`.
 - **A plugin, not user-level command files.** Plugins ship commands, agents and hooks together and
-  install from GitHub in one step. A user-level `~/.claude/commands/build-agent-team.md` would
-  shadow the plugin's copy — delete those duplicates.
+  install from GitHub in one step. A user-level `~/.claude/commands/init-team.md` would shadow the
+  plugin's copy — delete those duplicates.
 - **Two state files, deliberately.** `intake-state.py` is a transient phase *lock* (gitignored,
   expires). `worklog.py` is a durable *record* (tasks, priorities, statuses, notes). Merging them
   would either make the lock un-expirable or make the ledger disposable.
 - **Intake can say no.** The disposition step lets it decline or defer a request, with the reason
   and the nearest legitimate alternative. That authority is the point; do not weaken it into
   always-accept.
+- **An MCP server exists for visibility, not enforcement.** A `python3` script cannot report that
+  `python3` is missing, and because every hook fails open by design, a teamme install with no
+  `python3` is indistinguishable from a working one — the guard never denies, the router never
+  routes. `plugins/teamme/server/teamme_mcp.py` is plain stdlib `python3`, launched by the harness
+  itself: if `python3` is missing or broken, the process never starts, and the harness reports it in
+  `/mcp` with no teamme code having run. This changes nothing about enforcement — with `python3`
+  missing the hooks are still dead — it just says that fact out loud instead of leaving it silent.
+- **Prerequisite enforcement is command-level refusal and MCP tool-level gating, never a hook-level
+  write block.** Extending `intake-guard.py` to deny on missing prerequisites was considered and
+  rejected: it would violate invariant #1 (hooks fail open) and could leave an unfinished install
+  write-locked. Instead `teamme_worklog` and `teamme_intake_phase` refuse — naming `teamme_install`
+  — when the scaffolding is missing, and `init-team.md`/`team-doctor.md` refuse in prompt text.
+  Neither is a harness guarantee; a later turn can still skip the refusal. Say so if asked.
+- **Three install states, not two.** `not-installed` (no `hooks` block in `settings.json`),
+  `installed-not-live` (hooks registered but no `SessionStart` has run them yet — needs `/hooks` or a
+  restart), `live` (a `SessionStart` heartbeat proves hooks are firing). Before `preflight.py` these
+  were indistinguishable from outside: a freshly registered, never-restarted install looked exactly
+  like a broken one.
 
 ## Known gaps
 
-- No eval suite yet (`claude plugin eval`). The command is a prompt whose quality is untested
-  beyond the scaffolding smoke test.
+- No eval suite yet (`claude plugin eval`). The prompts (`init-team.md`, `team-doctor.md`,
+  `intake.md`) are checked only for parsable frontmatter; nothing tests what they instruct, and the
+  command-level preflight refusal they describe is prompt text, not a harness guarantee.
 - `templates/intake.md` has been exercised on one real project (a Minecraft Fabric mod). The
   `{{PLACEHOLDER}}` set may not fit stacks with very different doc conventions.
 - The plugin ships no `agents/` of its own by design — teams are generated per project — so nothing
   validates the *generated* agent files beyond frontmatter parsing.
+- `route-to-intake.py`, `reground`, out-of-project paths and stale-state expiry remain unexercised
+  by the smoke test.
+- `teamme_intake_phase` is not separately gate-tested; only `teamme_worklog` exercises the shared
+  gate-on-install path against the MCP server.
 - Version bumps are manual: `plugin.json` `version` plus a `CHANGELOG.md` entry.
 
 ## Conventions

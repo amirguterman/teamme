@@ -36,6 +36,15 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/preflight.py\" heartbeat",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "Stop": [

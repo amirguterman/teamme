@@ -24,11 +24,15 @@ quality.
 
 ## Known coverage gaps — say so when a brief touches one
 
-- The prompts (`build-agent-team.md`, `intake.md`) are only checked for frontmatter. Nothing tests
-  what they actually instruct. There is no `claude plugin eval` suite yet.
+- The prompts (`init-team.md`, `team-doctor.md`, `intake.md`) are only checked for parsable
+  frontmatter. Nothing tests what they actually instruct — including the command-level preflight
+  refusal in `init-team.md` and `team-doctor.md`, which is prompt text, not a harness guarantee.
+  There is no `claude plugin eval` suite yet.
 - Generated agent files in a target project are never validated beyond frontmatter parsing.
 - The smoke test does not exercise `route-to-intake.py` at all, nor `reground`, nor the `.claude/`
   exemption, nor out-of-project paths, nor stale-state expiry.
+- `teamme_intake_phase` is not separately gate-tested; only `teamme_worklog` exercises the shared
+  gate-on-install path against the MCP server.
 
 ## Guardrails specific to this lane
 
@@ -78,7 +82,7 @@ Breaking one ships a trap to someone else's machine.
    the session. The reminder stamps itself against the task's `updated` time.
 6. **`templates/hooks/` stays project-agnostic.** No project names, paths or stack assumptions.
    Project-specific content belongs in the `{{PLACEHOLDER}}`s of `templates/intake.md`.
-7. **The command copies scaffolding, it does not re-author it.** `commands/build-agent-team.md` must
+7. **The command copies scaffolding, it does not re-author it.** `commands/init-team.md` must
    keep naming which files are copied verbatim from `${CLAUDE_PLUGIN_ROOT}/templates/` and which are
    derived from analyzing the target project.
 8. **Edits under `.claude/` are always permitted** by the guard, so the flow can manage its own state.

@@ -1,6 +1,6 @@
 # The teamme agent team
 
-This repo has its own agent team installed, scaffolded by `/teamme:build-agent-team` from the very
+This repo has its own agent team installed, scaffolded by `/teamme:init-team` from the very
 templates it ships. That recursion is deliberate — teamme is dogfooded on itself — but it has one
 sharp edge, so read the warning below before changing a hook.
 

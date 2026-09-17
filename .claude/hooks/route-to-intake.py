@@ -23,11 +23,15 @@ import re
 import sys
 
 # Prompts that must pass through untouched: an intake run already in progress,
-# and harness/built-in commands that do not request project work.
+# teamme's own commands, and harness/built-in commands that do not request project work.
+# A plugin command arrives prefixed - `/teamme:init-team`, not `/init-team` - so the prefix is
+# matched generically rather than by plugin name, which teamme must never assume.
 PASSTHROUGH = re.compile(
-    r"^\s*/(intake|clear|help|config|agents|hooks|mcp|model|cost|status|resume"
+    r"^\s*/(?:[A-Za-z0-9_.-]+:)?"
+    r"(intake|init-team|team-doctor"
+    r"|clear|help|config|agents|hooks|mcp|model|cost|status|resume"
     r"|compact|rewind|context|doctor|login|logout|exit|quit|export|memory"
-    r"|code-review|security-review|simplify|init|build-agent-team)\b",
+    r"|code-review|security-review|simplify|init)\b",
     re.IGNORECASE,
 )
 
@@ -35,10 +39,10 @@ IDLE_GUIDANCE = (
     "This project routes ALL work through the /intake flow. If this message asks for code "
     "to be written, changed, debugged, or planned - including a /plan invocation, and whether or "
     "not plan mode is active - do NOT start work or draft a plan directly. Run the intake flow "
-    "defined in .claude/commands/intake.md for this request: ground it in ARCHITECTURE.md, "
-    "classify it across the layer boundaries, write the intake brief, confirm scope, then "
-    "dispatch to the agent team. If the message is only a question or a lookup that changes "
-    "nothing, answer it normally."
+    "defined in .claude/commands/intake.md for this request: ground it in the project documents "
+    "that command names, classify it across the boundaries it lists, write the intake brief, "
+    "confirm scope, then dispatch to the agent team. If the message is only a question or a "
+    "lookup that changes nothing, answer it normally."
 )
 
 ACTIVE_GUIDANCE = (

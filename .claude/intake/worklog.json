@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "next_id": 8,
+  "next_id": 18,
   "tasks": [
     {
       "id": "T1",
@@ -57,37 +57,172 @@
     {
       "id": "T5",
       "title": "route-to-intake.py hard-codes ARCHITECTURE.md, breaking the project-agnostic invariant",
-      "status": "open",
+      "status": "done",
       "priority": "P0",
       "lane": "teamme-hook-engineer",
       "notes": [],
       "blocked_on": "",
       "created": "2026-09-17T16:53:21+00:00",
-      "updated": "2026-09-17T16:53:21+00:00"
+      "updated": "2026-09-17T18:02:08+00:00"
     },
     {
       "id": "T6",
       "title": "route-to-intake.py passthrough misses the plugin-prefixed /teamme:<cmd> form",
-      "status": "open",
+      "status": "done",
       "priority": "P1",
       "lane": "teamme-hook-engineer",
       "notes": [],
       "blocked_on": "",
       "created": "2026-09-17T16:53:21+00:00",
-      "updated": "2026-09-17T16:53:21+00:00"
+      "updated": "2026-09-17T18:02:08+00:00"
     },
     {
       "id": "T7",
       "title": "Rename the plugin command build-agent-team -> init-team (clean break, no alias)",
+      "status": "done",
+      "priority": "P1",
+      "lane": "teamme-prompt-author",
+      "notes": [
+        "DECIDED: name is /init-team, invoked as /teamme:init-team. Clean break - the old name is deleted outright, not aliased. Needs a version bump and a CHANGELOG 'Removed' entry (teamme-release-manager), plus the passthrough regex in route-to-intake.py (T6) and every /build-agent-team reference in README.md, CLAUDE.md, CONTRIBUTING.md and plugins/teamme/README.md.",
+        "Folded into T8's dispatch as step 0 - see T8.",
+        "Command rename DONE (init-team.md + team-doctor.md; build-agent-team.md git rm'd). Left open deliberately: the clean break is not clean while user-facing remediation text still names the dead command - preflight.py:56, preflight.py:155, teamme_mcp.py:303, route-to-intake.py:30 (T6), plus the docs lane."
+      ],
+      "blocked_on": "",
+      "created": "2026-09-17T17:00:49+00:00",
+      "updated": "2026-09-17T18:18:34+00:00"
+    },
+    {
+      "id": "T8",
+      "title": "Plugin installer/preflight: refuse to run when teamme's prerequisites are missing",
+      "status": "done",
+      "priority": "P1",
+      "lane": "teamme-tech-lead",
+      "notes": [
+        "CLARIFIED: the user means MCP-style gating specifically - like the Atlassian MCP refusing use until authenticated. Reopens an option I wrongly closed in grounding: a plugin CAN ship its own MCP server, so the harness-visible gate is available to teamme. Decided: diagnose-then-offer-repair; both a shared preflight step and a standalone doctor.",
+        "APPROVED. T7 folded in as step 0 of dispatch (prompt-author owns both; the preflight block goes into the renamed files).",
+        "IN PROGRESS: wave 1 dispatched and running - teamme-hook-engineer building preflight.py + teamme_mcp.py + .mcp.json; teamme-prompt-author doing the T7 rename, the shared preflight step and team-doctor.md. Waves 2-3 (validation, docs, release) pending their completion.",
+        "Runtime core: added templates/hooks/preflight.py (check/heartbeat CLI + importable diagnose()/render(), three-state not-installed/installed-not-live/live via a gitignored .claude/intake/heartbeat.json that nothing reads to gate anything) and server/teamme_mcp.py (stdlib stdio JSON-RPC 2.0 MCP server: teamme_status, teamme_install, and the gated teamme_worklog / teamme_intake_phase). Added plugins/teamme/.mcp.json, a SessionStart heartbeat entry in settings.hooks.json, and .claude/intake/heartbeat.json to .gitignore. Pipe-tested: gate refuses pre-install and works post-install, install is idempotent and preserves foreign settings keys and hooks, corrupt settings.json is not clobbered, heartbeat exits 0 with no .claude/ and on a read-only dir. validate.sh passes.",
+        "WAVE 1 LANDED + verified by me independently: validate.sh passes, preflight reports installed-not-live in this repo (honest), MCP gate returns isError naming teamme_install on an unscaffolded project.",
+        "T5 and T6 folded into the hook lane's follow-up - both live in route-to-intake.py, which that lane must edit anyway; editing it twice was the alternative.",
+        "Follow-up fixes: (1) remediation strings in preflight.py and teamme_mcp.py now name /teamme:init-team and /teamme:team-doctor, no /build-agent-team left in any runtime file; (2) T6 - PASSTHROUGH regex in route-to-intake.py now matches an optional generic /<plugin>: prefix and covers intake, init-team, team-doctor (bare and prefixed, case-insensitive); (3) T5 - IDLE_GUIDANCE no longer names ARCHITECTURE.md, it points at .claude/commands/intake.md to name its own sources. Pipe-tested 13 passthrough forms and 5 still-nagged forms, idle vs active guidance branches, garbage/empty/non-dict payloads silent, MCP gate + install + use on a bare project. validate.sh passes.",
+        "Hook lane follow-up landed and verified by me: T5 and T6 closed, all dead command names gone from code. Remaining /build-agent-team refs are docs-lane only (6 markdown files + 6 agent briefs).",
+        "validate.sh now compiles plugins/*/server/*.py, JSON-parses .mcp.json, drives teamme_mcp.py over a real stdio JSON-RPC pipe to prove teamme_worklog/teamme_intake_phase refuse (naming teamme_install) before scaffolding and succeed after, exercises preflight.py CLI for not-installed vs a live baseline plus hooks/settings/intake_dir each failing independently with a fix: line, checks heartbeat is silent and exits 0 with stdin closed on an unscaffolded dir, and asserts intake-guard.py still fails open with preflight.py among the copied hooks. Verified every new assertion fails when flipped and passes when restored. validate.yml unchanged (no new env requirement).",
+        "WAVE 2 LANDED, verified by me: validate.sh ALL CHECKS PASSED in 2.6s with 5 new assertion groups. The MCP gate, the three preflight states and heartbeat silence are now proven, not claimed.",
+        "Bump version 0.1.0 -> 1.0.0 (major: removing /build-agent-team is breaking change). Add changelog entry describing removed, added, fixed, and changed items. Validated with ./scripts/validate.sh.",
+        "WAVE 4 LANDED. Version corrected 1.0.0 -> 0.2.0 by user decision: pre-1.0 carries no stability promise, and three queued tasks still change the command surface."
+      ],
+      "blocked_on": "",
+      "created": "2026-09-17T17:38:29+00:00",
+      "updated": "2026-09-17T18:18:34+00:00"
+    },
+    {
+      "id": "T9",
+      "title": "worklog.py has no locking: parallel agents' load-mutate-save can silently drop each other's notes",
+      "status": "open",
+      "priority": "P1",
+      "lane": "teamme-hook-engineer",
+      "notes": [],
+      "blocked_on": "",
+      "created": "2026-09-17T17:58:27+00:00",
+      "updated": "2026-09-17T17:58:27+00:00"
+    },
+    {
+      "id": "T10",
+      "title": "updated doubles as audit stamp and Stop re-arm trigger, so noting progress guarantees a repeat block",
+      "status": "open",
+      "priority": "P1",
+      "lane": "teamme-hook-engineer",
+      "notes": [],
+      "blocked_on": "",
+      "created": "2026-09-17T17:58:27+00:00",
+      "updated": "2026-09-17T17:58:27+00:00"
+    },
+    {
+      "id": "T11",
+      "title": "No status for 'waiting on a dispatched agent'; blocked misreports it as needing the user's input",
+      "status": "open",
+      "priority": "P2",
+      "lane": "teamme-hook-engineer",
+      "notes": [],
+      "blocked_on": "",
+      "created": "2026-09-17T17:58:27+00:00",
+      "updated": "2026-09-17T17:58:27+00:00"
+    },
+    {
+      "id": "T12",
+      "title": "teamme-tech-lead may be unusable as designed: a subagent cannot reliably spawn subagents",
+      "status": "open",
+      "priority": "P2",
+      "lane": "teamme-prompt-author",
+      "notes": [],
+      "blocked_on": "",
+      "created": "2026-09-17T17:58:27+00:00",
+      "updated": "2026-09-17T17:58:27+00:00"
+    },
+    {
+      "id": "T13",
+      "title": "route-to-intake.py nags on a null or empty prompt payload; one-line guard, harmless but noisy",
+      "status": "open",
+      "priority": "P2",
+      "lane": "teamme-hook-engineer",
+      "notes": [],
+      "blocked_on": "",
+      "created": "2026-09-17T18:02:08+00:00",
+      "updated": "2026-09-17T18:02:08+00:00"
+    },
+    {
+      "id": "T14",
+      "title": "Ship 3 librarian agents + MCP servers: self-updating project indexes, selectable in /init-team, wired to the lanes that consult them",
       "status": "open",
       "priority": "P1",
       "lane": "teamme-prompt-author",
       "notes": [
-        "DECIDED: name is /init-team, invoked as /teamme:init-team. Clean break - the old name is deleted outright, not aliased. Needs a version bump and a CHANGELOG 'Removed' entry (teamme-release-manager), plus the passthrough regex in route-to-intake.py (T6) and every /build-agent-team reference in README.md, CLAUDE.md, CONTRIBUTING.md and plugins/teamme/README.md."
+        "USER: deferred by request ('later once you finish'). Queued behind T8.",
+        "REFERENCE PATTERN (read from '/home/ubuntu/source/Appnext Campaign AI/campaign-ai-platform/.claude/agents'): _librarian-template.md (canonical, 190 lines), history-librarian.md, tests-librarian.md, compliance-officer.md (55KB). Shape of each: haiku model; tools Glob/Grep/Read/Bash/Write/Edit; owns a private memory dir .claude/agent-memory/<name>/ holding an append-only commits.jsonl plus rolling summary_overall.md and summary_by_file.md; SELF-UPDATES incrementally on every invocation (e.g. git log since the last indexed hash); answers FROM memory via a bash search helper so the caller never pays for raw git output; explicitly does not touch production code, bump versions or push. Descriptions carry 2-3 <example> blocks so the orchestrator auto-delegates. Librarians consult each other (compliance-officer consults tests-librarian).",
+        "GOAL: teamme maps the project once via librarians instead of every generated agent re-deriving the same map its own way. The librarians are the project-comprehension layer, not roster filler.",
+        "OPEN DESIGN QUESTIONS for the future brief: (1) 'gate' needs defining - MCP tool-level refusal like teamme_install (precedent now exists in T8) vs a hook, which invariant #1 forbids from blocking; (2) 'self-updated autonomously with hooks' needs a trigger that cannot loop (invariant #2) and cannot block (invariant #1) - SessionStart is the safe candidate, PostToolUse is not; (3) which 3 - the reference set is git-history, tests-coverage and compliance, but teamme's own layer boundaries may imply different ones; (4) a librarian's memory is per-project state: committed or gitignored? (5) invariant #4 - librarian prompts are project-agnostic templates, their INDEXES are project-specific.",
+        "HISTORY-LIBRARIAN SCOPE (user, for the future brief): go beyond answering 'what changed in file X'. Two capabilities: (1) build a codebase MAP from historical changes read chronologically - the commit stream is the evidence, so structure emerges from how the code actually evolved rather than from a one-off static scan; (2) print a COMPLETE DEPENDENCY TREE of anything - workflow -> references -> scopes -> features -> tests, with the tests leg answered by consulting the tests-librarian rather than re-deriving it. That cross-librarian consultation is the pattern already present in the reference implementation (compliance-officer consults tests-librarian) and is what makes the map cheap: each librarian owns one axis and is asked, never re-computed."
       ],
       "blocked_on": "",
-      "created": "2026-09-17T17:00:49+00:00",
-      "updated": "2026-09-17T17:00:49+00:00"
+      "created": "2026-09-17T18:05:01+00:00",
+      "updated": "2026-09-17T18:20:55+00:00"
+    },
+    {
+      "id": "T15",
+      "title": "Add /queue: park a request as a work-log task with a one-line ack, no grounding, no brief, no analysis",
+      "status": "open",
+      "priority": "P1",
+      "lane": "teamme-prompt-author",
+      "notes": [
+        "WHY: /intake on a parked request still burns a full grounding+analysis response (see T14). /queue should be the cheap path: record it, print the task id, stop.",
+        "DESIGN NOTES: (1) thin wrapper over 'worklog.py add' with optional --priority; output is ONE line - the task id and title, nothing else. (2) Must be added to route-to-intake.py PASSTHROUGH or the hook will nag the user to run /intake on their own /queue call - same class of bug as T6. (3) Works regardless of phase: idle, grounding or approved - parking never touches intake-state. (4) /intake step 0's existing 'Queue' triage row is the same action taken autonomously; /queue exposes it to the user directly. Keep the two consistent. (5) Consider the inverse later: a command to pull a parked task INTO intake ('worklog.py next' already finds it).",
+        "REFINEMENT: /intake must short-circuit to the /queue path itself when the request signals deferral ('later', 'once you finish', 'after X', 'queue this'), instead of grounding it. Two distinct gaps: (1) step 0's Queue row only applies when an intake is ALREADY in flight - a deferral arriving at an idle phase still falls through to 0b and gets full grounding; the deferral test must run BEFORE the phase check. (2) The Queue row says 'tell the user the task id' but caps nothing, so the response stays long - see T14, correctly queued and still answered with paragraphs. The queue path must specify a ONE-LINE response as a hard output constraint, in both /queue and /intake's Queue row."
+      ],
+      "blocked_on": "",
+      "created": "2026-09-17T18:06:51+00:00",
+      "updated": "2026-09-17T18:08:23+00:00"
+    },
+    {
+      "id": "T16",
+      "title": "preflight.py heartbeat calls sys.stdin.read() and can hang if stdin is not closed by the caller",
+      "status": "open",
+      "priority": "P2",
+      "lane": "teamme-hook-engineer",
+      "notes": [],
+      "blocked_on": "",
+      "created": "2026-09-17T18:10:40+00:00",
+      "updated": "2026-09-17T18:10:40+00:00"
+    },
+    {
+      "id": "T17",
+      "title": "teamme_intake_phase is not separately gate-tested; only teamme_worklog exercises the shared gate() path",
+      "status": "open",
+      "priority": "P2",
+      "lane": "teamme-validation-engineer",
+      "notes": [],
+      "blocked_on": "",
+      "created": "2026-09-17T18:10:40+00:00",
+      "updated": "2026-09-17T18:10:40+00:00"
     }
   ]
 }

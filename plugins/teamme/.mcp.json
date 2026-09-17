@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "teamme": {
+      "command": "python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/teamme_mcp.py"]
+    }
+  }
+}
