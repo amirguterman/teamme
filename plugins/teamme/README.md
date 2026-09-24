@@ -136,9 +136,33 @@ index takes 0.137s, a warm refresh 0.010s, a query 0.03-0.10ms. Measured on a 10
 50 new commits takes 0.40s (~8ms/commit), a refresh that finds nothing new takes 0.012s, and a
 `commits_touching` query takes 9-11ms. These figures exclude Python interpreter startup.
 
-This is the substrate only: there is no librarian *agent* yet. Team agents, or the model itself, can
-call these tools directly today — the tool descriptions say a librarian agent is the intended caller,
-but nothing enforces that yet.
+## The history librarian
+
+teamme ships one agent of its own: `history-librarian`. It is not part of the roster
+`/teamme:init-team` generates for a project — "read the git history and answer from an index" is the
+same job in every project, so it ships once, with the plugin, present in every project the plugin is
+installed in without being chosen. It answers what changed, when, and why: the history of a file or
+directory, how a feature evolved across commits, when a convention was introduced, or whether a claim
+of the form "X was added in commit Y" actually holds — citing a commit SHA for every factual claim,
+from the index above rather than raw `git log`. The list queries in the table above return only the
+commit **subject**; when a subject alone does not explain a change, the librarian reaches for
+`commit_detail`, which returns the full message body (capped at 4000 characters).
+
+Team agents are instructed to consult it instead of reading git themselves —
+`/teamme:init-team`'s shared guardrail block and the generated `/intake` command's grounding step
+both say so — but that is an instruction, not a gate: nothing blocks a brief that skips it, and
+nothing but convention stops another agent with MCP access from calling the librarian's tools
+directly instead.
+
+`teamme_librarian_configure` controls it per project:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `enabled` (per librarian) | `true` | `false` makes `teamme_librarian_refresh` and `teamme_librarian_query` refuse for that librarian and name how to re-enable it; `teamme_librarian_status` keeps reporting the setting either way. The agent itself is always present — a plugin-shipped agent cannot be hidden per project — it is the tools behind it that refuse. |
+| `commit_record` | `false` | Whether `.claude/librarians/*/commits.jsonl` (the append-only record) is committed with the code or kept out of it. Flipping it **writes or removes the actual `.gitignore` entry**, inside a block teamme owns alone — it never removes an ignore line it did not write, and if a line outside that block is already ignoring the record, it says so rather than leaving `commit_record: true` silently without effect. `.claude/librarians/index.db`, the derived SQLite index, is always gitignored regardless — it is binary and cannot be merged. |
+
+Both refusals are the same honest posture as the `teamme_install` gate described below, under
+Install and verify: a tool declining to act, never a harness-enforced block.
 
 ## Install and verify
 

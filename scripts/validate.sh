@@ -10,6 +10,56 @@ echo "== manifests =="
 python3 - <<'PY'
 import json, pathlib, sys
 root = pathlib.Path.cwd()
+
+# A plugin-shipped agent must NOT set these: the installed CLI silently
+# ignores them for plugin agents, so setting one is a bug that would
+# otherwise ship invisibly - this check exists to catch that, not just to
+# confirm the block parses.
+FORBIDDEN_AGENT_KEYS = ("permissionMode", "hooks", "mcpServers")
+
+
+def parse_frontmatter(text: str):
+    """A minimal frontmatter parser for this repo's shape: a CLOSED '---'
+    block of flat 'key: scalar' lines, where a scalar may be a double-quoted
+    YAML string (decoded like JSON, so \\n etc. resolve) or a bare/single-
+    quoted one. Not a general YAML parser - there is no YAML library here by
+    design (stdlib only, see CLAUDE.md) - but real enough to catch an
+    unclosed block or an unparseable value, which "startswith('---')" alone
+    never could. Returns (dict, None) or (None, "why").
+    """
+    if not (text.startswith("---\n") or text.startswith("---\r\n")):
+        return None, "does not start with a '---' frontmatter marker"
+    lines = text.splitlines()
+    end = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            end = i
+            break
+    if end is None:
+        return None, "frontmatter block is never closed with a second '---' line"
+    out, key = {}, None
+    for raw in lines[1:end]:
+        if not raw.strip():
+            continue
+        if raw[:1] not in (" ", "\t") and ":" in raw:
+            k, _, v = raw.partition(":")
+            key = k.strip()
+            v = v.strip()
+            if v.startswith('"'):
+                try:
+                    v = json.loads(v)
+                except Exception as exc:
+                    return None, f"key '{key}': could not parse quoted value ({exc})"
+            elif v.startswith("'") and v.endswith("'") and len(v) >= 2:
+                v = v[1:-1].replace("''", "'")
+            out[key] = v
+        elif key is not None:
+            out[key] = (out[key] + " " + raw.strip()).strip()
+        else:
+            return None, f"line outside any key: {raw!r}"
+    return out, None
+
+
 m = json.loads((root / ".claude-plugin/marketplace.json").read_text())
 entries = m.get("plugins") or []
 if not entries:
@@ -28,13 +78,57 @@ for e in entries:
     for key in ("name", "description", "author"):
         if not p.get(key):
             sys.exit(f"{p.get('name')}: plugin.json is missing '{key}'")
+
     cmds = sorted((pdir / "commands").glob("*.md"))
     if not cmds:
         sys.exit(f"{p['name']}: no commands/*.md")
     for c in cmds:
-        if not c.read_text().startswith("---"):
-            sys.exit(f"{c.relative_to(root)}: missing YAML frontmatter")
-    print(f"  ok: {p['name']} v{p.get('version','?')} - {len(cmds)} command(s)")
+        fm, err = parse_frontmatter(c.read_text())
+        if err:
+            sys.exit(f"{c.relative_to(root)}: {err}")
+        if not fm.get("description"):
+            sys.exit(f"{c.relative_to(root)}: frontmatter has no 'description'")
+
+    agent_dir = pdir / "agents"
+    agents = sorted(agent_dir.glob("*.md")) if agent_dir.is_dir() else []
+
+    # `plugins/*/server/*.py` (the old glob) only ever reached the top-level
+    # server file and silently never checked server/librarian/*.py - the same
+    # shape as REQUIRED_HOOKS quietly covering less than its author assumed.
+    # commands/*.md-only frontmatter checking repeated that exact mistake:
+    # agents/ shipped and nothing validated it. Rather than add a second,
+    # equally narrow glob for agents/ next to it, walk the WHOLE plugin tree
+    # for *.md and require every file found to be accounted for by a
+    # directory this check already knows how to validate (or explicitly
+    # excluded). A third prompt directory added later fails this loudly
+    # instead of silently passing unchecked.
+    prompt_files = sorted(
+        f for f in pdir.rglob("*.md")
+        if f.name != "README.md" and "templates" not in f.relative_to(pdir).parts
+    )
+    accounted = set(cmds) | set(agents)
+    unaccounted = sorted(str(f.relative_to(root)) for f in set(prompt_files) - accounted)
+    if unaccounted:
+        sys.exit(
+            f"{p['name']}: found *.md file(s) this manifests check does not know how to "
+            f"validate: {unaccounted} - extend the check, don't let it pass silently"
+        )
+
+    for a in agents:
+        fm, err = parse_frontmatter(a.read_text())
+        if err:
+            sys.exit(f"{a.relative_to(root)}: {err}")
+        for req in ("name", "description"):
+            if not fm.get(req):
+                sys.exit(f"{a.relative_to(root)}: frontmatter is missing '{req}'")
+        present = [k for k in FORBIDDEN_AGENT_KEYS if k in fm]
+        if present:
+            sys.exit(
+                f"{a.relative_to(root)}: frontmatter sets {present} - the installed CLI "
+                f"drops these for plugin-shipped agents (it warns, but nothing here catches that), so this must never ship"
+            )
+
+    print(f"  ok: {p['name']} v{p.get('version','?')} - {len(cmds)} command(s), {len(agents)} agent(s)")
 PY
 
 echo "== hook syntax =="
@@ -1462,6 +1556,586 @@ if stderr.strip():
 
 print("  ok: all three librarian tools respond over the pipe; unknown query / bad hash are clean "
       "errors; limit is clamped with a truncation notice; a garbage line still exits 0, no stderr")
+PY
+
+echo "== librarian config: defaults with no config file, and asking for it never creates it =="
+LIB_CFG_DEF="$PWD/lib-cfg-defaults"
+mkdir -p "$LIB_CFG_DEF"
+gitc -C "$LIB_CFG_DEF" init -q
+echo one > "$LIB_CFG_DEF/f.txt"; gitc -C "$LIB_CFG_DEF" add f.txt; gitc -C "$LIB_CFG_DEF" commit -qm "c1"
+python3 - "$ROOT" "$LIB_CFG_DEF" <<'PY'
+import json, pathlib, subprocess, sys
+
+root = pathlib.Path(sys.argv[1])
+proj = pathlib.Path(sys.argv[2])
+server = root / "plugins/teamme/server/teamme_mcp.py"
+cfg_path = proj / ".claude" / "librarians" / "config.json"
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+def call_text(resp):
+    result = resp.get("result") or {}
+    return result, "".join(c.get("text", "") for c in result.get("content") or [])
+
+
+if cfg_path.exists():
+    sys.exit(f"fixture is dirty: {cfg_path} already exists before any configure call")
+
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+
+    # no enabled/commit_record argument at all - a pure read
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_librarian_configure",
+                           "arguments": {"project_dir": str(proj)}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"a read-only configure call reported an error: {text}")
+    if "reporting only, nothing was changed" not in text:
+        sys.exit(f"a no-argument call was not reported as read-only: {text!r}")
+    if "history: enabled" not in text:
+        sys.exit(f"the default history entry was not reported as enabled: {text!r}")
+    if "commit_record: false" not in text:
+        sys.exit(f"commit_record did not default to false: {text!r}")
+    if "(absent - the documented defaults are in force)" not in text:
+        sys.exit(f"an absent config file was not reported as absent: {text!r}")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+if cfg_path.exists():
+    sys.exit(f"merely reporting the config created {cfg_path} - asking must never be the thing that writes state")
+
+print("  ok: defaults with no config file; asking what the config is never creates config.json")
+PY
+
+echo "== librarian config: [watch-fail] disabled gate - refresh/query refuse, status still answers =="
+LIB_CFG_GATE="$PWD/lib-cfg-gate"
+mkdir -p "$LIB_CFG_GATE"
+gitc -C "$LIB_CFG_GATE" init -q
+echo one > "$LIB_CFG_GATE/f.txt"; gitc -C "$LIB_CFG_GATE" add f.txt; gitc -C "$LIB_CFG_GATE" commit -qm "c1"
+echo two >> "$LIB_CFG_GATE/f.txt"; gitc -C "$LIB_CFG_GATE" add f.txt; gitc -C "$LIB_CFG_GATE" commit -qm "c2"
+python3 - "$ROOT" "$LIB_CFG_GATE" <<'PY'
+import json, pathlib, subprocess, sys
+
+root = pathlib.Path(sys.argv[1])
+proj = sys.argv[2]
+server = root / "plugins/teamme/server/teamme_mcp.py"
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+def call_text(resp):
+    result = resp.get("result") or {}
+    return result, "".join(c.get("text", "") for c in result.get("content") or [])
+
+
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+
+    # build the index while the librarian is still enabled (the default)
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_librarian_refresh", "arguments": {"project_dir": proj}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"the initial refresh (still enabled) reported an error: {text}")
+
+    # disable it
+    send(proc, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {"name": "teamme_librarian_configure",
+                           "arguments": {"project_dir": proj, "librarian": "history",
+                                         "enabled": False}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"disabling history reported an error: {text}")
+    if "DISABLED" not in text:
+        sys.exit(f"configure did not report history as disabled: {text!r}")
+
+    # refresh must now refuse
+    send(proc, {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                "params": {"name": "teamme_librarian_refresh", "arguments": {"project_dir": proj}}})
+    result, text = call_text(recv(proc))
+    if not result.get("isError"):
+        sys.exit(f"teamme_librarian_refresh did NOT refuse for a disabled librarian: {text}")
+    if "disabled" not in text.lower() or "teamme_librarian_configure" not in text:
+        sys.exit(f"the refresh refusal did not explain how to re-enable it: {text!r}")
+
+    # query must now refuse
+    send(proc, {"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                "params": {"name": "teamme_librarian_query",
+                           "arguments": {"project_dir": proj, "query": "recent"}}})
+    result, text = call_text(recv(proc))
+    if not result.get("isError"):
+        sys.exit(f"teamme_librarian_query did NOT refuse for a disabled librarian: {text}")
+    if "disabled" not in text.lower():
+        sys.exit(f"the query refusal did not say the librarian is disabled: {text!r}")
+
+    # status must NOT go dark - it is the one tool a disabled librarian must not silence
+    send(proc, {"jsonrpc": "2.0", "id": 6, "method": "tools/call",
+                "params": {"name": "teamme_librarian_status", "arguments": {"project_dir": proj}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"teamme_librarian_status refused for a disabled librarian - it must always answer: {text}")
+    if "NO - refresh and query refuse for it" not in text:
+        sys.exit(f"status did not report the disabled setting: {text!r}")
+    if "data:            yes" not in text:
+        sys.exit(f"status lost the data it indexed before being disabled: {text!r}")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+print("  ok: a disabled librarian makes refresh and query refuse, while status keeps answering")
+PY
+
+echo "== librarian config: [watch-fail] commit_record is ENACTED (git check-ignore is ground truth), and idempotent =="
+LIB_CFG_GI="$PWD/lib-cfg-gitignore"
+mkdir -p "$LIB_CFG_GI"
+gitc -C "$LIB_CFG_GI" init -q
+echo one > "$LIB_CFG_GI/f.txt"; gitc -C "$LIB_CFG_GI" add f.txt; gitc -C "$LIB_CFG_GI" commit -qm "c1"
+python3 - "$ROOT" "$LIB_CFG_GI" <<'PY'
+import json, pathlib, subprocess, sys
+
+root = pathlib.Path(sys.argv[1])
+proj = sys.argv[2]
+server = root / "plugins/teamme/server/teamme_mcp.py"
+gitignore = pathlib.Path(proj) / ".gitignore"
+DB = ".claude/librarians/index.db"
+RECORD = ".claude/librarians/history/commits.jsonl"
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+def call_text(resp):
+    result = resp.get("result") or {}
+    return result, "".join(c.get("text", "") for c in result.get("content") or [])
+
+
+def ignored(path: str) -> bool:
+    """Ground truth from git itself, never from reading .gitignore's text."""
+    r = subprocess.run(["git", "check-ignore", "-q", path], cwd=proj)
+    if r.returncode not in (0, 1):
+        sys.exit(f"git check-ignore errored (rc={r.returncode}) on {path}")
+    return r.returncode == 0
+
+
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+
+    # commit_record=false (explicit): the record IS ignored, the .db always is
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_librarian_configure",
+                           "arguments": {"project_dir": proj, "commit_record": False}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"commit_record=false reported an error: {text}")
+    if not ignored(DB):
+        sys.exit("git check-ignore says the .db is NOT ignored - it must always be")
+    if not ignored(RECORD):
+        sys.exit("git check-ignore says the record is NOT ignored with commit_record=false")
+
+    # commit_record=true: the record is UN-ignored, the .db is still ignored
+    send(proc, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {"name": "teamme_librarian_configure",
+                           "arguments": {"project_dir": proj, "commit_record": True}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"commit_record=true reported an error: {text}")
+    if not ignored(DB):
+        sys.exit("git check-ignore says the .db is NOT ignored after commit_record=true - it must always be")
+    if ignored(RECORD):
+        sys.exit("git check-ignore still says the record is ignored after commit_record=true was enacted")
+
+    text_after_first_true = gitignore.read_text()
+
+    # idempotence: the same setting applied again must not change the file at all
+    send(proc, {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                "params": {"name": "teamme_librarian_configure",
+                           "arguments": {"project_dir": proj, "commit_record": True}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"re-applying commit_record=true reported an error: {text}")
+    if "already correct, nothing to do" not in text:
+        sys.exit(f"re-applying an unchanged setting was not reported as a no-op: {text!r}")
+    text_after_second_true = gitignore.read_text()
+    if text_after_second_true != text_after_first_true:
+        sys.exit(
+            "applying commit_record=true twice produced a byte-different .gitignore:\n"
+            f"--- first ---\n{text_after_first_true!r}\n--- second ---\n{text_after_second_true!r}"
+        )
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+print("  ok: commit_record is enacted (git check-ignore agrees both ways) and re-applying it is byte-idempotent")
+PY
+
+echo "== librarian config: [watch-fail] a foreign ignore rule outside teamme's block is never deleted =="
+LIB_CFG_FOREIGN="$PWD/lib-cfg-foreign"
+mkdir -p "$LIB_CFG_FOREIGN"
+gitc -C "$LIB_CFG_FOREIGN" init -q
+echo one > "$LIB_CFG_FOREIGN/f.txt"; gitc -C "$LIB_CFG_FOREIGN" add f.txt; gitc -C "$LIB_CFG_FOREIGN" commit -qm "c1"
+# The exact text of teamme's own RECORD_IGNORE constant (config.py) - "a
+# matching ignore rule" means textually identical, since the code's foreign-
+# line check is an exact string comparison against that constant, not a
+# git-ignore glob evaluation.
+cat > "$LIB_CFG_FOREIGN/.gitignore" <<'EOF'
+# a rule I wrote myself, long before teamme existed
+.claude/librarians/*/commits.jsonl
+EOF
+gitc -C "$LIB_CFG_FOREIGN" add .gitignore
+gitc -C "$LIB_CFG_FOREIGN" commit -qm "my own gitignore"
+python3 - "$ROOT" "$LIB_CFG_FOREIGN" <<'PY'
+import json, pathlib, subprocess, sys
+
+root = pathlib.Path(sys.argv[1])
+proj = sys.argv[2]
+server = root / "plugins/teamme/server/teamme_mcp.py"
+gitignore = pathlib.Path(proj) / ".gitignore"
+RECORD_GLOB = ".claude/librarians/*/commits.jsonl"   # teamme's own RECORD_IGNORE, verbatim
+RECORD_PATH = ".claude/librarians/history/commits.jsonl"  # a real path, for git check-ignore
+FOREIGN_COMMENT = "# a rule I wrote myself, long before teamme existed"
+before = gitignore.read_text()
+if RECORD_GLOB not in before or FOREIGN_COMMENT not in before:
+    sys.exit(f"fixture is wrong: the foreign line/comment is not in the starting .gitignore: {before!r}")
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+def call_text(resp):
+    result = resp.get("result") or {}
+    return result, "".join(c.get("text", "") for c in result.get("content") or [])
+
+
+def ignored(path: str) -> bool:
+    r = subprocess.run(["git", "check-ignore", "-q", path], cwd=proj)
+    if r.returncode not in (0, 1):
+        sys.exit(f"git check-ignore errored (rc={r.returncode}) on {path}")
+    return r.returncode == 0
+
+
+if not ignored(RECORD_PATH):
+    sys.exit(f"fixture is wrong: {RECORD_PATH} is not actually ignored by the foreign rule yet")
+
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+
+    # ask for the record to be committed - it is already (foreign-)ignored
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_librarian_configure",
+                           "arguments": {"project_dir": proj, "commit_record": True}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"commit_record=true over a foreign rule reported an error: {text}")
+    if "will not take effect" not in text:
+        sys.exit(f"the result did not say the setting will not take effect: {text!r}")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+after = gitignore.read_text()
+if RECORD_GLOB not in after or FOREIGN_COMMENT not in after:
+    sys.exit(
+        "teamme deleted a line it did not write: the foreign ignore rule/comment is gone after "
+        f"commit_record=true:\n--- before ---\n{before!r}\n--- after ---\n{after!r}"
+    )
+if not ignored(RECORD_PATH):
+    sys.exit(
+        "the record is no longer ignored by git even though the foreign rule was left in place - "
+        "the foreign line survived textually but stopped being enforced, which is worse"
+    )
+
+print("  ok: a foreign ignore rule outside teamme's block survives commit_record=true untouched, "
+      "and the result says the setting will not take effect")
+PY
+
+echo "== librarian config: a corrupt config.json degrades to defaults with a named problem, never an error, never disabled =="
+LIB_CFG_CORRUPT="$PWD/lib-cfg-corrupt"
+mkdir -p "$LIB_CFG_CORRUPT/.claude/librarians"
+gitc -C "$LIB_CFG_CORRUPT" init -q
+echo one > "$LIB_CFG_CORRUPT/f.txt"; gitc -C "$LIB_CFG_CORRUPT" add f.txt; gitc -C "$LIB_CFG_CORRUPT" commit -qm "c1"
+printf '{ this is not valid json' > "$LIB_CFG_CORRUPT/.claude/librarians/config.json"
+python3 - "$ROOT" "$LIB_CFG_CORRUPT" <<'PY'
+import json, pathlib, subprocess, sys
+
+root = pathlib.Path(sys.argv[1])
+proj = sys.argv[2]
+server = root / "plugins/teamme/server/teamme_mcp.py"
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+def call_text(resp):
+    result = resp.get("result") or {}
+    return result, "".join(c.get("text", "") for c in result.get("content") or [])
+
+
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_librarian_status", "arguments": {"project_dir": proj}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"a corrupt config.json made teamme_librarian_status ERROR instead of degrading: {text}")
+    if "config problem:" not in text or "using defaults" not in text:
+        sys.exit(f"a corrupt config.json was not named as a problem with the defaults used: {text!r}")
+    if "NO - refresh and query refuse for it" in text:
+        sys.exit(f"a corrupt config.json was read as DISABLING the librarian - it must default to enabled: {text!r}")
+    if "commit_record:   false" not in text:
+        sys.exit(f"a corrupt config.json did not fall back to commit_record=false: {text!r}")
+
+    # "never disabled" proven, not just claimed: refresh and query must actually work
+    send(proc, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {"name": "teamme_librarian_refresh", "arguments": {"project_dir": proj}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"refresh refused over a corrupt config.json - it must degrade to enabled, not refuse: {text}")
+
+    send(proc, {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                "params": {"name": "teamme_librarian_query",
+                           "arguments": {"project_dir": proj, "query": "recent"}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"query refused over a corrupt config.json - it must degrade to enabled, not refuse: {text}")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+print("  ok: a corrupt config.json degrades to defaults with a named problem - never an error, never disabled")
+PY
+
+echo "== librarian query: commit_detail - body cap+truncation, an ambiguous short hash, a merge commit's zero file rows =="
+LIB_CFG_DETAIL="$PWD/lib-cfg-detail"
+mkdir -p "$LIB_CFG_DETAIL"
+gitc -C "$LIB_CFG_DETAIL" init -q
+gitc -C "$LIB_CFG_DETAIL" commit -q --allow-empty -m "base"
+gitc -C "$LIB_CFG_DETAIL" commit -q --allow-empty -m "long body commit" -m "$(python3 -c 'print("z" * 5000, end="")')"
+MAIN_BRANCH="$(git -C "$LIB_CFG_DETAIL" symbolic-ref --short HEAD)"
+gitc -C "$LIB_CFG_DETAIL" checkout -q -b feature
+gitc -C "$LIB_CFG_DETAIL" commit -q --allow-empty -m "feature work"
+gitc -C "$LIB_CFG_DETAIL" checkout -q "$MAIN_BRANCH"
+gitc -C "$LIB_CFG_DETAIL" commit -q --allow-empty -m "main work"
+gitc -C "$LIB_CFG_DETAIL" merge --no-ff -q -m "merge feature" feature
+python3 - "$ROOT" "$LIB_CFG_DETAIL" <<'PY'
+import json, pathlib, subprocess, sys
+
+root = pathlib.Path(sys.argv[1])
+proj = sys.argv[2]
+server = root / "plugins/teamme/server/teamme_mcp.py"
+
+log = subprocess.run(
+    ["git", "log", "--all", "--format=%H\t%s"], cwd=proj, capture_output=True, text=True, check=True,
+).stdout.splitlines()
+by_subject = {}
+for line in log:
+    h, _, s = line.partition("\t")
+    by_subject[s] = h
+long_hash = by_subject.get("long body commit")
+merge_hash = by_subject.get("merge feature")
+if not long_hash or not merge_hash:
+    sys.exit(f"fixture is wrong: could not find the long-body or merge commit by exact subject "
+              f"(long={long_hash!r}, merge={merge_hash!r}, subjects seen={sorted(by_subject)})")
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+def call_text(resp):
+    result = resp.get("result") or {}
+    return result, "".join(c.get("text", "") for c in result.get("content") or [])
+
+
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_librarian_refresh", "arguments": {"project_dir": proj}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"refresh of the commit_detail fixture reported an error: {text}")
+
+    # the body cap, with its truncation notice
+    send(proc, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {"name": "teamme_librarian_query",
+                           "arguments": {"project_dir": proj, "query": "commit_detail",
+                                         "hash": long_hash}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"commit_detail on the long-body commit reported an error: {text}")
+    if "BODY TRUNCATED at 4000 of 5000 characters" not in text:
+        sys.exit(f"a 5000-character body was not reported as truncated at 4000: {text!r}")
+
+    # a merge commit: two parents, zero file rows, by design
+    send(proc, {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                "params": {"name": "teamme_librarian_query",
+                           "arguments": {"project_dir": proj, "query": "commit_detail",
+                                         "hash": merge_hash}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"commit_detail on the merge commit reported an error: {text}")
+    if "files:    0" not in text or "(no file rows - a merge commit records none, by design)" not in text:
+        sys.exit(f"the merge commit was not reported with zero file rows, by design: {text!r}")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+print("  ok: commit_detail caps and labels a truncated body, and reports a merge commit's zero "
+      "file rows as by-design")
+PY
+
+echo "== librarian query: commit_detail - an ambiguous short hash lists the candidates rather than guessing =="
+# A real SHA1 collision on a 7-character prefix (28 bits) cannot be produced by
+# committing in a loop - the odds are astronomically against it. Ambiguity is
+# tested directly against store.query()/commit_detail with two synthetic rows
+# inserted through the store's own insert_commit() (the same function refresh
+# and rebuild use), on a throwaway index that is never read by git at all.
+LIB_CFG_AMBIG="$PWD/lib-cfg-ambiguous"
+mkdir -p "$LIB_CFG_AMBIG"
+python3 - "$LIBPATH" "$LIB_CFG_AMBIG" <<'PY'
+import sys
+libpath, repo = sys.argv[1], sys.argv[2]
+sys.path.insert(0, libpath)
+from librarian import store
+
+conn = store.connect(repo)
+for suffix, short in (("a" * 33, "1234567aaa"), ("b" * 33, "1234567bbb")):
+    store.insert_commit(conn, {
+        "hash": "1234567" + suffix, "short_hash": short, "author": "a", "author_email": "a@x",
+        "date": "2026-01-01T00:00:00+00:00", "epoch": 1767225600, "subject": f"synthetic {short}",
+        "body": "", "parents": [], "indexed_at": "2026-01-01T00:00:00+00:00",
+    })
+conn.commit()
+
+q = store.query(conn, "commit_detail", {"hash": "1234567"}, repo)
+conn.close()
+if q.get("ok"):
+    sys.exit(f"a 7-character prefix matching two synthetic commits was not rejected as ambiguous: {q}")
+if "ambiguous" not in q.get("error", "").lower():
+    sys.exit(f"the ambiguous-hash error did not say so: {q}")
+missing = [s for s in ("1234567aaa", "1234567bbb") if s not in q["error"]]
+if missing:
+    sys.exit(f"the ambiguous-hash error did not name candidate(s) {missing}: {q['error']!r}")
+print("  ok: an ambiguous short hash is rejected and names both colliding candidates, never guesses")
 PY
 
 cd "$ROOT"

@@ -505,10 +505,21 @@ def counts(conn: sqlite3.Connection) -> dict:
 # --------------------------------------------------------------------------- #
 
 QUERY_NAMES = ("recent", "commits_touching", "files_in_commit", "commits_between",
-               "search_subjects")
+               "search_subjects", "commit_detail")
 
+# The list queries return the SUBJECT only, deliberately: a body is unbounded
+# text and thirty of them is the dump this design exists to avoid. The body is
+# reachable through exactly one query, commit_detail, one commit at a time and
+# capped there.
 COMMIT_COLUMNS = "hash, short_hash, author, author_email, date, subject, parents"
 COMMIT_COLUMNS_C = ", ".join("c." + c for c in COMMIT_COLUMNS.split(", "))
+
+
+# How much of a commit body one commit_detail may return, and how many
+# candidates an ambiguous abbreviation may list. Both are caps, not errors: the
+# answer is truncated and SAYS it was truncated.
+MAX_BODY_CHARS = 4000
+MAX_AMBIGUOUS = 10
 
 
 def _like(text: str) -> str:
@@ -554,6 +565,73 @@ def _rel_path(project_dir, path: str) -> str:
     return p[2:] if p.startswith("./") else p
 
 
+def commit_detail(conn: sqlite3.Connection, args: dict, limit: int) -> dict:
+    """One commit in full - including the body, which is where the "why" lives
+    and which no list query returns.
+
+    Bounded like everything else here: one commit, a body capped at
+    MAX_BODY_CHARS with the cap reported, and its file rows capped at `limit`.
+    An abbreviation that matches more than one commit is an error listing the
+    candidates, never a silently-picked first row.
+    """
+    raw = str(args.get("hash") or "").strip().lower()
+    if not raw or not HEX.match(raw):
+        return {"ok": False,
+                "error": "commit_detail needs `hash` (a full or abbreviated commit hash)"}
+    try:
+        rows = [dict(r) for r in conn.execute(
+            f"SELECT {COMMIT_COLUMNS}, body FROM commits "
+            "WHERE hash = ? OR hash LIKE ? ESCAPE '\\' ORDER BY epoch DESC, hash LIMIT ?",
+            (raw, _like(raw) + "%", MAX_AMBIGUOUS + 1),
+        ).fetchall()]
+    except Exception as exc:
+        return {"ok": False, "error": f"query failed: {exc}"}
+
+    exact = [r for r in rows if (r.get("hash") or "") == raw]
+    if exact:
+        rows = exact[:1]       # a full hash is never ambiguous
+    if not rows:
+        return {"ok": False,
+                "error": f"no commit in the index starts with '{raw}'. It may predate the index "
+                         f"or postdate the last refresh - run a refresh, or ask `recent` or "
+                         f"`search_subjects` for a hash that is in it"}
+    if len(rows) > 1:
+        shown = [r.get("short_hash") or (r.get("hash") or "")[:12] for r in rows[:MAX_AMBIGUOUS]]
+        more = " (and more)" if len(rows) > MAX_AMBIGUOUS else ""
+        return {"ok": False,
+                "error": f"'{raw}' is ambiguous - it matches {len(shown)}{more} commits: "
+                         f"{', '.join(shown)}. Give more characters of the hash"}
+
+    row = rows[0]
+    body = row.get("body") or ""
+    row["body_chars"] = len(body)
+    row["body_truncated"] = len(body) > MAX_BODY_CHARS
+    if row["body_truncated"]:
+        row["body"] = body[:MAX_BODY_CHARS]
+
+    files, files_truncated = [], False
+    try:
+        got = [dict(r) for r in conn.execute(
+            "SELECT path, additions, deletions FROM files_changed WHERE hash = ? "
+            "ORDER BY path LIMIT ?", (row.get("hash"), limit + 1)).fetchall()]
+        files_truncated = len(got) > limit
+        files = got[:limit]
+    except Exception:
+        files = []             # a commit whose file rows cannot be read is still worth returning
+
+    return {
+        "ok": True,
+        "query": "commit_detail",
+        "rows": [row],
+        "count": 1,
+        "limit": limit,
+        "files": files,
+        "files_truncated": files_truncated,
+        # `truncated` keeps its meaning for every caller: something was left out
+        "truncated": bool(files_truncated or row["body_truncated"]),
+    }
+
+
 def query(conn: sqlite3.Connection, name: str, args: dict = None, project_dir=None) -> dict:
     """One of QUERY_NAMES, with bound parameters and a hard row cap.
 
@@ -565,6 +643,9 @@ def query(conn: sqlite3.Connection, name: str, args: dict = None, project_dir=No
     fetch = limit + 1  # one extra row is how truncation is detected
     name = (name or "").strip()
     params = []
+
+    if name == "commit_detail":
+        return commit_detail(conn, args, limit)
 
     if name == "recent":
         sql = (f"SELECT {COMMIT_COLUMNS} FROM commits ORDER BY epoch DESC, hash LIMIT ?")

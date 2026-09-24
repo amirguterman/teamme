@@ -12,6 +12,8 @@ Two artifacts, per project, created at runtime:
                                              artifact, one JSON record per line
   .claude/librarians/index.db                SQLite - ALWAYS gitignored, always
                                              disposable
+  .claude/librarians/config.json             which librarians are enabled here,
+                                             and whether the record is committed
 
 The whole design rests on one property: `store.rebuild()` reconstructs the
 entire database from the JSONL alone, with no git access. That is what makes the
@@ -25,4 +27,4 @@ Stdlib only: sqlite3, subprocess, json, os. Same bare-machine assumption as the
 hooks and the MCP server.
 """
 
-__all__ = ["store", "history"]
+__all__ = ["store", "history", "config"]

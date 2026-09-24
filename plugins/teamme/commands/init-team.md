@@ -122,6 +122,18 @@ the paths must resolve.
    includes: the role, the shared project guardrails (a common block in every agent), the skills/
    MCP it should use, its workflow, and clear done-criteria. Reuse existing project conventions;
    don't invent commands that don't exist.
+   The shared guardrail block must also carry the **librarian consultation contract**. teamme ships
+   its own `history-librarian` agent — it is present in every project the plugin is installed in,
+   not generated here and not part of this roster. Write into the block, in the team's own words:
+   when a question is about what changed, when, or why — the history of a file, how a feature
+   evolved, when a convention was introduced — or when a claim of the form "X was added in commit Y"
+   is about to be made or repeated, **consult `history-librarian` and cite its answer** instead of
+   re-deriving it from `git log`. Its answers carry commit SHAs; carry them through. State two
+   things honestly in the same block: this is an instruction, not a gate — nothing blocks an agent
+   that skips it — and the librarian answers from an index of commit history, so a question about
+   the code's *current* state is not its to answer. Do not give team agents the librarian MCP tools;
+   the librarian is the intended caller of those, and consulting the agent keeps every other tool
+   list tight.
 2. Create the project intake command at `<project>/.claude/commands/intake.md`. This is NOT
    optional and is created in every project. It is the **single entry point** for the team: all work
    requests go through `/intake <request>`. Tailor it to THIS project, and give it at minimum:

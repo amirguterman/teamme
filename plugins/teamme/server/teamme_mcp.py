@@ -20,11 +20,15 @@ Tools:
                        force=true
   teamme_worklog       GATED on the scaffolding being installed
   teamme_intake_phase  GATED on the scaffolding being installed
-  teamme_librarian_*   status / refresh / query over the librarian indexes,
+  teamme_librarian_*   status / refresh / query / configure over the librarian indexes,
                        implemented in server/librarian/ and NOT gated on the
                        scaffolding - an index of this repository's own history
                        does not depend on intake.md existing. It needs a git
-                       repository, and says so when there is not one
+                       repository, and says so when there is not one. refresh
+                       and query additionally REFUSE for a librarian this
+                       project has disabled; status and configure never do - a
+                       status tool that will not report status, or a switch you
+                       cannot reach to switch back on, would both be traps
 
 The two gated tools refuse before install and name `teamme_install` in the
 refusal, so a model that reaches for the work log in an unscaffolded project is
@@ -215,7 +219,7 @@ LIBRARIANS = ("history",)
 
 
 def librarian():
-    """(store, history) from the plugin's own server/librarian/, or None.
+    """(store, history, config) from the plugin's own server/librarian/, or None.
 
     The substrate lives in the PLUGIN and is never copied into a project: it is
     invoked here, so it can never join the list of hook scripts an install is
@@ -233,6 +237,7 @@ def librarian():
         _LIBRARIAN = (
             importlib.import_module("librarian.store"),
             importlib.import_module("librarian.history"),
+            importlib.import_module("librarian.config"),
         )
     except Exception as exc:
         _LIBRARIAN_ERROR = str(exc)
@@ -245,6 +250,35 @@ def librarian_missing() -> dict:
         "the librarian substrate could not be loaded from the plugin "
         f"({_LIBRARIAN_ERROR or 'server/librarian/ is missing'}). Nothing was read or written. "
         "Reinstall or update teamme.",
+        is_error=True,
+    )
+
+
+def librarian_disabled(root: pathlib.Path, name: str, _config) -> dict:
+    """The refusal result if `name` is switched off in this project, else None.
+
+    A REFUSAL, not a harness guarantee - the same honesty the teamme_install
+    gate owes. This server registers no hooks and cannot stop anything; a caller
+    that ignores the refusal and reads the index another way is not prevented
+    from doing so. What this does guarantee is that a project which has turned a
+    librarian off never has that librarian's tools quietly answer as if it were
+    on. Reading the config can never be what disables a librarian either: any
+    unreadable or malformed config reads as ENABLED (see librarian/config.py).
+    """
+    try:
+        if _config.enabled(root, name, LIBRARIANS):
+            return None
+    except Exception:
+        return None  # fail open: a gate that cannot be read is not a gate
+    return text_result(
+        f"the {name} librarian is disabled in {root}, so this tool will not read or write its "
+        f"index. Nothing happened.\n\n"
+        f"Re-enable it with the `teamme_librarian_configure` tool:\n"
+        f'  {{"librarian": "{name}", "enabled": true}}\n\n'
+        f"`teamme_librarian_status` still works while a librarian is disabled and will show you "
+        f"the current setting. The setting lives in .claude/librarians/config.json, per project.\n"
+        f"This is a refusal by this tool, not a harness guarantee - teamme registers no hook that "
+        f"could enforce it.",
         is_error=True,
     )
 
@@ -603,7 +637,10 @@ TOOLS = [
             "Ask the history index a bounded question: recent (the latest commits), "
             "commits_touching (every commit that changed a path or anything under it), "
             "files_in_commit, commits_between (a date range), search_subjects (a literal substring "
-            "of the commit subject). Parameterized and row-capped on purpose - there is no "
+            "of the commit subject), commit_detail (ONE commit in full, including the message BODY "
+            "and its changed files - the list queries return the subject line only, so this is the "
+            "query to reach for when the question is *why* a change was made). Parameterized and "
+            "row-capped on purpose - there is no "
             "arbitrary SQL, and an answer that would be an unbounded dump is truncated with a "
             "notice instead. INTENDED CALLER: a librarian agent, which reads these rows and "
             "answers in prose; other agents should consult the librarian rather than this tool. "
@@ -617,17 +654,55 @@ TOOLS = [
                            "description": "Which index to ask. Defaults to history."},
                 query={"type": "string",
                        "enum": ["recent", "commits_touching", "files_in_commit",
-                                "commits_between", "search_subjects"]},
+                                "commits_between", "search_subjects", "commit_detail"]},
                 path={"type": "string",
                       "description": "For commits_touching: a repo-relative file or directory. "
                                      "An absolute path inside the project is accepted."},
-                hash={"type": "string", "description": "For files_in_commit: a full or abbreviated commit hash."},
+                hash={"type": "string", "description": "For files_in_commit and commit_detail: a full or "
+                                                       "abbreviated commit hash. An abbreviation matching more "
+                                                       "than one commit is reported, never silently resolved."},
                 since={"type": "string", "description": "For commits_between: YYYY-MM-DD or an ISO timestamp."},
                 until={"type": "string", "description": "For commits_between: YYYY-MM-DD or an ISO timestamp."},
                 text={"type": "string", "description": "For search_subjects: a literal substring; wildcards are not special."},
                 limit={"type": "integer", "description": "Row cap. Defaults to 30, hard maximum 200."},
             ),
             "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "teamme_librarian_configure",
+        "description": (
+            "Read or change this project's librarian settings, kept in "
+            ".claude/librarians/config.json: which librarians are enabled here, and whether the "
+            "append-only record is committed to git. Called with no arguments it only reports - it "
+            "writes nothing, not even the config file. A tool rather than a file edit on purpose, "
+            "so an agent with no Bash or Write access can still reach the setting. Disabling a "
+            "librarian makes teamme_librarian_refresh and teamme_librarian_query REFUSE for it "
+            "(teamme_librarian_status keeps working and keeps reporting the setting) - that is a "
+            "refusal by those tools, not a harness guarantee: this server registers no hook and "
+            "cannot stop anything. A plugin-shipped librarian agent is visible in every project "
+            "and cannot be hidden per project, which is why disabling works this way. Setting "
+            "commit_record is ENACTED, not just recorded: teamme writes or removes the "
+            ".gitignore entry for the record inside its own marked block, and never removes an "
+            "ignore line it did not write. The index.db entry is not a choice - a binary index "
+            "cannot be merged, so it stays ignored either way. Missing, unreadable or malformed "
+            "config reads as the documented defaults (every librarian enabled, commit_record "
+            "false), never as an error and never as disabled."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": dict(
+                PROJECT_DIR_PROP,
+                librarian={"type": "string", "enum": list(LIBRARIANS),
+                           "description": "Which librarian `enabled` applies to. Defaults to history."},
+                enabled={"type": "boolean",
+                         "description": "Switch that librarian on or off in this project. Omit to leave it alone."},
+                commit_record={"type": "boolean",
+                               "description": ("true: the record (.claude/librarians/*/commits.jsonl) is committed "
+                                               "with the code, so its .gitignore entry is removed. false (the "
+                                               "default): it stays out of git. Omit to leave it alone.")},
+            ),
             "additionalProperties": False,
         },
     },
@@ -754,7 +829,8 @@ def tool_librarian_status(root: pathlib.Path, args: dict) -> dict:
     lib = librarian()
     if lib is None:
         return librarian_missing()
-    _store, _history = lib
+    _store, _history, _config = lib
+    cfg = _config.load(root, LIBRARIANS)
     lines = [f"librarian indexes in {root}", ""]
     for name in LIBRARIANS:
         try:
@@ -763,6 +839,12 @@ def tool_librarian_status(root: pathlib.Path, args: dict) -> dict:
             lines += [f"{name}: could not be read ({exc})", ""]
             continue
         lines.append(f"{name}:")
+        lines.append(
+            "  enabled:         "
+            + ("yes" if cfg["librarians"].get(name, {}).get("enabled", True) else
+               'NO - refresh and query refuse for it. Re-enable with teamme_librarian_configure '
+               '{"librarian": "' + name + '", "enabled": true}')
+        )
         if st.get("has_data"):
             lines.append("  data:            yes")
         elif st.get("is_git_repo") is False:
@@ -803,6 +885,17 @@ def tool_librarian_status(root: pathlib.Path, args: dict) -> dict:
         if st.get("note"):
             lines.append(f"  note:            {st['note']}")
         lines.append("")
+    lines.append("configuration:")
+    lines.append(f"  file:            {cfg['path']}"
+                 + ("" if cfg.get("exists") else " (absent - the documented defaults are in force)"))
+    lines.append(f"  commit_record:   {str(bool(cfg.get('commit_record'))).lower()}"
+                 + ("  - the record is committed with the code"
+                    if cfg.get("commit_record") else
+                    "  - the record is kept out of git"))
+    for problem in cfg.get("problems") or []:
+        lines.append(f"  config problem:  {problem}")
+    lines.append("  change it with:  teamme_librarian_configure")
+    lines.append("")
     lines.append(
         "The .jsonl is the record and is the only part worth committing; the .db is rebuilt "
         "from it on demand and must stay out of git - a binary file cannot be merged."
@@ -814,10 +907,13 @@ def tool_librarian_refresh(root: pathlib.Path, args: dict) -> dict:
     lib = librarian()
     if lib is None:
         return librarian_missing()
-    _store, _history = lib
+    _store, _history, _config = lib
     name, refusal = _pick_librarian(args)
     if refusal:
         return refusal
+    off = librarian_disabled(root, name, _config)
+    if off:
+        return off
     full = bool(args.get("full"))
     try:
         r = _history.index(root, full=full)
@@ -863,14 +959,50 @@ def _render_rows(q: dict) -> str:
     return "\n".join(out)
 
 
+def _render_detail(q: dict, store) -> str:
+    """commit_detail is one commit, not a row list, and the body is the point of
+    it - so it gets its own rendering rather than being flattened into a line."""
+    row = (q.get("rows") or [{}])[0]
+    out = [
+        f"  commit:   {row.get('hash') or ''}",
+        f"  author:   {row.get('author') or ''} <{row.get('author_email') or ''}>",
+        f"  date:     {row.get('date') or ''}",
+        f"  parents:  {row.get('parents') or '(none - a root commit)'}",
+        f"  subject:  {row.get('subject') or ''}",
+    ]
+    body = (row.get("body") or "").rstrip()
+    if body:
+        out.append("  body:")
+        out += ["    " + line for line in body.splitlines()]
+        if row.get("body_truncated"):
+            out.append(f"    ... BODY TRUNCATED at {store.MAX_BODY_CHARS} of "
+                       f"{row.get('body_chars')} characters; this tool never returns an unbounded "
+                       f"dump. The whole text is in the record, "
+                       f".claude/librarians/history/commits.jsonl.")
+    else:
+        out.append("  body:     (none - a subject-only commit)")
+    files = q.get("files") or []
+    out.append(f"  files:    {len(files)}" + (" (truncated)" if q.get("files_truncated") else ""))
+    for f in files:
+        out.append(f"    {f.get('path')}  +{f.get('additions')}/-{f.get('deletions')}")
+    if q.get("files_truncated"):
+        out.append(f"    ... TRUNCATED at {q.get('limit')} file(s). Raise `limit` for the rest.")
+    if not files:
+        out.append("    (no file rows - a merge commit records none, by design)")
+    return "\n".join(out)
+
+
 def tool_librarian_query(root: pathlib.Path, args: dict) -> dict:
     lib = librarian()
     if lib is None:
         return librarian_missing()
-    _store, _history = lib
+    _store, _history, _config = lib
     name, refusal = _pick_librarian(args)
     if refusal:
         return refusal
+    off = librarian_disabled(root, name, _config)
+    if off:
+        return off
     which = str(args.get("query") or "").strip()
     if which not in _store.QUERY_NAMES:
         return text_result(
@@ -906,6 +1038,8 @@ def tool_librarian_query(root: pathlib.Path, args: dict) -> dict:
                 pass
     if not q.get("ok"):
         return text_result(f"teamme_librarian_query: {q.get('error')}", True)
+    if which == "commit_detail":
+        return text_result(f"{name} / commit_detail\n" + _render_detail(q, _store))
     lines = [f"{name} / {which}: {q['count']} row(s)", _render_rows(q)]
     if q.get("truncated"):
         lines.append(
@@ -913,6 +1047,93 @@ def tool_librarian_query(root: pathlib.Path, args: dict) -> dict:
             f"(max {_store.MAX_LIMIT}); this tool never returns an unbounded dump."
         )
     return text_result("\n".join(lines))
+
+
+def tool_librarian_configure(root: pathlib.Path, args: dict) -> dict:
+    """Report the librarian settings, and change them if asked.
+
+    Never a crash and never a protocol error: a write that fails, a .gitignore
+    somebody hand-edited, a librarian name this release does not ship - each
+    comes back as a result that says what did NOT happen.
+    """
+    lib = librarian()
+    if lib is None:
+        return librarian_missing()
+    _store, _history, _config = lib
+    enable = args.get("enabled")
+    commit = args.get("commit_record")
+    # A boolean sent as "true" or 1 is dropped rather than guessed at - and said
+    # so, because a setting silently not applied is the failure worth avoiding.
+    rejected = [
+        f"`{key}` was {type(args[key]).__name__} {args[key]!r}, not true/false; it was ignored "
+        f"and nothing about it changed"
+        for key in ("enabled", "commit_record")
+        if key in args and not isinstance(args[key], bool)
+    ]
+    try:
+        cfg = _config.configure(
+            root,
+            librarian=args.get("librarian"),
+            enable=enable if isinstance(enable, bool) else None,
+            commit_record=commit if isinstance(commit, bool) else None,
+            names=LIBRARIANS,
+            rejected=rejected,
+        )
+    except Exception as exc:  # configure() handles its own errors; this is the net
+        return text_result(f"teamme_librarian_configure failed: {exc}", True)
+
+    read_only = not cfg.get("changes")
+    lines = [
+        "teamme_librarian_configure" + (" (reporting only, nothing was changed)" if read_only else ""),
+        f"  config file:     {cfg['path']}"
+        + ("" if cfg.get("exists") else " (absent - the documented defaults are in force)"),
+        "",
+    ]
+    for lname in LIBRARIANS:
+        on = cfg["librarians"].get(lname, {}).get("enabled", True)
+        lines.append(f"  {lname}: " + ("enabled" if on else
+                                       "DISABLED - refresh and query refuse for it; status still works"))
+    lines.append(f"  commit_record: {str(bool(cfg.get('commit_record'))).lower()}"
+                 + ("  - the record is committed with the code"
+                    if cfg.get("commit_record") else
+                    "  - the record is kept out of git"))
+
+    if cfg.get("changes"):
+        lines += ["", "changed:"] + [f"  {c}" for c in cfg["changes"]]
+        lines.append("  config.json written" if cfg.get("written")
+                     else "  config.json was NOT written - see problems below")
+
+    gi = cfg.get("gitignore")
+    if gi:
+        lines += ["", f"gitignore: {gi['path']}"]
+        if not gi.get("ok"):
+            lines.append("  NOT changed - see problems below")
+        elif gi.get("changed"):
+            lines.append("  updated. teamme only ever rewrites the lines between its own markers; "
+                         "an ignore rule you wrote yourself is never removed.")
+            for entry in gi.get("wrote") or []:
+                lines.append(f"    ignoring: {entry}")
+            if not gi.get("wrote"):
+                lines.append("    teamme's block removed: the record is no longer ignored")
+        else:
+            lines.append("  already correct, nothing to do")
+        for note in gi.get("notes") or []:
+            lines.append(f"  note: {note}")
+        if cfg.get("commit_record"):
+            lines.append("  the .db is still ignored - that is never a choice, a binary index "
+                         "cannot be merged")
+
+    for problem in cfg.get("problems") or []:
+        lines.append(f"  problem: {problem}")
+
+    if read_only:
+        lines += ["", 'Change something by passing arguments, e.g. {"librarian": "history", '
+                      '"enabled": false} or {"commit_record": true}.']
+    # isError only when something the caller ASKED for did not happen. A note
+    # about an ignored unknown key is information, not a failure.
+    failed = bool(cfg.get("changes")) and not cfg.get("written")
+    failed = failed or bool(gi and not gi.get("ok")) or bool(rejected)
+    return text_result("\n".join(lines), failed)
 
 
 def call_tool(name: str, args: dict) -> dict:
@@ -932,6 +1153,8 @@ def call_tool(name: str, args: dict) -> dict:
         return tool_librarian_refresh(root, args)
     if name == "teamme_librarian_query":
         return tool_librarian_query(root, args)
+    if name == "teamme_librarian_configure":
+        return tool_librarian_configure(root, args)
     return text_result(
         f"unknown tool '{name}'. Available: " + ", ".join(t["name"] for t in TOOLS), True
     )

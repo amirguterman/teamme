@@ -149,6 +149,17 @@ is true: **already specified** (implement as written), **already implemented** (
 request is probably a change), **unspecified** (the brief must add the spec text), or **contradicts
 a documented rule** (stop and say so).
 
+**History questions go to the librarian, not to `git log`.** When grounding turns on what changed,
+when, or why - the history of a file the request touches, how the current shape came about, when a
+convention was introduced - or when you are about to write or repeat a claim of the form "X was
+added in commit Y", consult the `history-librarian` agent and cite its answer, SHAs included. It
+answers from teamme's history index, so it costs this flow a short consultation rather than a wall
+of raw git output. Consulting it is an instruction, not a gate: nothing blocks a brief that skips
+it, and saying "the history does not record this" is a legitimate answer to carry into the brief.
+Skip it when the request has no history question in it, and skip it when the librarian is
+unavailable or disabled in this project - note that in the brief instead of re-deriving the answer
+by hand. Reading history changes no phase: you are still in `grounding`.
+
 ## 2. Classify it against the layer boundaries
 
 {{LANE_TABLE}}

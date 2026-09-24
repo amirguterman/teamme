@@ -36,12 +36,16 @@ fails loudly if the walk ever turns up nothing.
 plugins/teamme/
   .claude-plugin/plugin.json      the plugin manifest
   .mcp.json                       the MCP server this plugin ships
+  agents/history-librarian.md     the plugin's own shipped agent - see Rules for plugin-shipped
+                                   agents below
   commands/init-team.md           the command that installs the team
   commands/team-doctor.md         the command that diagnoses/repairs an existing install
   commands/queue.md               parks a request in the work log; no grounding, no phase interaction
   server/teamme_mcp.py            stdio JSON-RPC MCP server
   server/librarian/*.py           librarian substrate: append-only JSONL + a disposable SQLite index,
                                    an incremental git indexer - not copied into a project
+  server/librarian/config.py      per-project librarian settings (enable/disable, commit_record),
+                                   enacted into .gitignore - owned by the MCP server, never hand-edited
   templates/                      scaffolding copied into a target project
     hooks/*.py                    project-agnostic; do not hard-code a project name
     intake.md                     skeleton with {{PLACEHOLDER}}s the command fills in
@@ -85,6 +89,22 @@ on the scaffolding being installed by refusing — with an error naming `teamme_
 by denying a tool call: this server has no hook registration, so it cannot block a write or a prompt
 even if it wanted to. See `CLAUDE.md`'s "Decisions already made" for why prerequisite enforcement
 lives here and in the commands' prompt text, and never in a hook.
+
+## Rules for plugin-shipped agents
+
+`plugins/teamme/agents/` is a new shipped surface — `history-librarian.md` is the first file in it,
+and the librarian tier is meant to grow more. It is not the same thing as the agents a project's own
+`/teamme:init-team` generates into `.claude/agents/`: those are per-project and derived from that
+project's layout; these ship with the plugin itself and are present, unchanged, in every project the
+plugin is installed in. See `CLAUDE.md`'s "Decisions already made" for why the two are separate tiers
+rather than one mechanism.
+
+A plugin-shipped agent's frontmatter must never set `permissionMode`, `hooks` or `mcpServers`. The
+CLI drops all three for a plugin agent — `.claude/agents/` is the level that gets that control, not
+the plugin — and while it does print a runtime warning naming the ignored key, nothing here catches
+that at review time, and a `validate.sh` run does not surface it either (see `CLAUDE.md`'s Known gaps
+for what is and is not checked about this file today). Setting one of these keys is a bug that ships
+invisibly unless someone happens to see that warning live.
 
 ## Changing the commands
 

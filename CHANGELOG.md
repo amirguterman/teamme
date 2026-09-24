@@ -3,6 +3,13 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-24
+
+### Added
+- `history-librarian` agent: the first agent teamme has ever shipped, installed in every project. Answers *what changed, when, and why* from the librarian index, citing commit SHAs instead of re-deriving `git log`. Consultation by team agents is instructed, not enforced.
+- `teamme_librarian_configure` MCP tool: enable or disable the librarian per project (disabling is a tool refusal, not enforced by the harness), and choose whether to commit the index record alongside code. Enacts the storage choice by writing or removing `.gitignore` entries. Never removes a `.gitignore` line it did not write, so if your own matching rule already exists outside teamme's block, `commit_record: true` will not take effect — the tool reports this rather than silently failing.
+- `commit_detail` query: retrieve a single commit's full record including body, capped at 4000 characters with an explicit truncation notice.
+
 ## [0.3.0] - 2026-09-24
 
 ### Added

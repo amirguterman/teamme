@@ -13,6 +13,10 @@ Install (for users): `/plugin marketplace add amirguterman/teamme` then
 plugins/teamme/
   .claude-plugin/plugin.json      the plugin manifest (name must match the marketplace entry)
   .mcp.json                       the MCP server this plugin ships, launched with plain python3
+  agents/history-librarian.md     the plugin's own shipped agent - query-only, present in every
+                                   project the plugin is installed in, not offered in
+                                   /teamme:init-team's roster and not roster-selectable (see
+                                   Decisions already made)
   commands/init-team.md           installs the team; a prompt, not code
   commands/team-doctor.md         diagnoses/repairs an existing install on demand; a prompt, not code
   commands/queue.md               parks a request in the work log; no grounding, no phase interaction
@@ -21,6 +25,10 @@ plugins/teamme/
   server/librarian/*.py           librarian substrate: append-only JSONL + a disposable SQLite index,
                                    an incremental git indexer. NOT copied into a project, NOT in
                                    REQUIRED_HOOKS - invoked only by teamme_mcp.py
+  server/librarian/config.py      per-project librarian settings (.claude/librarians/config.json):
+                                   which librarians are enabled, and whether the append-only record
+                                   is committed - owned by the MCP server, enacted into .gitignore,
+                                   never hand-edited
   templates/                      scaffolding the commands COPY into a target project
     hooks/*.py                    project-agnostic hook scripts, including preflight.py
     intake.md                     skeleton with {{PLACEHOLDER}}s the command fills in
@@ -241,6 +249,41 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   surface, and at 9-11ms for `commits_touching` over 53,000 file rows there is no performance
   argument buying it either. A later dependency-tree query (a recursive CTE) should be added as
   another named entry in `QUERY_NAMES`, not as a door into raw SQL.
+- **Team agents are generated per project; librarians are shipped by the plugin — two tiers, not a
+  reversal of "the plugin ships no agents of its own."** A team is generated because it must mirror
+  *that* project's actual layer boundaries — there is no fixed roster that fits every codebase. A
+  librarian is shipped because "read the git history and answer from an index" is the same job in
+  every project; regenerating a fresh prompt for it on every install would just be re-deriving one
+  answer each time. `plugins/teamme/agents/history-librarian.md` is therefore not offered in
+  `/teamme:init-team`'s roster questionnaire and is not roster-selectable at all — it is present the
+  moment the plugin is installed, in every project, whether or not that project has even run
+  `/teamme:init-team`. Consultation is an **instruction**, not a gate: `commands/init-team.md`'s
+  shared guardrail block and `templates/intake.md` step 1 tell team agents to consult the librarian
+  for history questions and cite its answer, but nothing blocks a brief that skips it — the same
+  register as every other convention this project states rather than enforces (see the MCP install
+  gate entry above). Disabling a librarian (`teamme_librarian_configure`, per project) cannot make
+  the *agent* disappear — a plugin-shipped agent's visibility is not something a project's own
+  config controls — so disabled means the librarian's own tools (`teamme_librarian_refresh`,
+  `teamme_librarian_query`) refuse and name how to re-enable, while `teamme_librarian_status` keeps
+  answering so the refusal is diagnosable rather than a silent dead end. This entry **replaces** the
+  earlier one that read "the plugin ships no `agents/` of its own by design — teams are generated per
+  project": that sentence is now false in both halves, and its consequence for validation is in Known
+  gaps.
+- **The librarian storage fork is *enacted*, not merely recorded.** `teamme_librarian_configure`'s
+  `commit_record` key does not just sit in `.claude/librarians/config.json` — flipping it writes or
+  removes the project's `.gitignore` entry for the append-only record
+  (`.claude/librarians/*/commits.jsonl`), so the choice actually takes effect instead of sitting in a
+  file nobody reads. Everything teamme writes lives inside one marked block (`# teamme librarians -
+  managed by the teamme_librarian_configure tool` … `# end teamme librarians`); only lines inside
+  that block are ever removed. An ignore rule the project already had, for its own reasons, outside
+  that block is never teamme's to delete — the same posture as never deriving a verdict from
+  something that can silently grow or shrink underneath you. If a foreign line elsewhere is already
+  ignoring the record while `commit_record` is set `true`, the tool does not let that pass silently:
+  it reports that the record is **still ignored** by that line and names it, since `commit_record:
+  true` with the record still out of git is exactly the confidently-wrong state this project's docs
+  discipline exists to prevent. `.claude/librarians/index.db`, the derived SQLite index, is never a
+  choice — it is written to the same block regardless of `commit_record`, because a binary index
+  cannot be merged.
 
 ## Known gaps
 
@@ -250,8 +293,25 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   `/intake`'s step 0a deferral short-circuit are all prompt text, not enforced behaviour.
 - `templates/intake.md` has been exercised on one real project (a Minecraft Fabric mod). The
   `{{PLACEHOLDER}}` set may not fit stacks with very different doc conventions.
-- The plugin ships no `agents/` of its own by design — teams are generated per project — so nothing
-  validates the *generated* agent files beyond frontmatter parsing.
+- **`plugins/teamme/agents/history-librarian.md` — the plugin's first shipped agent — is unvalidated
+  by anything in this repo.** `validate.sh`'s frontmatter check globs `commands/*.md` only; it does
+  not reach `agents/`, so nothing parses this file's YAML (`tools`, `model`, `color`, `name`) or
+  checks it at all. Generated, per-project team agents remain unvalidated for the original reason —
+  a team is derived from that project's own layout, so there is nothing fixed to check beyond
+  frontmatter parsing, and even that does not run today.
+- **The intended-caller convention for the librarian tools is unenforced.** The agent, the tool
+  descriptions, `commands/init-team.md`'s shared guardrail block and `templates/intake.md` step 1 all
+  say `history-librarian` is the intended and only sanctioned caller of
+  `teamme_librarian_query`/`teamme_librarian_refresh` — but nothing stops any other agent with MCP
+  access from calling those tools directly instead of consulting the librarian. The only real
+  refusal is `teamme_librarian_configure`'s disabled-librarian gate, and that only fires when the
+  *librarian itself* is switched off for the project — it says nothing about who is calling.
+- **The bounded list queries carry the commit subject, not the body.** `recent`, `commits_touching`,
+  `files_in_commit`, `commits_between` and `search_subjects` all return the subject line only;
+  `commit_detail` is the one query that returns the full message body (capped at 4000 characters),
+  and it is what the librarian reaches for when a subject alone does not explain a change. Deliberate
+  row-shape economy, not an oversight — but a claim that the librarian "explains why a change was
+  made" rests on that second, targeted query, not on the list queries by themselves.
 - `route-to-intake.py`, `reground`, out-of-project paths and stale-state expiry remain unexercised
   by the smoke test.
 - `route-to-intake.py`'s new `/queue` passthrough and its blank-prompt return, and `preflight.py`'s
@@ -275,11 +335,12 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   corrupt one, a bad `installPath` — but not a record carrying more than one `teamme` entry, so the
   "belongs to a different project, ignore it" branch and the `lastUpdated` ordering among competing
   global entries are unverified.
-- **Phase 1 of the librarian substrate ships no agents.** `teamme_librarian_status`,
-  `teamme_librarian_refresh` and `teamme_librarian_query` exist and are proven by `validate.sh`; the
-  tool descriptions say a librarian agent is the *intended* caller of the query tools, but that is
-  documented intent, not enforcement — phase 1 has no librarian agents, no gate, and nothing stops
-  any other caller with MCP access from calling `teamme_librarian_query` directly today.
+- **`teamme_librarian_configure` is not yet covered by `validate.sh`.** The tool, and the
+  `server/librarian/config.py` module behind it — the defaults-on-anything-unexpected loader, the
+  atomic write, the `.gitignore` enactment inside a marked block — were pipe-tested against
+  throwaway git fixtures by hand while phase 2 was built, but no `validate.sh` section drives them
+  yet. (See the entry above on the intended-caller convention for what phase 2's agent does and does
+  not enforce.)
 - The `commits_touching`, `commits_between` and `search_subjects` query variants are exercised while
   building fixtures and ground truth for other assertions, but none has a `validate.sh` section
   asserting its own result directly — only `recent`, `files_in_commit` and the unknown-query/bad-hash
