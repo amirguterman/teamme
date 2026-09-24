@@ -20,6 +20,11 @@ Tools:
                        force=true
   teamme_worklog       GATED on the scaffolding being installed
   teamme_intake_phase  GATED on the scaffolding being installed
+  teamme_librarian_*   status / refresh / query over the librarian indexes,
+                       implemented in server/librarian/ and NOT gated on the
+                       scaffolding - an index of this repository's own history
+                       does not depend on intake.md existing. It needs a git
+                       repository, and says so when there is not one
 
 The two gated tools refuse before install and name `teamme_install` in the
 refusal, so a model that reaches for the work log in an unscaffolded project is
@@ -39,12 +44,42 @@ import subprocess
 import sys
 
 SERVER_NAME = "teamme"
-SERVER_VERSION = "0.1.0"
 DEFAULT_PROTOCOL = "2025-06-18"
 KNOWN_PROTOCOLS = {"2024-11-05", "2025-03-26", "2025-06-18"}
 CALL_TIMEOUT = 30
 
 PLUGIN_ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+UNKNOWN_VERSION = "0.0.0+unknown"
+
+
+def manifest_version(root=None) -> str:
+    """The plugin's version, read live from plugin.json - never a second copy.
+
+    The manifest is the single source of truth for the version; a number
+    duplicated here would drift on the next bump, exactly as it did through
+    0.2.0 and 0.3.0. Resolved from this file's own directory, since the
+    harness launches the server from an arbitrary working directory.
+
+    Degrades to UNKNOWN_VERSION - missing, unreadable, unparseable, wrong
+    shape, or no usable `version` key - and never raises. An honest unknown
+    in the handshake beats a confidently wrong number, and beats a server
+    that dies before it can answer at all.
+    """
+    try:
+        base = pathlib.Path(root) if root is not None else PLUGIN_ROOT
+        manifest = json.loads(
+            (base / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
+        )
+        version = manifest.get("version") if isinstance(manifest, dict) else None
+        if isinstance(version, str) and version.strip():
+            return version.strip()
+    except Exception:
+        pass
+    return UNKNOWN_VERSION
+
+
+SERVER_VERSION = manifest_version()
 
 _PREFLIGHT = None
 
@@ -167,6 +202,51 @@ def diagnose(root: pathlib.Path) -> dict:
 
 def text_result(text: str, is_error: bool = False) -> dict:
     return {"content": [{"type": "text", "text": text}], "isError": bool(is_error)}
+
+
+# --------------------------------------------------------------------------- #
+# the librarian substrate
+# --------------------------------------------------------------------------- #
+
+_LIBRARIAN = None
+_LIBRARIAN_ERROR = None
+
+LIBRARIANS = ("history",)
+
+
+def librarian():
+    """(store, history) from the plugin's own server/librarian/, or None.
+
+    The substrate lives in the PLUGIN and is never copied into a project: it is
+    invoked here, so it can never join the list of hook scripts an install is
+    required to have. That list growing is what made a working older install
+    report itself uninstalled once before.
+    """
+    global _LIBRARIAN, _LIBRARIAN_ERROR
+    if _LIBRARIAN is not None or _LIBRARIAN_ERROR is not None:
+        return _LIBRARIAN
+    try:
+        import importlib
+        here = str(pathlib.Path(__file__).resolve().parent)
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        _LIBRARIAN = (
+            importlib.import_module("librarian.store"),
+            importlib.import_module("librarian.history"),
+        )
+    except Exception as exc:
+        _LIBRARIAN_ERROR = str(exc)
+        _LIBRARIAN = None
+    return _LIBRARIAN
+
+
+def librarian_missing() -> dict:
+    return text_result(
+        "the librarian substrate could not be loaded from the plugin "
+        f"({_LIBRARIAN_ERROR or 'server/librarian/ is missing'}). Nothing was read or written. "
+        "Reinstall or update teamme.",
+        is_error=True,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -477,6 +557,80 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "teamme_librarian_status",
+        "description": (
+            "Report what the project's librarian indexes hold: which have data, the last indexed "
+            "commit, how many commits have landed since, and the row counts. Always available and "
+            "read-only - it does not require teamme's scaffolding, only a git repository, and it "
+            "reports the absence of either rather than failing. INTENDED CALLER: a librarian "
+            "agent. Other agents should ask the librarian rather than the index; phase 1 cannot "
+            "enforce that, so it is a convention, not a guarantee."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": dict(PROJECT_DIR_PROP),
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "teamme_librarian_refresh",
+        "description": (
+            "Bring a librarian index up to date. Incremental by default: it reads only the commits "
+            "since the last indexed hash, so running it often is cheap. Pass full=true to reindex "
+            "from scratch, which also rewrites the append-only record. Writes two things in the "
+            "project - .claude/librarians/history/commits.jsonl (the record: text, mergeable, the "
+            "only part worth committing) and .claude/librarians/index.db (derived and disposable; "
+            "gitignore it - a binary file cannot be merged). If the marker is unreachable after a "
+            "rebase or force-push it falls back to a full reindex and says so. INTENDED CALLER: a "
+            "librarian agent."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": dict(
+                PROJECT_DIR_PROP,
+                librarian={"type": "string", "enum": list(LIBRARIANS),
+                           "description": "Which index to refresh. Defaults to history."},
+                full={"type": "boolean",
+                      "description": "Reindex everything instead of only what is new. Off by default."},
+            ),
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "teamme_librarian_query",
+        "description": (
+            "Ask the history index a bounded question: recent (the latest commits), "
+            "commits_touching (every commit that changed a path or anything under it), "
+            "files_in_commit, commits_between (a date range), search_subjects (a literal substring "
+            "of the commit subject). Parameterized and row-capped on purpose - there is no "
+            "arbitrary SQL, and an answer that would be an unbounded dump is truncated with a "
+            "notice instead. INTENDED CALLER: a librarian agent, which reads these rows and "
+            "answers in prose; other agents should consult the librarian rather than this tool. "
+            "Phase 1 does not enforce that."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": dict(
+                PROJECT_DIR_PROP,
+                librarian={"type": "string", "enum": list(LIBRARIANS),
+                           "description": "Which index to ask. Defaults to history."},
+                query={"type": "string",
+                       "enum": ["recent", "commits_touching", "files_in_commit",
+                                "commits_between", "search_subjects"]},
+                path={"type": "string",
+                      "description": "For commits_touching: a repo-relative file or directory. "
+                                     "An absolute path inside the project is accepted."},
+                hash={"type": "string", "description": "For files_in_commit: a full or abbreviated commit hash."},
+                since={"type": "string", "description": "For commits_between: YYYY-MM-DD or an ISO timestamp."},
+                until={"type": "string", "description": "For commits_between: YYYY-MM-DD or an ISO timestamp."},
+                text={"type": "string", "description": "For search_subjects: a literal substring; wildcards are not special."},
+                limit={"type": "integer", "description": "Row cap. Defaults to 30, hard maximum 200."},
+            ),
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -570,6 +724,197 @@ def tool_intake_phase(root: pathlib.Path, args: dict) -> dict:
     return run_script(root, "intake-state.py", argv)
 
 
+# --------------------------------------------------------------------------- #
+# librarian tools
+#
+# Deliberately NOT gated on teamme's scaffolding: an index of this repository's
+# own history does not depend on intake.md existing. What it does depend on is a
+# git repository, and the absence of one is reported as a result, never raised.
+# --------------------------------------------------------------------------- #
+
+def _pick_librarian(args: dict):
+    name = str((args or {}).get("librarian") or "history").strip().lower()
+    if name not in LIBRARIANS:
+        return None, text_result(
+            f"unknown librarian '{name}'. Available: {', '.join(LIBRARIANS)}", True
+        )
+    return name, None
+
+
+def _ago(epoch) -> str:
+    try:
+        import datetime
+        return datetime.datetime.fromtimestamp(int(epoch), datetime.timezone.utc).isoformat(
+            timespec="seconds")
+    except Exception:
+        return "?"
+
+
+def tool_librarian_status(root: pathlib.Path, args: dict) -> dict:
+    lib = librarian()
+    if lib is None:
+        return librarian_missing()
+    _store, _history = lib
+    lines = [f"librarian indexes in {root}", ""]
+    for name in LIBRARIANS:
+        try:
+            st = _history.status(root) if name == "history" else {}
+        except Exception as exc:  # a status call must never be the thing that breaks
+            lines += [f"{name}: could not be read ({exc})", ""]
+            continue
+        lines.append(f"{name}:")
+        if st.get("has_data"):
+            lines.append("  data:            yes")
+        elif st.get("is_git_repo") is False:
+            lines.append("  data:            no - this is not a git repository, so there is "
+                         "nothing for the history index to read")
+            if st.get("error"):
+                lines.append(f"  git says:        {st['error']}")
+        else:
+            lines.append("  data:            no - run teamme_librarian_refresh")
+            if st.get("error"):
+                lines.append(f"  problem:         {st['error']}")
+        if st.get("commits") is not None:
+            lines.append(
+                f"  rows:            {st.get('commits')} commit(s), "
+                f"{st.get('files_changed')} file change(s), "
+                f"{st.get('commit_parents')} parent edge(s)"
+            )
+        if st.get("oldest_epoch"):
+            lines.append(f"  covers:          {_ago(st['oldest_epoch'])} .. {_ago(st['newest_epoch'])}")
+        if st.get("last_indexed_hash"):
+            lines.append(f"  last indexed:    {st['last_indexed_hash'][:12]}"
+                         + (f" at {st['last_refresh_at']}" if st.get("last_refresh_at") else ""))
+        if st.get("head"):
+            lines.append(f"  HEAD:            {st['head'][:12]}")
+        behind = st.get("commits_behind_head")
+        if behind is not None:
+            lines.append(
+                f"  behind HEAD:     {behind} commit(s)"
+                + (" - up to date" if behind == 0 else " - run teamme_librarian_refresh")
+            )
+        lines.append(
+            f"  record:          {st.get('jsonl')} "
+            f"({st.get('jsonl_records', 0)} line(s)"
+            + (f", {st['jsonl_unparsable_lines']} unparsable" if st.get("jsonl_unparsable_lines") else "")
+            + ")"
+        )
+        lines.append(f"  index:           {st.get('db')} (derived, disposable, never commit it)")
+        if st.get("note"):
+            lines.append(f"  note:            {st['note']}")
+        lines.append("")
+    lines.append(
+        "The .jsonl is the record and is the only part worth committing; the .db is rebuilt "
+        "from it on demand and must stay out of git - a binary file cannot be merged."
+    )
+    return text_result("\n".join(lines))
+
+
+def tool_librarian_refresh(root: pathlib.Path, args: dict) -> dict:
+    lib = librarian()
+    if lib is None:
+        return librarian_missing()
+    _store, _history = lib
+    name, refusal = _pick_librarian(args)
+    if refusal:
+        return refusal
+    full = bool(args.get("full"))
+    try:
+        r = _history.index(root, full=full)
+    except Exception as exc:  # belt and braces: index() already returns its errors
+        return text_result(f"teamme_librarian_refresh failed: {exc}", True)
+    if not r.get("ok"):
+        return text_result(
+            f"teamme_librarian_refresh ({name}) did nothing: {r.get('error')}\n"
+            f"project_dir: {root}",
+            True,
+        )
+    lines = [
+        f"teamme_librarian_refresh ({name}): {r['mode']} index in {r.get('elapsed_seconds')}s",
+        f"  added:        {r.get('commits_added', 0)} commit(s), {r.get('files_added', 0)} file change(s)",
+        f"  now holds:    {r.get('commits')} commit(s), {r.get('files_changed')} file change(s)",
+    ]
+    if r.get("head"):
+        lines.append(f"  indexed to:   {r['head'][:12]}")
+    if r.get("fallback"):
+        lines.append(f"  FELL BACK:    {r['fallback']}")
+    for note in r.get("notes") or []:
+        lines.append(f"  note:         {note}")
+    if r.get("malformed_records"):
+        lines.append(f"  skipped:      {r['malformed_records']} unparsable log record(s)")
+    return text_result("\n".join(lines))
+
+
+def _render_rows(q: dict) -> str:
+    rows = q.get("rows") or []
+    if not rows:
+        return "no matching rows"
+    out = []
+    for row in rows:
+        if "subject" in row:
+            head = f"{row.get('short_hash') or ''} {row.get('date') or ''} {row.get('author') or ''}"
+            line = f"{head.strip()}  {row.get('subject') or ''}"
+            if row.get("path"):
+                line += f"  [{row['path']} +{row.get('additions')}/-{row.get('deletions')}]"
+        else:
+            line = (f"{row.get('path')}  +{row.get('additions')}/-{row.get('deletions')}"
+                    f"  ({(row.get('hash') or '')[:8]})")
+        out.append("  " + line)
+    return "\n".join(out)
+
+
+def tool_librarian_query(root: pathlib.Path, args: dict) -> dict:
+    lib = librarian()
+    if lib is None:
+        return librarian_missing()
+    _store, _history = lib
+    name, refusal = _pick_librarian(args)
+    if refusal:
+        return refusal
+    which = str(args.get("query") or "").strip()
+    if which not in _store.QUERY_NAMES:
+        return text_result(
+            f"unknown query '{which}'. One of: {', '.join(_store.QUERY_NAMES)}", True
+        )
+    if not _store.db_path(root).exists():
+        return text_result(
+            f"the {name} index does not exist yet in {root}. Run teamme_librarian_refresh first "
+            f"- it builds the index from git, or rebuilds it from "
+            f"{_store.commits_jsonl(root)} if that has been committed.",
+            True,
+        )
+    conn = None
+    try:
+        conn, reset_note = _store.connect_or_reset(root)
+        if reset_note:
+            return text_result(
+                f"{reset_note}. Nothing was queried. Run teamme_librarian_refresh and ask again.",
+                True,
+            )
+        if not _store.counts(conn).get("commits"):
+            return text_result(
+                f"the {name} index is empty. Run teamme_librarian_refresh first.", True
+            )
+        q = _store.query(conn, which, args, root)
+    except Exception as exc:
+        return text_result(f"teamme_librarian_query failed: {exc}", True)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    if not q.get("ok"):
+        return text_result(f"teamme_librarian_query: {q.get('error')}", True)
+    lines = [f"{name} / {which}: {q['count']} row(s)", _render_rows(q)]
+    if q.get("truncated"):
+        lines.append(
+            f"  ... TRUNCATED at {q['limit']} rows. Narrow the question or raise `limit` "
+            f"(max {_store.MAX_LIMIT}); this tool never returns an unbounded dump."
+        )
+    return text_result("\n".join(lines))
+
+
 def call_tool(name: str, args: dict) -> dict:
     args = args if isinstance(args, dict) else {}
     root = resolve_project(args)
@@ -581,6 +926,12 @@ def call_tool(name: str, args: dict) -> dict:
         return tool_worklog(root, args)
     if name == "teamme_intake_phase":
         return tool_intake_phase(root, args)
+    if name == "teamme_librarian_status":
+        return tool_librarian_status(root, args)
+    if name == "teamme_librarian_refresh":
+        return tool_librarian_refresh(root, args)
+    if name == "teamme_librarian_query":
+        return tool_librarian_query(root, args)
     return text_result(
         f"unknown tool '{name}'. Available: " + ", ".join(t["name"] for t in TOOLS), True
     )

@@ -16,7 +16,11 @@ plugins/teamme/
   commands/init-team.md           installs the team; a prompt, not code
   commands/team-doctor.md         diagnoses/repairs an existing install on demand; a prompt, not code
   commands/queue.md               parks a request in the work log; no grounding, no phase interaction
-  server/teamme_mcp.py            stdio JSON-RPC MCP server: status/install/worklog/intake-phase tools
+  server/teamme_mcp.py            stdio JSON-RPC MCP server: status/install/worklog/intake-phase/
+                                   librarian tools
+  server/librarian/*.py           librarian substrate: append-only JSONL + a disposable SQLite index,
+                                   an incremental git indexer. NOT copied into a project, NOT in
+                                   REQUIRED_HOOKS - invoked only by teamme_mcp.py
   templates/                      scaffolding the commands COPY into a target project
     hooks/*.py                    project-agnostic hook scripts, including preflight.py
     intake.md                     skeleton with {{PLACEHOLDER}}s the command fills in
@@ -82,6 +86,30 @@ field loads, lists and does not spuriously re-fire; and a `dispatched` task prod
 output, shows `[@]` in `list`, counts as unfinished in `stats`, and gets its own `SessionStart`
 wording distinct from `blocked`. If you change a hook or the MCP server, this is the proof — not
 inspection.
+
+The librarian substrate (`server/librarian/`) gets the same treatment, plus a fix to the compile step
+itself: `plugins/*/server/*.py`, the old glob, only ever expanded to the top-level MCP server file and
+silently never reached `server/librarian/*.py` — the same failure shape as a `REQUIRED_HOOKS` that
+quietly covers less than its author assumed (see T23 below). Compilation now walks the whole `server/`
+tree with `find -path` and fails loudly if the walk turns up nothing. Nine sections then drive the
+tools against throwaway git fixtures, never this repo's own `.claude/librarians/`: `store.rebuild()`
+is checked row-for-row against ground truth read straight from `git log`/`git rev-list`/`git
+rev-parse` — independent of the librarian module, after a first draft compared `rebuild()` against the
+module's own `index(full=True)` output and passed with a deliberately broken file-row insert loop
+still in the code (watched failing first only once the comparison was made independent, by deleting
+that loop); an unreachable last-indexed marker (a simulated rebase and force-push) falls back to a
+full reindex and says so in the result, watched failing first by disabling the reachability branch,
+which produced exactly the silent, confidently-wrong incremental refresh this test exists to catch; a
+corrupt (non-SQLite) `index.db` is discarded and rebuilt rather than raised, through
+`teamme_librarian_query` over the real MCP pipe, watched failing first by skipping the `unlink()` call
+in `connect_or_reset`; an empty repository, a directory that is not a git repository, a missing
+directory, and `git` itself missing from `PATH` are asserted as four distinct, non-overlapping error
+payloads; ten concurrent `teamme_librarian_refresh` calls on one repository leave no lock or temp-file
+debris and no duplicate rows; `commits_behind_head` reaches zero after a refresh driven over the pipe;
+a newline in a path, a non-UTF-8 commit subject, and a merge commit (parent rows with zero file rows)
+all parse without raising; and a combined pipe test drives all three librarian tools together — an
+unknown query name, a bad commit hash, the row-limit clamp and truncation flag, and a malformed JSONL
+line that is skipped rather than fatal — exiting 0 with empty stderr throughout.
 
 ## Design invariants
 
@@ -198,6 +226,21 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   they did not owe. `dispatched` counts as unfinished, is skipped by `next`, is never nagged about
   by the `Stop` hook, and is reported separately at `SessionStart` from tasks blocked on the user's
   own input.
+- **The librarian indexer lives in the plugin, not in `templates/hooks/`.** Nothing under
+  `server/librarian/` is copied into a target project, so nothing joins `REQUIRED_HOOKS`. This avoids
+  T23's trap *by construction* rather than by remembering — a copied indexer would make every future
+  librarian grow that list again, the exact mistake `installed` derivation paid a P0 to fix.
+- **The `.db` is derived and disposable; the `.jsonl` is the record.** SQLite is binary and
+  unmergeable, so two people indexing different commits would produce files that conflict
+  irreconcilably. `.claude/librarians/index.db` is therefore always gitignored, and
+  `store.rebuild()` reconstructs it from `.claude/librarians/history/commits.jsonl` alone, with no
+  git access at all — verified with `PATH` stripped, so git was genuinely unavailable. This is what
+  makes the user's storage fork real: commit the `.jsonl` or gitignore it, per project; the `.db` is
+  never committed either way.
+- **Queries are a bounded named set, not arbitrary SQL.** Arbitrary SQL from a model is an injection
+  surface, and at 9-11ms for `commits_touching` over 53,000 file rows there is no performance
+  argument buying it either. A later dependency-tree query (a recursive CTE) should be added as
+  another named entry in `QUERY_NAMES`, not as a door into raw SQL.
 
 ## Known gaps
 
@@ -232,6 +275,23 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   corrupt one, a bad `installPath` — but not a record carrying more than one `teamme` entry, so the
   "belongs to a different project, ignore it" branch and the `lastUpdated` ordering among competing
   global entries are unverified.
+- **Phase 1 of the librarian substrate ships no agents.** `teamme_librarian_status`,
+  `teamme_librarian_refresh` and `teamme_librarian_query` exist and are proven by `validate.sh`; the
+  tool descriptions say a librarian agent is the *intended* caller of the query tools, but that is
+  documented intent, not enforcement — phase 1 has no librarian agents, no gate, and nothing stops
+  any other caller with MCP access from calling `teamme_librarian_query` directly today.
+- The `commits_touching`, `commits_between` and `search_subjects` query variants are exercised while
+  building fixtures and ground truth for other assertions, but none has a `validate.sh` section
+  asserting its own result directly — only `recent`, `files_in_commit` and the unknown-query/bad-hash
+  error paths are.
+- Shallow-clone behaviour is untested. `history.probe()` reports `shallow: true` and `index()` notes
+  it in the result, but no `validate.sh` fixture is an actual shallow clone.
+- Merge commits get `commit_parents` rows but no `files_changed` rows (`git log --numstat` reports no
+  diff for a merge without `-m`/`-c`). Whether a merge needs file rows is a phase-2 decision, if the
+  reasoning layer ends up needing merge diffs.
+- `rewrite_records()`'s preservation of non-commit records (`kind != "commit"`, meant for phase 2's
+  reasoned entries) through a full reindex has no test coverage, since no phase-2 code writes such a
+  record yet.
 
 ## Conventions
 

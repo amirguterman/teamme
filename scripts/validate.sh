@@ -42,8 +42,16 @@ python3 -m py_compile plugins/*/templates/hooks/*.py
 echo "  ok: all hooks compile"
 
 echo "== mcp server syntax =="
-python3 -m py_compile plugins/*/server/*.py
-echo "  ok: the mcp server compiles"
+# `plugins/*/server/*.py` (the old form) only ever expands to the top-level
+# server file - it silently never reaches plugins/*/server/librarian/*.py or any
+# other subpackage. That is the same failure shape as T23's REQUIRED_HOOKS: a
+# list/glob that quietly covers less than its author assumed. `find -path` walks
+# the whole server/ tree regardless of depth, so a new subdirectory cannot be
+# missed the same way again.
+mapfile -t SERVER_PYFILES < <(find plugins -path '*/server/*' -name '*.py' | sort)
+[ "${#SERVER_PYFILES[@]}" -gt 0 ] || fail "no plugins/*/server/**/*.py files found to compile - has the server/ layout moved?"
+python3 -m py_compile "${SERVER_PYFILES[@]}"
+echo "  ok: the mcp server and its submodules compile (${#SERVER_PYFILES[@]} file(s), including server/librarian/*.py)"
 
 echo "== mcp manifest =="
 python3 -c "
@@ -258,6 +266,118 @@ finally:
     proc.wait(timeout=5)
 
 print("  ok: teamme_worklog refuses (naming teamme_install) before install, succeeds after")
+PY
+
+echo "== mcp server: serverInfo.version always matches plugin.json, read live - the T22 drift guard =="
+python3 - "$ROOT" <<'PY'
+import json, pathlib, subprocess, sys
+
+root = pathlib.Path(sys.argv[1])
+server = root / "plugins/teamme/server/teamme_mcp.py"
+manifest_path = root / "plugins/teamme/.claude-plugin/plugin.json"
+manifest_version = json.loads(manifest_path.read_text())["version"]
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    resp = recv(proc)
+    reported = resp.get("result", {}).get("serverInfo", {}).get("version")
+    # Deliberately NOT a literal like "0.3.0" here: a literal is the second copy
+    # T22 deleted, and would drift (and fail spuriously) on the next version bump.
+    # Parsed from plugin.json at test time, this assertion needs no maintenance.
+    if reported != manifest_version:
+        sys.exit(
+            f"serverInfo.version ({reported!r}) does not match plugins/teamme/.claude-plugin/"
+            f"plugin.json's version ({manifest_version!r}) - SERVER_VERSION has drifted from the "
+            f"manifest, exactly what T22 removed the hardcoded literal to prevent"
+        )
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+print(f"  ok: serverInfo.version ({manifest_version}) matches plugin.json live, not a second hardcoded copy")
+PY
+
+echo "== mcp server: a damaged manifest (throwaway copy only) degrades to 0.0.0+unknown, never crashes =="
+# cp -r the whole plugin into a scratch fixture and damage the COPY's manifest.
+# Touching this repo's own plugin.json would be a trap for anyone running
+# validate.sh on a dirty tree, and mutating the repo under test is a bug on its
+# own regardless of cleanup - so the fixture lives under $T (already trapped).
+FALLBACK_COPY="$PWD/mcp-version-fallback"
+rm -rf "$FALLBACK_COPY"
+mkdir -p "$FALLBACK_COPY"
+cp -r "$ROOT/plugins/teamme" "$FALLBACK_COPY/teamme"
+rm -f "$FALLBACK_COPY/teamme/.claude-plugin/plugin.json"
+python3 - "$FALLBACK_COPY/teamme" <<'PY'
+import json, pathlib, subprocess, sys
+
+plugin_dir = pathlib.Path(sys.argv[1])
+server = plugin_dir / "server" / "teamme_mcp.py"
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    resp = recv(proc)
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    rc = proc.wait(timeout=5)
+
+stderr = proc.stderr.read()
+server_info = (resp.get("result") or {}).get("serverInfo") or {}
+version = server_info.get("version")
+if version != "0.0.0+unknown":
+    sys.exit(f"a missing plugin.json did not degrade to the unknown-version fallback: got {version!r}")
+if server_info.get("name") != "teamme":
+    sys.exit(f"initialize with a damaged manifest lost serverInfo.name entirely: {server_info}")
+if rc != 0:
+    sys.exit(f"the server did not exit 0 with a damaged (deleted) manifest: exit={rc}")
+if stderr.strip():
+    sys.exit(f"the server wrote to stderr with a damaged manifest: {stderr!r}")
+
+print("  ok: a deleted plugin.json on a throwaway copy degrades to 0.0.0+unknown, exit 0, no stderr - "
+      "the real plugin.json was never touched")
 PY
 
 echo "== preflight: not-installed, a live baseline, and each check fails independently =="
@@ -786,6 +906,563 @@ set -e
 [ "$HB_RC" -eq 0 ] || fail "heartbeat exited $HB_RC"
 test -f "hb-empty/.claude/intake/heartbeat.json" || fail "heartbeat did not stamp its file"
 echo "  ok: heartbeat is silent and always exits 0"
+
+echo "== librarian: git fixtures live under a fresh subdirectory of the throwaway project; never touch this repos own .claude/librarians/ =="
+LIBPATH="$ROOT/plugins/teamme/server"
+gitc() { git -c user.name=teamme-fixture -c user.email=teamme-fixture@example.invalid -c commit.gpgsign=false "$@"; }
+
+echo "== librarian: rebuild-from-text is row-for-row identical to ground truth, with git genuinely unavailable =="
+LIB_REBUILD="$PWD/lib-repo-rebuild"
+mkdir -p "$LIB_REBUILD"
+gitc -C "$LIB_REBUILD" init -q
+for i in 1 2 3 4 5 6; do
+  echo "content-$i" > "$LIB_REBUILD/f$i.txt"
+  gitc -C "$LIB_REBUILD" add "f$i.txt"
+  gitc -C "$LIB_REBUILD" commit -qm "commit $i"
+done
+# Ground truth computed with plain git, entirely independent of the librarian
+# module, so a bug shared between the initial index and the later rebuild (both
+# of which call the same insert_commit/rebuild code) cannot hide from this check.
+GT_HASHES="$(git -C "$LIB_REBUILD" log --format=%H | sort)"
+GT_HEAD="$(git -C "$LIB_REBUILD" rev-parse HEAD)"
+GT_COUNT="$(git -C "$LIB_REBUILD" rev-list --count HEAD)"
+python3 - "$LIBPATH" "$LIB_REBUILD" <<'PY'
+import sys
+libpath, repo = sys.argv[1], sys.argv[2]
+sys.path.insert(0, libpath)
+from librarian import history
+r = history.index(repo, full=True)
+if not r.get("ok"):
+    sys.exit(f"initial full index of the rebuild fixture failed: {r}")
+PY
+
+for suf in "" "-wal" "-shm"; do
+  rm -f "$LIB_REBUILD/.claude/librarians/index.db$suf"
+done
+
+python3 - "$LIBPATH" "$LIB_REBUILD" "$GT_HASHES" "$GT_HEAD" "$GT_COUNT" <<'PY'
+import sys, os
+libpath, repo, gt_hashes, gt_head, gt_count = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+sys.path.insert(0, libpath)
+from librarian import store
+
+os.environ["PATH"] = "/nonexistent-so-git-cannot-be-found"
+rb = store.rebuild(repo)
+if not rb.get("ok"):
+    sys.exit(f"rebuild-from-text failed with git unavailable: {rb}")
+
+conn = store.connect(repo)
+rows = {dict(r)["hash"]: dict(r) for r in conn.execute("SELECT * FROM commits").fetchall()}
+files = [dict(r) for r in conn.execute("SELECT * FROM files_changed").fetchall()]
+parents = [dict(r) for r in conn.execute("SELECT * FROM commit_parents").fetchall()]
+marker = store.get_meta(conn, store.META_LAST_INDEXED)
+conn.close()
+
+expected_hashes = set(gt_hashes.split())
+got_hashes = set(rows.keys())
+if got_hashes != expected_hashes:
+    sys.exit(f"rebuilt commit hashes do not match git's own log: missing {expected_hashes - got_hashes}, "
+              f"extra {got_hashes - expected_hashes}")
+if len(rows) != int(gt_count):
+    sys.exit(f"expected {gt_count} commits (git rev-list --count), rebuild produced {len(rows)}")
+if len(files) != int(gt_count):
+    sys.exit(f"expected {gt_count} file rows (one distinct file per commit), rebuild produced {len(files)}")
+expected_paths = {f"f{i}.txt" for i in range(1, int(gt_count) + 1)}
+got_paths = {f["path"] for f in files}
+if got_paths != expected_paths:
+    sys.exit(f"rebuilt file paths do not match: expected {expected_paths}, got {got_paths}")
+if len(parents) != int(gt_count) - 1:
+    sys.exit(f"expected {int(gt_count) - 1} parent edges (a linear chain), rebuild produced {len(parents)}")
+if marker != gt_head:
+    sys.exit(f"the last-indexed marker did not match git's own HEAD: marker={marker!r}, HEAD={gt_head!r}")
+
+print(f"  ok: rebuild-from-text reproduced all {len(rows)} commit(s) (hashes, file paths, parent edges) "
+      f"and the marker, matched against git's own log directly - with git genuinely unavailable")
+PY
+
+echo "== librarian: empty repo, not-a-git-repo, a missing directory, and git-missing are distinct, clean errors =="
+LIB_EMPTY="$PWD/lib-repo-empty"
+LIB_NOTREPO="$PWD/lib-repo-notrepo"
+mkdir -p "$LIB_EMPTY" "$LIB_NOTREPO"
+gitc -C "$LIB_EMPTY" init -q
+python3 - "$LIBPATH" "$LIB_EMPTY" "$LIB_NOTREPO" "$PWD/lib-repo-missing-does-not-exist" <<'PY'
+import sys
+libpath, empty_dir, notrepo_dir, missing_dir = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+sys.path.insert(0, libpath)
+from librarian import history
+import os
+
+r = history.index(empty_dir, full=True)
+if not r.get("ok"):
+    sys.exit(f"an empty repository was not indexed as a success: {r}")
+if r.get("commits_added") != 0 or r.get("commits") != 0:
+    sys.exit(f"an empty repository should index zero rows, got: {r}")
+if r.get("error"):
+    sys.exit(f"an empty repository reported an error instead of success: {r}")
+
+not_repo = history.index(notrepo_dir)
+if not_repo.get("ok"):
+    sys.exit(f"a plain (non-git) directory was reported as successfully indexed: {not_repo}")
+err_notrepo = not_repo.get("error") or ""
+if "not a git repository" not in err_notrepo:
+    sys.exit(f"a non-git directory did not report 'not a git repository': {err_notrepo!r}")
+if "no such directory" in err_notrepo:
+    sys.exit(f"a non-git directory was misreported as a missing directory: {err_notrepo!r}")
+
+missing = history.index(missing_dir)
+if missing.get("ok"):
+    sys.exit(f"a directory that does not exist was reported as successfully indexed: {missing}")
+err_missing = missing.get("error") or ""
+if "no such directory" not in err_missing:
+    sys.exit(f"a missing directory did not report 'no such directory': {err_missing!r}")
+if "not a git repository" in err_missing:
+    sys.exit(f"a missing directory was misreported as an existing non-git repository: {err_missing!r}")
+if "git is not installed" in err_missing:
+    sys.exit(f"a missing directory was misdiagnosed as git being uninstalled - this is exactly the "
+              f"confusion the hook lane says it fixed: {err_missing!r}")
+
+old_path = os.environ.get("PATH")
+os.environ["PATH"] = "/nonexistent-so-git-cannot-be-found"
+try:
+    git_missing = history.index(empty_dir)
+finally:
+    os.environ["PATH"] = old_path
+if git_missing.get("ok"):
+    sys.exit(f"git genuinely missing was reported as a successful index: {git_missing}")
+err_git = git_missing.get("error") or ""
+if "git is not installed" not in err_git:
+    sys.exit(f"git genuinely missing did not report 'git is not installed': {err_git!r}")
+if "no such directory" in err_git or "not a git repository" in err_git:
+    sys.exit(f"git-missing was conflated with a directory/repo problem: {err_git!r}")
+
+print("  ok: empty repo succeeds with zero rows; not-a-repo, missing-directory and git-missing "
+      "each report a distinct, non-overlapping error")
+PY
+
+echo "== librarian: an unreachable marker (rebase/force-push) falls back to a full reindex and SAYS SO =="
+LIB_REBASE="$PWD/lib-repo-rebase"
+mkdir -p "$LIB_REBASE"
+gitc -C "$LIB_REBASE" init -q
+echo one > "$LIB_REBASE/f.txt"; gitc -C "$LIB_REBASE" add f.txt; gitc -C "$LIB_REBASE" commit -qm "c1"
+echo two >> "$LIB_REBASE/f.txt"; gitc -C "$LIB_REBASE" add f.txt; gitc -C "$LIB_REBASE" commit -qm "c2"
+python3 - "$LIBPATH" "$LIB_REBASE" <<'PY'
+import sys
+libpath, repo = sys.argv[1], sys.argv[2]
+sys.path.insert(0, libpath)
+from librarian import history
+
+r = history.index(repo, full=True)
+if not r.get("ok") or r.get("commits") != 2:
+    sys.exit(f"initial index of the rebase fixture failed: {r}")
+PY
+gitc -C "$LIB_REBASE" reset --hard HEAD~1 -q
+echo three > "$LIB_REBASE/g.txt"; gitc -C "$LIB_REBASE" add g.txt; gitc -C "$LIB_REBASE" commit -qm "c2-alt (history rewritten)"
+python3 - "$LIBPATH" "$LIB_REBASE" <<'PY'
+import sys
+libpath, repo = sys.argv[1], sys.argv[2]
+sys.path.insert(0, libpath)
+from librarian import history
+
+r = history.index(repo)
+if not r.get("ok"):
+    sys.exit(f"the refresh after a rewritten history did not complete: {r}")
+fallback = r.get("fallback") or ""
+if not fallback:
+    sys.exit(f"an unreachable marker did not report a fallback at all (silent fallback is the dangerous "
+              f"version of this bug): {r}")
+if "rebase" not in fallback or "force-push" not in fallback:
+    sys.exit(f"the fallback message did not name rebase/force-push: {fallback!r}")
+if r.get("mode") != "full":
+    sys.exit(f"an unreachable marker did not fall back to a full reindex, mode was {r.get('mode')!r}: {r}")
+if r.get("commits") != 2:
+    sys.exit(f"the fallback full reindex did not recover the 2 reachable commits: {r}")
+print(f"  ok: an unreachable marker falls back to a full reindex and says so: {fallback}")
+PY
+
+echo "== librarian: a corrupt index.db is discarded (not raised) through the MCP query tool, and an instructed refresh rebuilds it =="
+LIB_CORRUPT="$PWD/lib-repo-corrupt"
+mkdir -p "$LIB_CORRUPT"
+gitc -C "$LIB_CORRUPT" init -q
+echo one > "$LIB_CORRUPT/f.txt"; gitc -C "$LIB_CORRUPT" add f.txt; gitc -C "$LIB_CORRUPT" commit -qm "c1"
+echo two >> "$LIB_CORRUPT/f.txt"; gitc -C "$LIB_CORRUPT" add f.txt; gitc -C "$LIB_CORRUPT" commit -qm "c2"
+python3 - "$LIBPATH" "$LIB_CORRUPT" <<'PY'
+import sys
+libpath, repo = sys.argv[1], sys.argv[2]
+sys.path.insert(0, libpath)
+from librarian import history
+r = history.index(repo, full=True)
+if not r.get("ok") or r.get("commits") != 2:
+    sys.exit(f"initial index of the corrupt-db fixture failed: {r}")
+PY
+printf 'this is not a sqlite database, just garbage bytes' > "$LIB_CORRUPT/.claude/librarians/index.db"
+python3 - "$ROOT" "$LIB_CORRUPT" <<'PY'
+import json, pathlib, subprocess, sys
+
+root = pathlib.Path(sys.argv[1])
+proj = sys.argv[2]
+server = root / "plugins/teamme/server/teamme_mcp.py"
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+def call_text(resp):
+    result = resp.get("result") or {}
+    return result, "".join(c.get("text", "") for c in result.get("content") or [])
+
+
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+
+    # the corrupt db must be discarded cleanly - no crash, a controlled error result
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_librarian_query",
+                           "arguments": {"project_dir": proj, "query": "recent"}}})
+    result, text = call_text(recv(proc))
+    if not result.get("isError"):
+        sys.exit(f"a corrupt index.db did not surface as an error through the query tool: {text}")
+    if "discarded" not in text:
+        sys.exit(f"the corrupt-db query result did not say the file was discarded: {text!r}")
+    if "teamme_librarian_refresh" not in text:
+        sys.exit(f"the corrupt-db query result did not point at teamme_librarian_refresh: {text!r}")
+
+    # following that instruction rebuilds the data from commits.jsonl, not raising either
+    send(proc, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {"name": "teamme_librarian_refresh",
+                           "arguments": {"project_dir": proj}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"the refresh that repairs a discarded index.db reported an error: {text}")
+    if "rebuilt" not in text or "commits.jsonl" not in text:
+        sys.exit(f"the refresh did not report rebuilding from commits.jsonl: {text!r}")
+
+    # and the data is really back - a real query succeeds with the original rows
+    send(proc, {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                "params": {"name": "teamme_librarian_query",
+                           "arguments": {"project_dir": proj, "query": "recent"}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"the query after rebuild still failed: {text}")
+    if "2 row(s)" not in text:
+        sys.exit(f"the rebuilt index did not hold the original 2 commits: {text!r}")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+print("  ok: a corrupt index.db is discarded through the query tool without raising, and the "
+      "instructed refresh rebuilds it from commits.jsonl")
+PY
+
+echo "== librarian: N concurrent refreshes on one repo leave no duplicate rows and no lock/tmp debris =="
+LIB_CONCURRENT="$PWD/lib-repo-concurrent"
+mkdir -p "$LIB_CONCURRENT"
+gitc -C "$LIB_CONCURRENT" init -q
+for i in 1 2 3 4 5 6 7 8; do
+  echo "c$i" >> "$LIB_CONCURRENT/f.txt"
+  gitc -C "$LIB_CONCURRENT" add f.txt
+  gitc -C "$LIB_CONCURRENT" commit -qm "commit $i"
+done
+for i in $(seq 1 10); do
+  PYTHONPATH="$LIBPATH" python3 -c "
+from librarian import history
+history.index('$LIB_CONCURRENT')
+" >/dev/null 2>&1 &
+done
+wait
+python3 - "$LIBPATH" "$LIB_CONCURRENT" <<'PY'
+import sys, pathlib
+libpath, repo = sys.argv[1], sys.argv[2]
+sys.path.insert(0, libpath)
+from librarian import store
+
+conn = store.connect(repo)
+n = store.counts(conn)
+conn.close()
+if n.get("commits") != 8:
+    sys.exit(f"expected exactly 8 commits after 10 concurrent refreshes, got {n.get('commits')} "
+             f"(a number above 8 means duplicates, below means lost writes): {n}")
+
+history_dir = store.history_dir(repo)
+librarians_dir = store.librarians_dir(repo)
+leftover = list(history_dir.glob("*.lock")) + list(history_dir.glob(".*.tmp")) + \
+    list(librarians_dir.glob("*.lock")) + list(librarians_dir.glob(".*.tmp"))
+if leftover:
+    sys.exit(f"leftover lock/tmp file(s) after concurrent refreshes: {leftover}")
+print("  ok: 10 concurrent refreshes on one repo produced exactly 8 commits, no duplicates, no debris")
+PY
+
+echo "== librarian: commits_behind_head reaches zero after a refresh (over the MCP pipe) =="
+LIB_STALE="$PWD/lib-repo-stale"
+mkdir -p "$LIB_STALE"
+gitc -C "$LIB_STALE" init -q
+echo one > "$LIB_STALE/f.txt"; gitc -C "$LIB_STALE" add f.txt; gitc -C "$LIB_STALE" commit -qm "c1"
+python3 - "$LIBPATH" "$LIB_STALE" <<'PY'
+import sys
+libpath, repo = sys.argv[1], sys.argv[2]
+sys.path.insert(0, libpath)
+from librarian import history
+r = history.index(repo, full=True)
+if not r.get("ok"):
+    sys.exit(f"initial index of the staleness fixture failed: {r}")
+PY
+echo two >> "$LIB_STALE/f.txt"; gitc -C "$LIB_STALE" add f.txt; gitc -C "$LIB_STALE" commit -qm "c2"
+echo three >> "$LIB_STALE/f.txt"; gitc -C "$LIB_STALE" add f.txt; gitc -C "$LIB_STALE" commit -qm "c3"
+python3 - "$ROOT" "$LIB_STALE" <<'PY'
+import json, pathlib, subprocess, sys
+
+root = pathlib.Path(sys.argv[1])
+proj = sys.argv[2]
+server = root / "plugins/teamme/server/teamme_mcp.py"
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+def call_text(resp):
+    result = resp.get("result") or {}
+    return result, "".join(c.get("text", "") for c in result.get("content") or [])
+
+
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_librarian_status", "arguments": {"project_dir": proj}}})
+    _, text = call_text(recv(proc))
+    if "behind HEAD:     2 commit(s)" not in text:
+        sys.exit(f"status before refresh did not report 2 commits behind HEAD: {text!r}")
+
+    send(proc, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {"name": "teamme_librarian_refresh", "arguments": {"project_dir": proj}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"the refresh that should clear staleness reported an error: {text}")
+
+    send(proc, {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                "params": {"name": "teamme_librarian_status", "arguments": {"project_dir": proj}}})
+    _, text = call_text(recv(proc))
+    if "behind HEAD:     0 commit(s) - up to date" not in text:
+        sys.exit(f"status after refresh did not report caught up to HEAD: {text!r}")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+print("  ok: commits_behind_head goes from 2 to 0 after a refresh")
+PY
+
+echo "== librarian: hostile content - a newline in a path, a non-UTF-8 subject, a merge commit =="
+LIB_HOSTILE="$PWD/lib-repo-hostile"
+mkdir -p "$LIB_HOSTILE/weird"
+gitc -C "$LIB_HOSTILE" init -q
+printf 'content\n' > "$LIB_HOSTILE/weird/name"$'\n'"with-newline.txt"
+gitc -C "$LIB_HOSTILE" add -A
+gitc -C "$LIB_HOSTILE" commit -qm "path with newline"
+echo more > "$LIB_HOSTILE/b.txt"
+gitc -C "$LIB_HOSTILE" add b.txt
+python3 -c "open('$PWD/lib-hostile-msg', 'wb').write(b'bad subject: \xff\xfe not utf8\n')"
+gitc -C "$LIB_HOSTILE" commit -q -F "$PWD/lib-hostile-msg" >/dev/null 2>&1
+gitc -C "$LIB_HOSTILE" checkout -q -b feature
+echo feat > "$LIB_HOSTILE/c.txt"; gitc -C "$LIB_HOSTILE" add c.txt; gitc -C "$LIB_HOSTILE" commit -qm "feature commit"
+gitc -C "$LIB_HOSTILE" checkout -q -
+echo mainf > "$LIB_HOSTILE/d.txt"; gitc -C "$LIB_HOSTILE" add d.txt; gitc -C "$LIB_HOSTILE" commit -qm "main commit"
+gitc -C "$LIB_HOSTILE" merge --no-ff -q -m "merge feature" feature
+python3 - "$LIBPATH" "$LIB_HOSTILE" <<'PY'
+import sys
+libpath, repo = sys.argv[1], sys.argv[2]
+sys.path.insert(0, libpath)
+from librarian import store, history
+
+r = history.index(repo, full=True)
+if not r.get("ok"):
+    sys.exit(f"indexing hostile content raised/failed instead of tolerating it: {r}")
+if r.get("commits") != 5:
+    sys.exit(f"expected 5 commits (including the merge) in the hostile-content fixture, got {r}")
+
+conn = store.connect(repo)
+paths = [row["path"] for row in conn.execute("SELECT path FROM files_changed").fetchall()]
+if not any("\n" in p for p in paths):
+    sys.exit(f"a path containing a literal newline did not survive indexing: {paths}")
+
+subjects = [row["subject"] for row in conn.execute("SELECT subject FROM commits").fetchall()]
+if not any(s.startswith("bad subject:") for s in subjects):
+    sys.exit(f"the non-UTF-8 commit subject did not survive indexing: {subjects}")
+
+merge_row = conn.execute("SELECT hash FROM commits WHERE subject = 'merge feature'").fetchone()
+if merge_row is None:
+    sys.exit(f"the merge commit was not indexed at all: {subjects}")
+merge_hash = merge_row["hash"]
+n_parents = conn.execute(
+    "SELECT COUNT(*) AS n FROM commit_parents WHERE hash = ?", (merge_hash,)
+).fetchone()["n"]
+n_files = conn.execute(
+    "SELECT COUNT(*) AS n FROM files_changed WHERE hash = ?", (merge_hash,)
+).fetchone()["n"]
+conn.close()
+if n_parents != 2:
+    sys.exit(f"the merge commit should have exactly 2 parent rows, got {n_parents}")
+if n_files != 0:
+    sys.exit(f"the merge commit should have no file rows (no numstat for a plain merge), got {n_files}")
+
+print("  ok: a newline in a path, a non-UTF-8 subject, and a merge commit (2 parent rows, 0 file "
+      "rows) all parse without raising")
+PY
+
+echo "== librarian: over the real JSON-RPC pipe - all three tools, bad input, limit clamp, garbage line =="
+LIB_PIPE="$PWD/lib-repo-pipe"
+mkdir -p "$LIB_PIPE"
+gitc -C "$LIB_PIPE" init -q
+for i in 1 2 3; do
+  echo "p$i" >> "$LIB_PIPE/f.txt"
+  gitc -C "$LIB_PIPE" add f.txt
+  gitc -C "$LIB_PIPE" commit -qm "pipe commit $i"
+done
+python3 - "$ROOT" "$LIB_PIPE" <<'PY'
+import json, pathlib, subprocess, sys
+
+root = pathlib.Path(sys.argv[1])
+proj = sys.argv[2]
+server = root / "plugins/teamme/server/teamme_mcp.py"
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+def call_text(resp):
+    result = resp.get("result") or {}
+    return result, "".join(c.get("text", "") for c in result.get("content") or [])
+
+
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+
+    # all three librarian tools respond over the real pipe
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_librarian_refresh", "arguments": {"project_dir": proj}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"teamme_librarian_refresh over the pipe reported an error: {text}")
+
+    send(proc, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {"name": "teamme_librarian_status", "arguments": {"project_dir": proj}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError") or "3 commit(s)" not in text:
+        sys.exit(f"teamme_librarian_status over the pipe did not report 3 commits: {text!r}")
+
+    send(proc, {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                "params": {"name": "teamme_librarian_query",
+                           "arguments": {"project_dir": proj, "query": "recent"}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError") or "3 row(s)" not in text:
+        sys.exit(f"teamme_librarian_query over the pipe did not return 3 rows: {text!r}")
+
+    # an unknown query name is a clean error, not a crash
+    send(proc, {"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                "params": {"name": "teamme_librarian_query",
+                           "arguments": {"project_dir": proj, "query": "not_a_real_query"}}})
+    result, text = call_text(recv(proc))
+    if not result.get("isError"):
+        sys.exit(f"an unknown query name was not reported as an error: {text}")
+
+    # a bad hash is a clean error, not a crash
+    send(proc, {"jsonrpc": "2.0", "id": 6, "method": "tools/call",
+                "params": {"name": "teamme_librarian_query",
+                           "arguments": {"project_dir": proj, "query": "files_in_commit",
+                                         "hash": "not-hex!!"}}})
+    result, text = call_text(recv(proc))
+    if not result.get("isError"):
+        sys.exit(f"a malformed commit hash was not reported as an error: {text}")
+
+    # limit is clamped and truncation is reported
+    send(proc, {"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                "params": {"name": "teamme_librarian_query",
+                           "arguments": {"project_dir": proj, "query": "recent", "limit": 1}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError") or "TRUNCATED at 1" not in text:
+        sys.exit(f"a limit of 1 with 3 rows available did not report truncation: {text!r}")
+
+    send(proc, {"jsonrpc": "2.0", "id": 8, "method": "tools/call",
+                "params": {"name": "teamme_librarian_query",
+                           "arguments": {"project_dir": proj, "query": "recent", "limit": 999999}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError") or "3 row(s)" not in text or "TRUNCATED" in text:
+        sys.exit(f"an oversized limit was not clamped to the real row count: {text!r}")
+
+    # a garbage (non-JSON) line still leaves the server exiting 0 with empty stderr
+    proc.stdin.write("this is not json\n")
+    proc.stdin.flush()
+    garbage_resp = recv(proc)
+    if garbage_resp.get("error", {}).get("code") != -32700:
+        sys.exit(f"a garbage line did not produce a parse-error response: {garbage_resp}")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    rc = proc.wait(timeout=5)
+
+stderr = proc.stderr.read()
+if rc != 0:
+    sys.exit(f"the server did not exit 0 after a garbage line and EOF: exit={rc}")
+if stderr.strip():
+    sys.exit(f"the server wrote to stderr: {stderr!r}")
+
+print("  ok: all three librarian tools respond over the pipe; unknown query / bad hash are clean "
+      "errors; limit is clamped with a truncation notice; a garbage line still exits 0, no stderr")
+PY
 
 cd "$ROOT"
 echo "ALL CHECKS PASSED"

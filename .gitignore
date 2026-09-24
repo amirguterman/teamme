@@ -4,3 +4,14 @@ __pycache__/
 .claude/intake/heartbeat.json
 .claude/intake/worklog.lock
 .claude/intake/.worklog.json.*.tmp
+
+# The librarian index is derived and disposable: rebuilt from
+# .claude/librarians/*/*.jsonl on demand. Never commit it - a binary SQLite file
+# cannot be merged, so two people indexing different commits would conflict
+# irreconcilably. The append-only .jsonl next to it is the record; whether THAT
+# is committed is a per-project choice.
+.claude/librarians/index.db
+.claude/librarians/index.db-wal
+.claude/librarians/index.db-shm
+.claude/librarians/*/*.lock
+.claude/librarians/*/.*.tmp

@@ -16,8 +16,18 @@ including via the harness's own install record, tried last — the check degrade
 still passes; a synthetic install record resolves the templates and catches the same stale hook, a
 missing or corrupt record degrades instead, and a record pointing at a directory that fails the
 template-marker check is rejected rather than trusted; and `teamme_install` leaves a hook that differs
-from the plugin's copy alone unless called with `force=true`. CI runs exactly this. Please make it
-pass before opening a pull request.
+from the plugin's copy alone unless called with `force=true`. It also drives nine sections against the
+librarian tools over throwaway git fixtures — rebuild-from-text against ground truth read straight
+from `git`, the unreachable-marker fallback, a corrupt `index.db` being discarded rather than raised,
+concurrent refreshes, and hostile commit content — never against this repo's own
+`.claude/librarians/`. CI runs exactly this. Please make it pass before opening a pull request.
+
+`server/` is compiled by walking `find -path '*/server/*' -name '*.py'`, not a shallow
+`plugins/*/server/*.py` glob: the glob only ever expanded to the top-level `teamme_mcp.py` and would
+silently never have reached `server/librarian/*.py`, or any later subdirectory under `server/` — the
+same failure shape as a `REQUIRED_HOOKS` list that quietly covers less than its author assumed (see
+`CLAUDE.md`'s T23 entry). A new subdirectory under `server/` is picked up automatically; the check
+fails loudly if the walk ever turns up nothing.
 
 ## Layout
 
@@ -30,6 +40,8 @@ plugins/teamme/
   commands/team-doctor.md         the command that diagnoses/repairs an existing install
   commands/queue.md               parks a request in the work log; no grounding, no phase interaction
   server/teamme_mcp.py            stdio JSON-RPC MCP server
+  server/librarian/*.py           librarian substrate: append-only JSONL + a disposable SQLite index,
+                                   an incremental git indexer - not copied into a project
   templates/                      scaffolding copied into a target project
     hooks/*.py                    project-agnostic; do not hard-code a project name
     intake.md                     skeleton with {{PLACEHOLDER}}s the command fills in

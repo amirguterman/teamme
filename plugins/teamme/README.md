@@ -115,6 +115,31 @@ it, and the `Stop` hook never nags about it, since nothing this session does can
 `SessionStart` report lists it separately from tasks that are `blocked` on your own input.
 Priorities: `P0` now, `P1` normal, `P2` someday.
 
+## The librarian substrate
+
+Three MCP tools index this project's own git history into a per-project store under
+`.claude/librarians/` — `.claude/librarians/history/commits.jsonl` (the append-only record; commit it
+or gitignore it, per project, your choice) and `.claude/librarians/index.db` (a SQLite index derived
+from the `.jsonl`, always gitignored, and rebuildable from it with no git access at all — never commit
+the `.db`, since a binary file cannot be merged).
+
+| Tool | Answers |
+|---|---|
+| `teamme_librarian_status` | What the index holds: row counts, the last indexed commit, how far behind `HEAD` it is |
+| `teamme_librarian_refresh` | Brings the index up to date — incremental by default, `full=true` to reindex from scratch |
+| `teamme_librarian_query` | A bounded, named question: `recent`, `commits_touching` (a path or directory), `files_in_commit`, `commits_between` (a date range), `search_subjects` (a literal substring) — never arbitrary SQL |
+
+These need only a git repository, not teamme's scaffolding, and work whether or not a project has run
+`/teamme:init-team`. Measured on this repository's own history (10 commits, 122 file rows): a first
+index takes 0.137s, a warm refresh 0.010s, a query 0.03-0.10ms. Measured on a 10,393-commit repository
+(52,947 file rows): a first index is a one-time cost of 15.0s; after that, an incremental refresh of
+50 new commits takes 0.40s (~8ms/commit), a refresh that finds nothing new takes 0.012s, and a
+`commits_touching` query takes 9-11ms. These figures exclude Python interpreter startup.
+
+This is the substrate only: there is no librarian *agent* yet. Team agents, or the model itself, can
+call these tools directly today — the tool descriptions say a librarian agent is the intended caller,
+but nothing enforces that yet.
+
 ## Install and verify
 
 Requirements: `python3` on `PATH`, and nothing else. The hooks and the bundled MCP server

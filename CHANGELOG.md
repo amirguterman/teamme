@@ -3,6 +3,18 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-09-24
+
+### Added
+- MCP tools for librarian querying: `teamme_librarian_status` (index metadata), `teamme_librarian_refresh` (update commits), `teamme_librarian_query` (search). These drive an upcoming librarian layer for project history analysis — the underlying substrate is new, the agents and hooks that use it are not yet shipped.
+- Per-project librarian index stored under `.claude/librarians/`: an append-only `commits.jsonl` that records what was indexed, and a SQLite `index.db` (gitignored, rebuildable from text without git access) that accelerates queries. Incremental refreshes read only commits since the last indexed hash, costing ~12 ms per refresh when the index is current; a cold index of a 10k-commit repo costs ~15 s, a one-time expense.
+
+### Fixed
+- `/mcp` displayed server version as `0.1.0` in every release, regardless of the installed version. Version is now read live from the manifest and cannot drift.
+
+### Changed
+- `validate.sh` now reaches the new librarian subpackage via tree walk instead of shallow glob, ensuring all syntax checks run. The validation line that compiles Python code now explicitly verifies the full `server/` directory tree.
+
 ## [0.2.2] - 2026-09-24
 
 ### Fixed
