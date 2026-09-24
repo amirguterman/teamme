@@ -10,6 +10,13 @@ front door, and a **work log that will not let work be forgotten**.
 /plugin install teamme@teamme
 ```
 
+`claude plugin install` defaults to `--scope user`: available in every project on this machine,
+which also lets a project's own `/intake` preflight check compare its installed hooks against the
+plugin's shipped copy (see Install and verify below), not just teamme's own commands. `--scope
+project` confines the install to just this repo instead, if you want that. Either way, a project
+still needs `/teamme:init-team` to be set up — installing the plugin and setting up a project are
+different things, and the MCP tools refuse to run until the latter has happened.
+
 Then, in any project:
 
 ```
@@ -125,11 +132,16 @@ A project's teamme install is always in one of four states:
 already set up and most of it works. This is the state an upgrading user meets first, on the release
 that adds the next hook script.
 
-Only `/teamme:team-doctor` and the MCP tools can tell a hook that differs from the plugin's copy
-apart from one that is current — they know where the plugin's own templates live. `/intake`'s own
-check, run from inside the project, can confirm a hook script exists but not whether its contents
-still match this release: a missing hook still halts it, a hook that is present but merely differs
-does not.
+Whether `/intake`'s own check — run from inside the project — can tell a hook that differs from the
+plugin's copy apart from one that is current depends on whether it can locate the plugin's shipped
+templates. It tries `$CLAUDE_PLUGIN_ROOT`, its own directory, and last, the harness's own record of
+where each plugin is installed (read live on every check, never assumed from install time). A
+**user-scope** install (the default; see Install above) resolves from any project, so the check
+catches a differing hook everywhere; a **project-scope** install only resolves inside that one
+project, and everywhere else the check degrades to existence-only, saying explicitly that freshness
+was not verified rather than reporting "clean" when it never checked. `/teamme:team-doctor` and the
+MCP tools do not depend on any of this — they run inside the plugin itself, where the shipped
+templates are always reachable, so they can tell the two apart regardless of install scope.
 
 Check the state at any time with **`/teamme:team-doctor`** — it reports every check with a `fix:`
 line for each failure, and offers to repair a partial install (missing hook scripts, a missing

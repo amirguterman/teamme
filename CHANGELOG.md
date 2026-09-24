@@ -3,6 +3,15 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-09-24
+
+### Fixed
+- `/intake`'s own in-project preflight now detects a differing hook, removing the limitation documented in 0.2.1. Preflight resolves the plugin's templates from the harness's own install record as a last resort, so the freshness check works everywhere the plugin is reachable.
+
+### Changed
+- Hook freshness is looked up live, never recorded at install time. The plugin cache keeps old versions side by side, so a path captured during install would survive an upgrade still pointing at the version the user installed from. Every lookup failure degrades to existence-only checking (reported as "not verified") rather than guessing.
+- Install scope determines reach: a user-scope install (the default) resolves the templates everywhere, so freshness is checked in every project; a project-scope install resolves only for that project, and the check degrades elsewhere. The check result names its source so users can tell which happened.
+
 ## [0.2.1] - 2026-09-24
 
 ### Fixed

@@ -73,6 +73,12 @@ HEARTBEAT_NAME = "heartbeat.json"
 # templates and compared against itself - which would report every install fresh.
 TEMPLATE_MARKER = "settings.hooks.json"
 
+# This plugin's own name, as it appears before the '@' in the harness's install
+# record key ("<plugin>@<marketplace>"). teamme's own name, not the host
+# project's - invariant #4 is about assumptions concerning the project this is
+# installed into, and this makes none.
+PLUGIN_NAME = "teamme"
+
 INSTALL_FIX = (
     "run the `teamme_install` MCP tool, or /teamme:team-doctor, to repair the scaffolding - or "
     "/teamme:init-team if this project has never been set up"
@@ -124,42 +130,166 @@ def _is_template_hooks_dir(p) -> bool:
         return False
 
 
-def template_hooks_dir(hint=None):
-    """Where the plugin's shipped hook scripts are, or None if they cannot be
-    found from here. Never raises.
+# --------------------------------------------------------------------------- #
+# HARNESS-SHAPED, BEST-EFFORT. Everything between this banner and the next one
+# encodes one assumption about Claude Code's own on-disk layout. It is the only
+# such assumption in this file; if the harness changes, this is the single place
+# to fix, and until it is fixed every function here returns nothing and freshness
+# degrades to an honest "not verified" rather than to a wrong answer.
+# --------------------------------------------------------------------------- #
+
+def _install_record_files() -> list:
+    """Where the harness records its plugin installs, most specific first."""
+    out = []
+    try:
+        cfg = os.environ.get("CLAUDE_CONFIG_DIR")
+        if cfg:
+            out.append(pathlib.Path(cfg).expanduser() / "plugins" / "installed_plugins.json")
+    except Exception:
+        pass
+    try:
+        out.append(pathlib.Path.home() / ".claude" / "plugins" / "installed_plugins.json")
+    except Exception:
+        pass
+    return out
+
+
+def _same_dir(a, b) -> bool:
+    try:
+        return pathlib.Path(str(a)).expanduser().resolve() == pathlib.Path(str(b)).expanduser().resolve()
+    except Exception:
+        return False
+
+
+def _install_record_template_dirs(root=None) -> list:
+    """Candidate templates/hooks directories according to the harness's own
+    install record, best first. [] for anything unexpected. Never raises.
+
+    Today that record is $CLAUDE_CONFIG_DIR/plugins/installed_plugins.json
+    (~/.claude/plugins/installed_plugins.json when CLAUDE_CONFIG_DIR is unset),
+    shaped {"plugins": {"<plugin>@<marketplace>": [{scope, projectPath, version,
+    installPath, ...}, ...]}}. Every field is treated as untrusted: the caller
+    still marker-checks whatever comes back, so a stale or bogus installPath
+    costs a `not verified`, never a wrong verdict.
+
+    Read live, on purpose - NOT captured at install time. The plugin cache is
+    version-pinned and old versions stay on disk, so a path remembered at install
+    time keeps pointing at the version the user installed FROM: after an upgrade
+    it would compare their stale hooks against equally stale templates and call
+    them all fresh, precisely when they are not. The record is rewritten by the
+    upgrade, so reading it is self-correcting.
+
+    Entries installed for THIS project win. An entry with no projectPath is a
+    user/global install, which applies everywhere, so it is the fallback (newest
+    lastUpdated first). An entry belonging to some *other* project says nothing
+    about this one and is ignored rather than guessed at.
+    """
+    for rec in _install_record_files():
+        try:
+            if not rec.is_file():
+                continue
+            data = json.loads(rec.read_text())
+        except Exception:
+            continue  # unreadable or not JSON: no evidence, not an error
+        if not isinstance(data, dict):
+            continue
+        plugins = data.get("plugins")
+        if not isinstance(plugins, dict):
+            continue
+        mine, global_ = [], []
+        try:
+            for key, entries in plugins.items():
+                if str(key).split("@", 1)[0] != PLUGIN_NAME:
+                    continue
+                if not isinstance(entries, list):
+                    continue
+                for e in entries:
+                    if not isinstance(e, dict):
+                        continue
+                    where = e.get("installPath")
+                    if not isinstance(where, str) or not where:
+                        continue
+                    hooks = pathlib.Path(where).expanduser() / "templates" / "hooks"
+                    proj = e.get("projectPath")
+                    if isinstance(proj, str) and proj:
+                        if root is not None and _same_dir(proj, root):
+                            mine.append(hooks)
+                    else:
+                        global_.append((str(e.get("lastUpdated") or ""), str(hooks)))
+        except Exception:
+            continue  # a schema we do not recognise: say nothing
+        found = mine + [pathlib.Path(p) for _, p in sorted(global_, reverse=True)]
+        if found:
+            return found
+    return []
+
+
+# --------------------------------------------------------------------------- #
+# end of the harness-shaped section
+# --------------------------------------------------------------------------- #
+
+# How each resolution path is described in the verdict. A reader must be able to
+# tell "checked, against this" from "could not check".
+TEMPLATE_SOURCES = {
+    "hint": "the templates directory the caller named",
+    "env": "$CLAUDE_PLUGIN_ROOT",
+    "self": "this script's own directory",
+    "record": "the harness's plugin install record",
+}
+
+
+def template_hooks_source(hint=None, root=None):
+    """(directory, source-label) for the plugin's shipped hook scripts, or
+    (None, "") if they cannot be found from here. Never raises.
 
     This runs as a hook *inside a user's project*, where the plugin directory is
-    usually unreachable: CLAUDE_PLUGIN_ROOT is only set for hooks a plugin
-    registers itself, and teamme's hooks are registered by the project. So None
-    is an ordinary, expected answer, and every caller must treat it as "could not
-    verify", never as "broken".
+    often unreachable: CLAUDE_PLUGIN_ROOT is only set for hooks a plugin
+    registers itself, and teamme's hooks are registered by the project. So
+    (None, "") is an ordinary, expected answer, and every caller must treat it as
+    "could not verify", never as "broken".
+
+    The label exists so the two outcomes can never be confused in a report.
     """
     candidates = []
     try:
         if hint:
             h = pathlib.Path(str(hint)).expanduser()
-            candidates += [h, h / "hooks", h / "templates" / "hooks"]
+            candidates += [(h, "hint"), (h / "hooks", "hint"), (h / "templates" / "hooks", "hint")]
     except Exception:
         pass
     try:
         env = os.environ.get("CLAUDE_PLUGIN_ROOT")
         if env:
             e = pathlib.Path(env).expanduser()
-            candidates += [e / "templates" / "hooks", e / "hooks"]
+            candidates += [(e / "templates" / "hooks", "env"), (e / "hooks", "env")]
     except Exception:
         pass
     try:
         # The case that matters for the MCP server: this file IS the template.
-        candidates.append(pathlib.Path(__file__).resolve().parent)
+        candidates.append((pathlib.Path(__file__).resolve().parent, "self"))
     except Exception:
         pass
-    for c in candidates:
+    try:
+        # Last, so nothing that already worked changes: the in-project copy, with
+        # no plugin root in its environment, asking the harness where the plugin
+        # it was installed from lives now.
+        if root is None:
+            root = project_root()
+        candidates += [(p, "record") for p in _install_record_template_dirs(root)]
+    except Exception:
+        pass
+    for c, why in candidates:
         if _is_template_hooks_dir(c):
             try:
-                return pathlib.Path(c).resolve()
+                return pathlib.Path(c).resolve(), TEMPLATE_SOURCES.get(why, why)
             except Exception:
-                return pathlib.Path(c)
-    return None
+                return pathlib.Path(c), TEMPLATE_SOURCES.get(why, why)
+    return None, ""
+
+
+def template_hooks_dir(hint=None, root=None):
+    """Where the plugin's shipped hook scripts are, or None. Never raises."""
+    return template_hooks_source(hint, root)[0]
 
 
 def hook_freshness(installed, template) -> str:
@@ -285,19 +415,21 @@ def _check_hooks(root: pathlib.Path, templates=None) -> dict:
     user nothing when the real trouble was three scripts from the last release.
 
     When the shipped templates cannot be found this degrades to the old
-    existence-only check and says so: an install that cannot see its own
-    templates is not thereby broken, and this must never fail for that.
+    existence-only check and says so *in those words*: an install that cannot see
+    its own templates is not thereby broken, and this must never fail for that -
+    but neither may "not checked" be reported in the wording of "checked and
+    clean". Every branch below names which of the two happened.
     """
     d = root / ".claude" / "hooks"
     total = len(REQUIRED_HOOKS)
     missing = [n for n in REQUIRED_HOOKS if not (d / n).is_file()]
     present = [n for n in REQUIRED_HOOKS if n not in missing]
 
-    tdir = template_hooks_dir(templates)
+    tdir, tsource = template_hooks_source(templates, root)
     try:
         # Comparing a directory with itself would call every install fresh.
         if tdir is not None and tdir == d.resolve():
-            tdir = None
+            tdir, tsource = None, ""
     except Exception:
         pass
 
@@ -315,7 +447,7 @@ def _check_hooks(root: pathlib.Path, templates=None) -> dict:
         parts.append(f"missing: {', '.join(missing)}")
         fixes.append(INSTALL_FIX)
     if stale:
-        parts.append(f"differs from the plugin's copy: {', '.join(stale)}")
+        parts.append(f"differs from the copy the plugin ships ({tsource}): {', '.join(stale)}")
         fixes.append(FORCE_FIX)
 
     if parts:
@@ -328,13 +460,17 @@ def _check_hooks(root: pathlib.Path, templates=None) -> dict:
         )
 
     if tdir is None:
-        detail = f"{total}/{total} in .claude/hooks (plugin templates not reachable from here, so " \
-                 f"freshness was not verified)"
+        # NOT the same statement as "all matching", and must never read like it:
+        # the scripts are present and nothing compared them. /teamme:team-doctor
+        # runs inside the plugin, where the shipped copies are always reachable.
+        detail = f"{total}/{total} present in .claude/hooks - NOT compared: the copies this release " \
+                 f"ships are not reachable from here, so freshness was not verified (run " \
+                 f"/teamme:team-doctor to check)"
     elif unchecked:
-        detail = f"{total}/{total} in .claude/hooks, matching the plugin's copy except " \
-                 f"{len(unchecked)} the plugin does not ship: {', '.join(unchecked)}"
+        detail = f"{total}/{total} in .claude/hooks, matching the copy the plugin ships ({tsource}) " \
+                 f"except {len(unchecked)} it does not ship: {', '.join(unchecked)}"
     else:
-        detail = f"{total}/{total} in .claude/hooks, all matching the plugin's copy"
+        detail = f"{total}/{total} in .claude/hooks, all matching the copy the plugin ships ({tsource})"
     return _item("hooks", "hook scripts", True, detail)
 
 
@@ -531,8 +667,10 @@ def diagnose(project_dir=None, templates=None) -> dict:
 
     `templates` is an optional hint at the plugin's templates directory, for the
     one caller that knows where it is (the MCP server). Without it the hook
-    self-locates, and where it cannot, the freshness comparison degrades to the
-    existence check rather than failing."""
+    self-locates - including, for a copy living in a project, by asking the
+    harness's own install record where the plugin it came from lives now - and
+    where it cannot, the freshness comparison degrades to the existence check,
+    reported as "not verified", rather than failing."""
     try:
         root = project_root(project_dir)
     except Exception as exc:  # pragma: no cover - only a pathological cwd

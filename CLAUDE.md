@@ -60,11 +60,19 @@ Hook freshness — whether an installed hook script still matches the plugin's s
 whether it exists — has its own coverage, since `hook_freshness()` is the one shared comparison that
 both `preflight.py`'s own check and `teamme_install` call: a present-but-modified hook drives
 `installed-outdated` and is named in the `hooks` check's detail line, distinct from a missing one
-(watched failing first, by forcing `hook_freshness` to always return `same`); when the plugin's
-templates cannot be located — the normal case for the hook/CLI path, see Known gaps — the check
-degrades to existence-only and still PASSes, with a detail line saying freshness was not verified,
-proven never to fail for that reason; and over the MCP pipe, `teamme_install` leaves a hook that
-differs from the plugin's copy untouched without `force=true`, and only `force=true` replaces it.
+(watched failing first, by forcing `hook_freshness` to always return `same`); with every resolution
+path unset — no hint, no `$CLAUDE_PLUGIN_ROOT`, no install record — the check degrades to
+existence-only and still PASSes, with a detail line saying freshness was not verified, proven never to
+fail for that reason (the assertion isolates `HOME` and `CLAUDE_CONFIG_DIR` so it degrades on its own
+fixture rather than on whatever the contributor's own machine happens to have installed); a synthetic
+harness install record resolves the templates and catches a stale hook through it, with the detail
+line naming the install record — not env, self or hint — as the source compared against; a missing
+record degrades the same way, still naming `/teamme:team-doctor`; a corrupt (unparseable) record
+degrades through a different code path than a missing one; and a record whose `installPath` fails the
+template-marker check is rejected outright rather than trusted — the false-positive case, where a
+confidently wrong verdict would be worse than an honest "not verified". Over the MCP pipe,
+`teamme_install` leaves a hook that differs from the plugin's copy untouched without `force=true`, and
+only `force=true` replaces it.
 
 The worklog data model gets its own coverage: ten concurrent `note` calls on one task all survive
 the lockfile; a stale (crashed-process) lockfile is broken rather than wedging a write and leaves no
@@ -165,6 +173,25 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   not match the plugin's copy is reported as "differs from the plugin's copy", never "outdated" or
   "wrong" — it may be a deliberate local edit, and a plain repair leaves it alone on purpose. Only
   `force=true` (or `/teamme:team-doctor`, which can pass it) replaces it.
+- **Locating the plugin's own templates to compare against has one more rung: the harness's install
+  record.** `template_hooks_source()` tries, in order: an explicit hint (the MCP server, which knows
+  its own path), `$CLAUDE_PLUGIN_ROOT` (set only for hooks the plugin registers itself), this script's
+  own directory (the case that matters for the MCP server, since the file *is* the template there),
+  and last, `$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json` (falling back to `~/.claude/...`) — the
+  harness's own record of where each installed plugin lives now. That last rung is what lets an
+  in-project `/intake` preflight — `.claude/hooks/preflight.py check`, with no `CLAUDE_PLUGIN_ROOT` in
+  its environment — find the plugin's templates and catch a hook that differs, not just one that is
+  missing. It is read live, on every check, never captured at install time: the plugin cache is
+  version-pinned and old versions persist on disk, so a path recorded once would keep pointing at the
+  version installed *from*, and after an upgrade would compare stale hooks against equally stale
+  templates and call them all fresh — a confidently wrong verdict, which is worse than an honest "not
+  verified". The record is rewritten by every upgrade, so reading it live is self-correcting. This is
+  teamme's one assumption about Claude Code's own on-disk layout, and it is deliberately contained:
+  every function that touches it sits between one banner comment and the next in `preflight.py`, so it
+  is obvious where to fix it if the harness's layout changes. It degrades to existence-only, never to a
+  wrong answer, on every failure — the record file missing, unparseable, an unexpected schema, or an
+  `installPath` that fails the same `settings.hooks.json` marker check that already guards the other
+  resolution paths, so a record pointing at the wrong directory is rejected rather than trusted.
 - **A `dispatched` work-log status, distinct from `blocked`.** Async dispatch to another agent is
   this team's normal mode, and it had no representation: `active` nagged every turn even though
   nothing that session could do would advance it, and `blocked` told the user they owed an input
@@ -194,16 +221,17 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   intake.md` predates the preflight block entirely (no Preflight section, no `state:` handling), so
   `/intake` in this repo does not halt on an incomplete install the way a freshly-generated one would.
   Tracked as T24.
-- **Hook-freshness detection only works where `preflight.py` can locate the plugin's own
-  templates** — `teamme_status`, `teamme_install`, and `/teamme:team-doctor`, all of which run inside
-  the plugin process, where `CLAUDE_PLUGIN_ROOT` (or the MCP server's own known templates directory)
-  points at them. Inside a user's project, the hook/CLI path — `.claude/hooks/preflight.py check`,
-  which is what `/intake`'s own halt check runs — normally has no `CLAUDE_PLUGIN_ROOT` and so cannot
-  find the plugin's copies to compare against. It degrades to existence-only there and PASSes, with a
-  detail line saying freshness was not verified — never a failure, by design. Consequence: an
-  upgrading user's `/intake` halts on a hook script that is *missing*, but not on one that is present
-  and merely differs from the plugin's copy; only `/teamme:team-doctor` or the MCP tools catch that.
-  Tracked as T26.
+- **The install record's per-project and multi-entry logic is not directly asserted.**
+  `preflight.py` now also resolves the plugin's templates from the harness's own install record
+  (`$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json`, falling back to `~/.claude/...`), so an
+  in-project `/intake` check can catch a hook that differs from the plugin's copy, not just one that
+  is missing — provided the record resolves, which depends on install scope (see the README's Install
+  section). `_install_record_template_dirs()` ignores a record entry whose `projectPath` names a
+  *different* project, and among entries with no `projectPath` (user/global scope) prefers the newest
+  by `lastUpdated`. `validate.sh` exercises single-entry records — a resolvable one, a missing one, a
+  corrupt one, a bad `installPath` — but not a record carrying more than one `teamme` entry, so the
+  "belongs to a different project, ignore it" branch and the `lastUpdated` ordering among competing
+  global entries are unverified.
 
 ## Conventions
 

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "next_id": 27,
+  "next_id": 28,
   "tasks": [
     {
       "id": "T1",
@@ -212,11 +212,12 @@
         "REFERENCE PATTERN (read from '/home/ubuntu/source/Appnext Campaign AI/campaign-ai-platform/.claude/agents'): _librarian-template.md (canonical, 190 lines), history-librarian.md, tests-librarian.md, compliance-officer.md (55KB). Shape of each: haiku model; tools Glob/Grep/Read/Bash/Write/Edit; owns a private memory dir .claude/agent-memory/<name>/ holding an append-only commits.jsonl plus rolling summary_overall.md and summary_by_file.md; SELF-UPDATES incrementally on every invocation (e.g. git log since the last indexed hash); answers FROM memory via a bash search helper so the caller never pays for raw git output; explicitly does not touch production code, bump versions or push. Descriptions carry 2-3 <example> blocks so the orchestrator auto-delegates. Librarians consult each other (compliance-officer consults tests-librarian).",
         "GOAL: teamme maps the project once via librarians instead of every generated agent re-deriving the same map its own way. The librarians are the project-comprehension layer, not roster filler.",
         "OPEN DESIGN QUESTIONS for the future brief: (1) 'gate' needs defining - MCP tool-level refusal like teamme_install (precedent now exists in T8) vs a hook, which invariant #1 forbids from blocking; (2) 'self-updated autonomously with hooks' needs a trigger that cannot loop (invariant #2) and cannot block (invariant #1) - SessionStart is the safe candidate, PostToolUse is not; (3) which 3 - the reference set is git-history, tests-coverage and compliance, but teamme's own layer boundaries may imply different ones; (4) a librarian's memory is per-project state: committed or gitignored? (5) invariant #4 - librarian prompts are project-agnostic templates, their INDEXES are project-specific.",
-        "HISTORY-LIBRARIAN SCOPE (user, for the future brief): go beyond answering 'what changed in file X'. Two capabilities: (1) build a codebase MAP from historical changes read chronologically - the commit stream is the evidence, so structure emerges from how the code actually evolved rather than from a one-off static scan; (2) print a COMPLETE DEPENDENCY TREE of anything - workflow -> references -> scopes -> features -> tests, with the tests leg answered by consulting the tests-librarian rather than re-deriving it. That cross-librarian consultation is the pattern already present in the reference implementation (compliance-officer consults tests-librarian) and is what makes the map cheap: each librarian owns one axis and is asked, never re-computed."
+        "HISTORY-LIBRARIAN SCOPE (user, for the future brief): go beyond answering 'what changed in file X'. Two capabilities: (1) build a codebase MAP from historical changes read chronologically - the commit stream is the evidence, so structure emerges from how the code actually evolved rather than from a one-off static scan; (2) print a COMPLETE DEPENDENCY TREE of anything - workflow -> references -> scopes -> features -> tests, with the tests leg answered by consulting the tests-librarian rather than re-deriving it. That cross-librarian consultation is the pattern already present in the reference implementation (compliance-officer consults tests-librarian) and is what makes the map cheap: each librarian owns one axis and is asked, never re-computed.",
+        "Related: T27 (cross-project grants) may be the access-control layer this needs - librarian indexes are the obvious cross-project payload."
       ],
       "blocked_on": "",
       "created": "2026-09-17T18:05:01+00:00",
-      "updated": "2026-09-17T18:20:55+00:00",
+      "updated": "2026-09-24T13:53:16+00:00",
       "status_changed": "2026-09-17T18:20:55+00:00"
     },
     {
@@ -390,17 +391,39 @@
     {
       "id": "T26",
       "title": "Design call: inside a user's project CLAUDE_PLUGIN_ROOT is unset, so the hook/CLI preflight cannot see the templates and never flags stale hooks",
-      "status": "open",
+      "status": "done",
       "priority": "P2",
       "lane": "teamme-hook-engineer",
       "notes": [
-        "Reported honestly by the T25 lane rather than left to be discovered. Freshness is only caught where preflight is loaded from the plugin - teamme_status, teamme_install, /teamme:team-doctor. The CLI/hook path degrades to existence-only and PASSES, so an upgrading user's /intake halts on MISSING hooks but not on stale ones. Closing it needs a decision about how an in-project hook locates the plugin root; the degraded-pass is the safe default until then."
+        "Reported honestly by the T25 lane rather than left to be discovered. Freshness is only caught where preflight is loaded from the plugin - teamme_status, teamme_install, /teamme:team-doctor. The CLI/hook path degrades to existence-only and PASSES, so an upgrading user's /intake halts on MISSING hooks but not on stale ones. Closing it needs a decision about how an in-project hook locates the plugin root; the degraded-pass is the safe default until then.",
+        "APPROVED: both - resolve the plugin templates from the harness install record when readable, AND make the degraded message actionable when not. Grounding finding that shapes it: the plugin cache is version-pinned and old versions persist (0.1.0, 0.2.0, 0.2.1 side by side), so recording an absolute path at install time is dangerous - after an upgrade it points at the version installed FROM, making stale hooks compare clean. installed_plugins.json is the self-correcting source.",
+        "preflight.py: in-project copy now resolves the plugin's templates/hooks through the harness install record (CLAUDE_CONFIG_DIR/plugins/installed_plugins.json, then ~/.claude), last in the chain; verdict names its source, and the unverified path says NOT compared and points at /teamme:team-doctor. Verified against the real speedrun-nanosuit install (3 differing hooks + missing preflight.py) with no CLAUDE_PLUGIN_ROOT; 16 fail-open/degrade cases exercised; ~0.6 ms added to diagnose(); validate.sh passes.",
+        "Isolated HOME+CLAUDE_CONFIG_DIR for the 'unreachable templates degrade' assertion (was leaking through the real install record) and confirmed old form fails / new form passes against a synthetic user-scope record. Added 4 new scripts/validate.sh assertions: (1) a synthetic user-scope install record resolves templates and catches a stale hook, naming 'install record' as source; (2) a missing record and (3) a corrupt (unparseable) record both degrade to existence-only PASS naming /teamme:team-doctor; (4) a record whose installPath fails the marker check is rejected rather than trusted. Each new/changed assertion watched failing first (returning [] from _install_record_template_dirs, making the 'corrupt' record actually valid, making the 'bad' installPath actually valid) then restored to green. ./scripts/validate.sh prints ALL CHECKS PASSED.",
+        "Version 0.2.2 bump and changelog entry written: hook freshness detection now works through plugin install record, with scope dependency and live lookup documented. validate.sh passes.",
+        "ALL LANES LANDED, verified by me: in-project conditions (no CLAUDE_PLUGIN_ROOT) now resolve via the install record and name all three differing hooks on the real project; with the record unreachable it degrades to missing-only with no freshness claim; validate.sh at 23 sections including the fixed environment-isolation assertion; docs narrowed the Known gap rather than dropping it (still 9 bullets); released as 0.2.2 without touching 0.2.1's published limitation."
       ],
       "blocked_on": "",
       "dispatched_to": "",
       "created": "2026-09-24T09:48:57+00:00",
-      "updated": "2026-09-24T09:48:57+00:00",
-      "status_changed": "2026-09-24T09:48:57+00:00"
+      "updated": "2026-09-24T13:54:21+00:00",
+      "status_changed": "2026-09-24T13:54:21+00:00"
+    },
+    {
+      "id": "T27",
+      "title": "Cross-project shared knowledge: explicit per-project grants with read-only vs write, over the MCP server",
+      "status": "open",
+      "priority": "P1",
+      "lane": "teamme-prompt-author",
+      "notes": [
+        "USER'S IDEA: teamme's MCP server could hold data across projects as shared knowledge, but only for projects the user explicitly grants, and with read-only vs write chosen per grant.",
+        "GROUNDING - the capability already exists, unscoped: teamme_mcp.py:133 takes project_dir from tool args (falling back to CLAUDE_PROJECT_DIR then cwd) with NO validation, so teamme_worklog can already read and write any project's ledger on disk. Not a privilege escalation - the server runs as the user and the agent has Bash anyway - but undirected: nothing scopes it, nothing records consent, nothing reports afterwards that another project was touched. So the work is constraining and curating an existing capability, not adding one.",
+        "DESIGN QUESTIONS for the brief: (1) where do grants live? Per-project (.claude/) means a project declares who may read IT, which is the right direction for consent, but the server must then read the target's grant file, not the caller's. (2) Read-only vs write is only meaningful if the server enforces it - a prompt-level rule is not a permission. (3) What is actually shared? The work log is project-specific and low value cross-project; the interesting payload is closer to T14's librarian indexes. Consider whether T27 is the transport layer for T14 rather than a separate feature. (4) Revocation and staleness: a grant to a project that no longer exists, or was renamed. (5) An explicit deny-by-default, since today's behaviour is allow-everything."
+      ],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-24T13:53:16+00:00",
+      "updated": "2026-09-24T13:53:16+00:00",
+      "status_changed": "2026-09-24T13:53:16+00:00"
     }
   ]
 }

@@ -11,8 +11,11 @@ runs the scaffolding end to end in a throwaway project, drives the MCP server ov
 pipe, and drives `preflight.py` through each of its four install states — including
 `installed-outdated` against a synthetic 0.1.0-shaped install, asserting it is never told to run
 `/teamme:init-team`. It also checks hook freshness on its own: a present-but-modified hook drives
-`installed-outdated` and is named in the failure; the path where the plugin's templates cannot be
-located degrades to existence-only and still passes; and `teamme_install` leaves a hook that differs
+`installed-outdated` and is named in the failure; with no way to locate the plugin's templates —
+including via the harness's own install record, tried last — the check degrades to existence-only and
+still passes; a synthetic install record resolves the templates and catches the same stale hook, a
+missing or corrupt record degrades instead, and a record pointing at a directory that fails the
+template-marker check is rejected rather than trusted; and `teamme_install` leaves a hook that differs
 from the plugin's copy alone unless called with `force=true`. CI runs exactly this. Please make it
 pass before opening a pull request.
 
@@ -54,6 +57,12 @@ These run on other people's machines, inside their editing loop. They must:
   the difference could be a deliberate local edit; only `force=true` overwrites it. Never call a
   differing hook "outdated" or "wrong" in output or docs — "differs from the plugin's copy" is what
   the check actually knows.
+- **Keep the harness-layout assumption in one fenced place.** `preflight.py` locates the plugin's own
+  templates via `$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json` as a last resort, and that is
+  teamme's one assumption about Claude Code's own on-disk layout — contained between one banner
+  comment and the next so it is obvious where to fix it if the harness changes. Read it live on every
+  check, never capture it at install time (see `CLAUDE.md`'s "Decisions already made" for why), and do
+  not grow a second harness-shaped assumption anywhere else.
 
 ## Rules for the MCP server
 

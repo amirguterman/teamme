@@ -394,13 +394,24 @@ ISOLATED_DIR="$PWD/isolated-preflight"
 mkdir -p "$ISOLATED_DIR"
 cp "$PF" "$ISOLATED_DIR/preflight.py"
 ISO_PF="$ISOLATED_DIR/preflight.py"
+# preflight.py also resolves templates from the harness's own install record at
+# $CLAUDE_CONFIG_DIR/plugins/installed_plugins.json (falling back to
+# ~/.claude/...). Whether that record exists, and what it points at, depends on
+# whoever's machine this runs on - a developer with a user-scope teamme install
+# would legitimately resolve it, freshness WOULD be verified, and this "degraded"
+# assertion would fail for reasons that have nothing to do with their change.
+# Point both HOME and CLAUDE_CONFIG_DIR at an empty directory so degradation is
+# forced by the fixture, not by an accident of whoever happens to run this.
+ISOLATED_HOME="$PWD/isolated-home"
+mkdir -p "$ISOLATED_HOME"
+isolated_env() { env -u CLAUDE_PLUGIN_ROOT HOME="$ISOLATED_HOME" CLAUDE_CONFIG_DIR="$ISOLATED_HOME/.claude-config" "$@"; }
 set +e
-env -u CLAUDE_PLUGIN_ROOT python3 "$ISO_PF" check --project-dir "$STALE_FIXTURE" >/dev/null
+isolated_env python3 "$ISO_PF" check --project-dir "$STALE_FIXTURE" >/dev/null
 ISO_RC=$?
 set -e
 [ "$ISO_RC" -eq 0 ] || fail "preflight exited $ISO_RC on a stale-but-otherwise-healthy install once its templates were unreachable (must degrade to existence-only and PASS)"
 ISO_JSON_FILE="$PWD/pf-degraded.json"
-env -u CLAUDE_PLUGIN_ROOT python3 "$ISO_PF" check --json --project-dir "$STALE_FIXTURE" > "$ISO_JSON_FILE"
+isolated_env python3 "$ISO_PF" check --json --project-dir "$STALE_FIXTURE" > "$ISO_JSON_FILE"
 python3 -c "
 import json
 d = json.load(open('$ISO_JSON_FILE'))
@@ -413,8 +424,116 @@ if not hooks_check.get('ok'):
     raise SystemExit(f'the hooks check failed in degraded mode instead of degrading: {hooks_check}')
 if 'not verified' not in hooks_check.get('detail', ''):
     raise SystemExit(f'the degraded hooks check did not say freshness was unverified: {hooks_check}')
+if '/teamme:team-doctor' not in hooks_check.get('detail', ''):
+    raise SystemExit(f'the degraded hooks check did not point at /teamme:team-doctor: {hooks_check}')
 "
-echo "  ok: templates unreachable from a project -> freshness not verified, hooks check still PASSES"
+echo "  ok: templates unreachable (no install record either) -> freshness not verified, hooks check still PASSES, names /teamme:team-doctor"
+
+echo "== preflight: a resolvable install record is what freshness checks against, and catches a stale hook through it =="
+# A synthetic harness install record (user scope, no projectPath) pointing at
+# this repo's own real templates/hooks - which DOES have a hook that differs
+# from the fixture's deliberately-modified worklog.py. If this resolves through
+# the record, the stale hook must be caught and named, and the detail must say
+# so came from the record - not from env/self/hint, which are all unset/broken
+# here on purpose (isolated copy, no CLAUDE_PLUGIN_ROOT).
+RECORD_HOME="$PWD/record-home"
+mkdir -p "$RECORD_HOME/.claude-config/plugins"
+python3 -c "
+import json, pathlib
+data = {'plugins': {'teamme@teamme': [{
+    'scope': 'user', 'installPath': '$ROOT/plugins/teamme',
+    'version': '9.9.9', 'lastUpdated': '2026-01-01T00:00:00.000Z',
+}]}}
+pathlib.Path('$RECORD_HOME/.claude-config/plugins/installed_plugins.json').write_text(json.dumps(data))
+"
+record_env() { env -u CLAUDE_PLUGIN_ROOT HOME="$RECORD_HOME" CLAUDE_CONFIG_DIR="$RECORD_HOME/.claude-config" "$@"; }
+RECORD_JSON_FILE="$PWD/pf-record.json"
+set +e
+record_env python3 "$ISO_PF" check --project-dir "$STALE_FIXTURE" >/dev/null
+RECORD_RC=$?
+record_env python3 "$ISO_PF" check --json --project-dir "$STALE_FIXTURE" > "$RECORD_JSON_FILE"
+set -e
+[ "$RECORD_RC" -ne 0 ] || fail "preflight exited 0 with a stale hook, even though a resolvable install record should have caught it"
+python3 -c "
+import json
+d = json.load(open('$RECORD_JSON_FILE'))
+if d.get('ok'):
+    raise SystemExit(f'reported ok=true despite a stale hook visible through the install record: {d}')
+hooks_check = next(c for c in d['checks'] if c['id'] == 'hooks')
+if hooks_check.get('ok'):
+    raise SystemExit(f'the hooks check reported ok=true despite the stale hook: {hooks_check}')
+if 'worklog.py' not in hooks_check.get('detail', ''):
+    raise SystemExit(f'the stale filename was not named: {hooks_check}')
+if 'install record' not in hooks_check.get('detail', ''):
+    raise SystemExit(f'the detail did not name the install-record source - this may have resolved some other way: {hooks_check}')
+"
+echo "  ok: a synthetic install record resolves the templates and catches the stale hook, naming the record as its source"
+
+echo "== preflight: a corrupt or missing install record degrades rather than erroring =="
+# missing: an empty home directory, no installed_plugins.json at all - already
+# exercised above (ISOLATED_HOME), re-asserted here for the /teamme:team-doctor
+# wording. corrupt: a record that exists but fails to parse as JSON - a
+# different code path (json.loads raising) than a simply-absent file.
+CORRUPT_HOME="$PWD/corrupt-home"
+mkdir -p "$CORRUPT_HOME/.claude-config/plugins"
+printf '{ not valid json' > "$CORRUPT_HOME/.claude-config/plugins/installed_plugins.json"
+corrupt_env() { env -u CLAUDE_PLUGIN_ROOT HOME="$CORRUPT_HOME" CLAUDE_CONFIG_DIR="$CORRUPT_HOME/.claude-config" "$@"; }
+CORRUPT_JSON_FILE="$PWD/pf-corrupt-record.json"
+set +e
+corrupt_env python3 "$ISO_PF" check --project-dir "$STALE_FIXTURE" >/dev/null
+CORRUPT_RC=$?
+set -e
+[ "$CORRUPT_RC" -eq 0 ] || fail "preflight exited $CORRUPT_RC with an unparseable install record (must degrade, not error)"
+corrupt_env python3 "$ISO_PF" check --json --project-dir "$STALE_FIXTURE" > "$CORRUPT_JSON_FILE"
+python3 -c "
+import json
+d = json.load(open('$CORRUPT_JSON_FILE'))
+if not d.get('ok'):
+    raise SystemExit(f'a corrupt install record failed the check instead of degrading: {d}')
+hooks_check = next(c for c in d['checks'] if c['id'] == 'hooks')
+if not hooks_check.get('ok'):
+    raise SystemExit(f'the hooks check failed on a corrupt record instead of degrading: {hooks_check}')
+if 'not verified' not in hooks_check.get('detail', ''):
+    raise SystemExit(f'a corrupt install record did not degrade to existence-only: {hooks_check}')
+if '/teamme:team-doctor' not in hooks_check.get('detail', ''):
+    raise SystemExit(f'the degraded detail did not point at /teamme:team-doctor: {hooks_check}')
+"
+echo "  ok: an unparseable install record degrades to existence-only (PASS), naming /teamme:team-doctor - same as a missing one"
+
+echo "== preflight: a record whose installPath fails the marker check is rejected, never compared against =="
+# The false positive that matters most: the resolver picking a path it should
+# have rejected and reporting 'all matching' against the wrong templates. Point
+# installPath at a real, existing directory that is NOT shaped like the
+# plugin's templates/hooks (no settings.hooks.json marker, no preflight.py) -
+# this repo's own root - and confirm it is rejected rather than trusted.
+BADPATH_HOME="$PWD/badpath-home"
+mkdir -p "$BADPATH_HOME/.claude-config/plugins"
+python3 -c "
+import json, pathlib
+data = {'plugins': {'teamme@teamme': [{
+    'scope': 'user', 'installPath': '$ROOT',
+    'version': '9.9.9', 'lastUpdated': '2026-01-01T00:00:00.000Z',
+}]}}
+pathlib.Path('$BADPATH_HOME/.claude-config/plugins/installed_plugins.json').write_text(json.dumps(data))
+"
+badpath_env() { env -u CLAUDE_PLUGIN_ROOT HOME="$BADPATH_HOME" CLAUDE_CONFIG_DIR="$BADPATH_HOME/.claude-config" "$@"; }
+BADPATH_JSON_FILE="$PWD/pf-badpath.json"
+set +e
+badpath_env python3 "$ISO_PF" check --project-dir "$STALE_FIXTURE" >/dev/null
+BADPATH_RC=$?
+set -e
+[ "$BADPATH_RC" -eq 0 ] || fail "preflight exited $BADPATH_RC on a record whose installPath fails the marker check (must degrade, never be trusted blindly)"
+badpath_env python3 "$ISO_PF" check --json --project-dir "$STALE_FIXTURE" > "$BADPATH_JSON_FILE"
+python3 -c "
+import json
+d = json.load(open('$BADPATH_JSON_FILE'))
+hooks_check = next(c for c in d['checks'] if c['id'] == 'hooks')
+if not hooks_check.get('ok'):
+    raise SystemExit(f'a record pointing at a path with no shipped templates was trusted instead of rejected: {hooks_check}')
+if 'not verified' not in hooks_check.get('detail', ''):
+    raise SystemExit(f'a bad-path record was not rejected down to existence-only: {hooks_check}')
+"
+echo "  ok: a record whose installPath fails the marker check is rejected, not compared against"
 
 echo "== mcp server: teamme_install leaves a stale hook alone without force, replaces it with force=true =="
 FORCE_PROJ="$PWD/force-repair-proj"
