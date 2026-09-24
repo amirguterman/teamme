@@ -1,7 +1,4 @@
 {
-  "enabledPlugins": {
-    "teamme@teamme": true
-  },
   "hooks": {
     "UserPromptSubmit": [
       {
@@ -58,5 +55,8 @@
         ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "teamme@teamme": true
   }
 }

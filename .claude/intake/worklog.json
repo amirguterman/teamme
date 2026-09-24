@@ -233,11 +233,12 @@
         "ARCHITECTURE DECIDED (user, this session). (1) WHERE: librarians ship in the plugin's own agents/ - the first plugin-shipped agents, reversing the CLAUDE.md 'ships no agents by design' entry, which must be REPLACED with reasoning (project-agnostic machinery, not project-specific roles). (2) NO LIBRARIAN HOOKS AT ALL - this dissolves the harness constraint instead of working around it. Librarians are QUERY-ONLY, each backed by its own store. (3) LIBRARIAN AGENTS ARE THE ONLY CALLERS of the librarian MCP tools; team agents consult librarians, never the DB. Team agents therefore need no new tool access and their tool lists stay tight. Existing teamme_worklog/teamme_intake_phase keep their current callers - this rule governs the NEW query tools. (4) GATING LIVES WITH THE TEAM AGENTS that consult librarians, in .claude/hooks/ where teamme's hooks already live. (5) GATE STRENGTH: 'ask' on git push (PreToolUse narrowed to git push), matching the reference implementation - so a hotfix proceeds with a conscious approval. Needs an explicit carve-out in CLAUDE.md invariant #1: 'ask' on a Bash command is not a write-deny, but the invariant's wording does not currently distinguish them.",
         "CONSEQUENCE of query-only librarians, and it is a good one: the INDEXER IS A SCRIPT, NOT AN AGENT. Mechanical extraction (hash, date, author, subject, files, diffstat) is deterministic python3, costs no model call, and can be driven by a hook later without putting a model in the editing loop. The librarian AGENT supplies the reasoning layer the user asked for - scope tags, related-change grouping, and the commit-message-as-storytelling 'why' - when consulted or on an explicit refresh. Two-speed refresh, and only the cheap speed can ever run per-turn. The reference implementation has exactly this split: commits.jsonl carries mechanical fields plus reasoned scope_tags.",
         "PHASE 1 SCOPE (approved): the substrate only - no agents, no gate, no new project-copied files. Deliberate: the indexer and store live in the PLUGIN (server/librarian/), invoked by the MCP server, so nothing joins REQUIRED_HOOKS. That avoids T23's trap by construction rather than by remembering - a copied indexer would make every future librarian grow the required-hooks list again. Deliverables: SQLite schema + rebuild-from-text, incremental git indexer, MCP query/refresh/status tools, validate.sh coverage including 'a refresh clears the staleness signal' (the assertion that would have caught T10), and a MEASUREMENT on this repo of cold index, warm refresh and query latency. Phases 2-5 (librarian tier, remaining librarians, gate, session librarian T30) are specified but not dispatched; the measurement decides whether they proceed as designed.",
-        "Phase 1 dispatched as T31 (librarian substrate). T14 stays open as the umbrella for phases 2-5."
+        "Phase 1 dispatched as T31 (librarian substrate). T14 stays open as the umbrella for phases 2-5.",
+        "PHASE 1 VERIFIED LIVE UNDER THE REAL HARNESS, which nothing had done before - validate.sh drives the tools over a test pipe, not through Claude Code's own MCP client. teamme_status: live, 6/6 hooks matching the plugin's copies (freshness resolved via the MCP server's own path hint, the first resolution rung). teamme_librarian_status on an unindexed project: correctly reports no data and names the refresh tool rather than erroring. teamme_librarian_refresh: full index of this repo in 0.117s, 12 commits / 136 file changes. teamme_librarian_query commits_touching on preflight.py: 5 rows with subjects and +/- line counts, which read as the actual development story of that file. The tool descriptions carry the INTENDED CALLER convention and say plainly that phase 1 does not enforce it."
       ],
       "blocked_on": "",
       "created": "2026-09-17T18:05:01+00:00",
-      "updated": "2026-09-24T15:18:19+00:00",
+      "updated": "2026-09-24T17:30:38+00:00",
       "status_changed": "2026-09-17T18:20:55+00:00"
     },
     {
@@ -469,17 +470,18 @@
     {
       "id": "T29",
       "title": "Point the teamme marketplace back at GitHub - it is currently the local working tree",
-      "status": "open",
+      "status": "done",
       "priority": "P1",
       "lane": "teamme-docs-writer",
       "notes": [
-        "ENVIRONMENT STATE, not visible in git: the 'teamme' marketplace was switched to Directory (/home/ubuntu/source/teamme) to test 0.2.x before main had it. main now has everything (78b54d6), so this should go back: claude plugin marketplace remove teamme && claude plugin marketplace add amirguterman/teamme. Until then every install and every test exercises the uncommitted working tree rather than what users receive - which is the exact blind spot that let T23 reach a release. Also: the plugin is currently installed at PROJECT scope for /home/ubuntu/source/speedrun-nanosuit only, so this repo has no /teamme:* commands and its own preflight reports 'NOT compared'. Reinstalling at user scope (the default) would fix both."
+        "ENVIRONMENT STATE, not visible in git: the 'teamme' marketplace was switched to Directory (/home/ubuntu/source/teamme) to test 0.2.x before main had it. main now has everything (78b54d6), so this should go back: claude plugin marketplace remove teamme && claude plugin marketplace add amirguterman/teamme. Until then every install and every test exercises the uncommitted working tree rather than what users receive - which is the exact blind spot that let T23 reach a release. Also: the plugin is currently installed at PROJECT scope for /home/ubuntu/source/speedrun-nanosuit only, so this repo has no /teamme:* commands and its own preflight reports 'NOT compared'. Reinstalling at user scope (the default) would fix both.",
+        "RESOLVED by the user: marketplace removed and re-added from GitHub, plugin reinstalled. Verified from the harness's own install record at $CLAUDE_CONFIG_DIR/plugins/installed_plugins.json (= /home/ubuntu/.claude-personal/, NOT ~/.claude/ - this machine sets CLAUDE_CONFIG_DIR, and the ~/.claude fallback holds a stale record with /root paths): teamme@teamme, version 0.3.0, gitCommitSha 1fb53bf700de - the exact commit pushed to main - installPath in the version-pinned cache, not the working tree. Tests here now exercise what users receive."
       ],
       "blocked_on": "",
       "dispatched_to": "",
       "created": "2026-09-24T14:30:05+00:00",
-      "updated": "2026-09-24T14:30:05+00:00",
-      "status_changed": "2026-09-24T14:30:05+00:00"
+      "updated": "2026-09-24T17:30:38+00:00",
+      "status_changed": "2026-09-24T17:30:38+00:00"
     },
     {
       "id": "T30",
