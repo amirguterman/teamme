@@ -23,8 +23,10 @@ plugins/teamme/
   server/teamme_mcp.py            stdio JSON-RPC MCP server: status/install/worklog/intake-phase/
                                    librarian tools
   server/librarian/*.py           librarian substrate: append-only JSONL + a disposable SQLite index,
-                                   an incremental git indexer. NOT copied into a project, NOT in
-                                   REQUIRED_HOOKS - invoked only by teamme_mcp.py
+                                   an incremental git indexer, and a co-change query layer
+                                   (changes_with/coupling_between/hotspots) built on the same
+                                   files_changed rows - no new table, no new index pass. NOT copied
+                                   into a project, NOT in REQUIRED_HOOKS - invoked only by teamme_mcp.py
   server/librarian/config.py      per-project librarian settings (.claude/librarians/config.json):
                                    which librarians are enabled, and whether the append-only record
                                    is committed - owned by the MCP server, enacted into .gitignore,
@@ -118,6 +120,24 @@ a newline in a path, a non-UTF-8 commit subject, and a merge commit (parent rows
 all parse without raising; and a combined pipe test drives all three librarian tools together — an
 unknown query name, a bad commit hash, the row-limit clamp and truncation flag, and a malformed JSONL
 line that is skipped rather than fatal — exiting 0 with empty stderr throughout.
+
+Three co-change queries — `changes_with`, `coupling_between`, `hotspots` — read edges out of the same
+`files_changed` rows rather than parsing source, and four more sections cover them: `changes_with` is
+checked row-for-row against ground truth read straight from `git log --name-only`, with the librarian
+module out of the loop; the 25-file damping cap is proven in *both* directions on a fixture with one
+30-file sweep commit — the default cap excludes it entirely, leaving the real partner (`a_test.py`)
+and no junk file in the ranking, and `max_files=40` (past the sweep's size) brings the junk files back
+and drops the skipped count to zero — so the cap is shown to be doing the work rather than the fixture
+being thin (watched failing first four ways: an off-by-one `shared_commits`, the cap silently ignored
+by `_breadth` even after being raised, `too_broad` forced `False`, and the damped-away empty message
+collapsed into the unknown-path one — each revert confirmed to hold afterward by grepping the restored
+file for the broken text); `coupling_between` is checked to
+mark a too-broad shared commit rather than hide it, since that one listing is deliberately undamped;
+and `changes_with`'s four empty/annotated payloads — an unknown path, a path whose every commit was
+damped away, a path that genuinely changed alone, and too little history to rank from — are asserted
+distinguishable from one another rather than collapsing into one generic "no results". `hotspots` has
+no section of its own yet, and the renderer a librarian agent actually reads (`_render_cochange` in
+`teamme_mcp.py`) is exercised only by hand, not by `validate.sh` — both tracked as T35.
 
 ## Design invariants
 
@@ -284,6 +304,35 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   discipline exists to prevent. `.claude/librarians/index.db`, the derived SQLite index, is never a
   choice — it is written to the same block regardless of `commit_record`, because a binary index
   cannot be merged.
+- **Co-change coupling, not static parsing, is the dependency signal — the rejected option is the
+  instructive part.** The obvious way to build "what depends on what" is a parser per language. teamme
+  is stdlib-only (invariant #3) and project-agnostic (invariant #4), so that would mean one parser per
+  language, shipped with zero dependencies, silently producing nothing on any stack nobody wrote one
+  for — the exact "indistinguishable from not working" failure invariant #3 exists to prevent.
+  Co-change needs no parser: files that changed in the same commit are related, weighted by how often,
+  read entirely off the `files_changed` rows phase 1 already writes — no new table, no new index pass.
+  It works on every language plus configs and docs, and it catches edges static analysis cannot see (a
+  schema and the migration that follows it, a feature and its docs). Static parsing remains available
+  later as a per-language enrichment layer; it is not the foundation. The vocabulary this buys is
+  enforced everywhere the result is read: "changes with", never "depends on", "imports" or "requires" —
+  a caveat on the tool's own output cannot govern an agent's prose, so the rule is written directly into
+  `agents/history-librarian.md`, not left for the tool output to carry alone. Every co-change row
+  carries its own evidence (shared-commit count, the partner's own count, the most recent shared commit)
+  rather than a bare ranking position, and a row backed by one shared commit is marked `weak` rather than
+  presented the same as one backed by forty. A commit touching more than `DEFAULT_MAX_COMMIT_FILES` (25)
+  files is excluded from every edge count as a sweep — a reformat, a license pass, a rename — because
+  one such commit couples everything it touched to everything else; the cap is overridable per call, and
+  every answer reports how many commits were considered and how many were skipped, so the largest input
+  to a ranking is never invisible.
+- **No separate code librarian; `history-librarian` absorbs co-change instead.** The task that shipped
+  this (T34) was titled "a code librarian... plus a tests librarian", but co-change is a **history**
+  signal — the same commit stream, the same index, the same SHAs as everything else `history-librarian`
+  already answers. A second agent querying the same source of truth under a different name would split
+  "ask about history" across two places for no gain. A genuinely separate code librarian would be one
+  built on *static* analysis — a different evidence base entirely — and that is not what this phase
+  built. Tests get no separate agent either: a test file that keeps changing alongside a source file
+  *is* the test-to-code edge on the same signal, reported as "these tests change with this code", never
+  "these tests cover this code" — coverage is a claim about execution, and the index has none.
 
 ## Known gaps
 
@@ -293,12 +342,18 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   `/intake`'s step 0a deferral short-circuit are all prompt text, not enforced behaviour.
 - `templates/intake.md` has been exercised on one real project (a Minecraft Fabric mod). The
   `{{PLACEHOLDER}}` set may not fit stacks with very different doc conventions.
-- **`plugins/teamme/agents/history-librarian.md` — the plugin's first shipped agent — is unvalidated
-  by anything in this repo.** `validate.sh`'s frontmatter check globs `commands/*.md` only; it does
-  not reach `agents/`, so nothing parses this file's YAML (`tools`, `model`, `color`, `name`) or
-  checks it at all. Generated, per-project team agents remain unvalidated for the original reason —
-  a team is derived from that project's own layout, so there is nothing fixed to check beyond
-  frontmatter parsing, and even that does not run today.
+- **`plugins/teamme/agents/history-librarian.md`'s frontmatter is validated; what it instructs is
+  not.** `validate.sh`'s manifest check no longer globs `commands/*.md` only — that glob repeated the
+  exact `REQUIRED_HOOKS`-style mistake (see T23 below) and would have let `agents/` ship unchecked. It
+  now walks the whole plugin tree for `*.md` and requires every prompt file to be accounted for by a
+  directory it knows how to validate, so a third prompt surface added later fails loudly instead of
+  passing silently. For an agent specifically it parses the frontmatter, requires `name` and
+  `description`, and asserts none of `FORBIDDEN_AGENT_KEYS` (`permissionMode`, `hooks`, `mcpServers`)
+  is set. What it still does not do — for this file or any command — is test what the prompt
+  *instructs*: the co-change vocabulary rule, the query-composition walk, the output contract. That
+  gap is the no-eval-suite entry above, not a separate one. Generated, per-project team agents remain
+  unvalidated beyond frontmatter parsing, for the original reason — a team is derived from that
+  project's own layout, so there is nothing fixed to check beyond that.
 - **The intended-caller convention for the librarian tools is unenforced.** The agent, the tool
   descriptions, `commands/init-team.md`'s shared guardrail block and `templates/intake.md` step 1 all
   say `history-librarian` is the intended and only sanctioned caller of
@@ -341,10 +396,27 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   throwaway git fixtures by hand while phase 2 was built, but no `validate.sh` section drives them
   yet. (See the entry above on the intended-caller convention for what phase 2's agent does and does
   not enforce.)
-- The `commits_touching`, `commits_between` and `search_subjects` query variants are exercised while
-  building fixtures and ground truth for other assertions, but none has a `validate.sh` section
-  asserting its own result directly — only `recent`, `files_in_commit` and the unknown-query/bad-hash
-  error paths are.
+- The `commits_touching`, `commits_between`, `search_subjects` and `hotspots` query variants are
+  exercised while building fixtures and ground truth for other assertions, but none has a
+  `validate.sh` section asserting its own result directly — only `recent`, `files_in_commit`,
+  `changes_with`, `coupling_between`, and the unknown-query/bad-hash error paths are. `hotspots` is
+  the one phase-3 co-change query with no assertion of its own at all (tracked as T35, alongside the
+  renderer gap below).
+- **The MCP renderers are untested (tracked as T35).** `validate.sh`'s co-change assertions call
+  `store.query()` directly — correctly, since the module must not be allowed to agree with itself —
+  but that means `_render_cochange` in `teamme_mcp.py`, the prose text a librarian agent actually
+  reads back over the MCP pipe, has no `validate.sh` coverage, and neither does `commit_detail`'s
+  renderer. The co-change renderer was checked by hand over a real pipe (the header reads "correlation,
+  not a call graph", the evidence base and overlap are present, damping is explained) — unasserted, not
+  unknown.
+- **Four prompt-to-renderer mismatches, found while writing `agents/history-librarian.md` and not yet
+  reconciled.** The agent prompt documents named row fields (`shared_commits`, `jaccard`, `weak`, and
+  so on); `_render_cochange` emits prose instead, not those field names. `share_of_anchor` is computed
+  in `store.py` and never rendered by `teamme_mcp.py`. The overlap tie-break in `changes_with`'s
+  `ORDER BY` is invisible in the rendered output, so the prompt can only claim "most shared first", not
+  the tie-break rule itself. `weak` means one *shared* commit in `changes_with` but one commit *total*
+  in `hotspots` — the same word carrying two different thresholds, each documented correctly in
+  isolation but not called out as differing between the two queries.
 - Shallow-clone behaviour is untested. `history.probe()` reports `shallow: true` and `index()` notes
   it in the result, but no `validate.sh` fixture is an actual shallow clone.
 - Merge commits get `commit_parents` rows but no `files_changed` rows (`git log --numstat` reports no

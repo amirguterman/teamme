@@ -2138,5 +2138,222 @@ if missing:
 print("  ok: an ambiguous short hash is rejected and names both colliding candidates, never guesses")
 PY
 
+echo "== librarian query: changes_with matches ground truth read straight from git log, module out of the loop =="
+LIB_COCHANGE="$PWD/lib-cochange-truth"
+mkdir -p "$LIB_COCHANGE"
+gitc -C "$LIB_COCHANGE" init -q
+echo 1 > "$LIB_COCHANGE/a.py"; gitc -C "$LIB_COCHANGE" add -A; gitc -C "$LIB_COCHANGE" commit -qm "add a"
+echo 1 > "$LIB_COCHANGE/b.py"; gitc -C "$LIB_COCHANGE" add -A; gitc -C "$LIB_COCHANGE" commit -qm "add b"
+printf '1\n2\n' > "$LIB_COCHANGE/a.py"; printf '1\n2\n' > "$LIB_COCHANGE/b.py"
+gitc -C "$LIB_COCHANGE" add -A; gitc -C "$LIB_COCHANGE" commit -qm "a+b together 1"
+printf '1\n2\n3\n' > "$LIB_COCHANGE/a.py"; printf '1\n2\n3\n' > "$LIB_COCHANGE/b.py"
+gitc -C "$LIB_COCHANGE" add -A; gitc -C "$LIB_COCHANGE" commit -qm "a+b together 2"
+printf '1\n2\n3\n4\n' > "$LIB_COCHANGE/a.py"; echo 1 > "$LIB_COCHANGE/c.py"
+gitc -C "$LIB_COCHANGE" add -A; gitc -C "$LIB_COCHANGE" commit -qm "a+c together"
+echo 1 > "$LIB_COCHANGE/unrelated.py"; gitc -C "$LIB_COCHANGE" add -A; gitc -C "$LIB_COCHANGE" commit -qm "unrelated 1"
+echo 2 >> "$LIB_COCHANGE/unrelated.py"; gitc -C "$LIB_COCHANGE" add -A; gitc -C "$LIB_COCHANGE" commit -qm "unrelated 2"
+echo 3 >> "$LIB_COCHANGE/unrelated.py"; gitc -C "$LIB_COCHANGE" add -A; gitc -C "$LIB_COCHANGE" commit -qm "unrelated 3"
+printf '1\n2\n3\n4\n5\n' > "$LIB_COCHANGE/a.py"; gitc -C "$LIB_COCHANGE" add -A; gitc -C "$LIB_COCHANGE" commit -qm "a alone"
+python3 - "$LIBPATH" "$LIB_COCHANGE" <<'PY'
+# Ground truth is computed directly from `git log --name-only`, entirely
+# independent of the librarian module - the only comparison worth making, per
+# this repo's own doctrine (a module agreeing with itself proves nothing).
+import collections, subprocess, sys
+
+libpath, repo = sys.argv[1], sys.argv[2]
+sys.path.insert(0, libpath)
+
+log = subprocess.run(
+    ["git", "-C", repo, "log", "--no-renames", "--name-only", "--format=COMMIT\t%H"],
+    capture_output=True, text=True, check=True,
+).stdout
+by_hash = {}
+cur = None
+for line in log.splitlines():
+    if line.startswith("COMMIT\t"):
+        cur = line.split("\t", 1)[1]
+        by_hash[cur] = set()
+    elif line.strip():
+        by_hash[cur].add(line.strip())
+
+anchor_hashes = {h for h, files in by_hash.items() if "a.py" in files}
+partner_shared = collections.Counter()
+for h in anchor_hashes:
+    for f in by_hash[h]:
+        if f != "a.py":
+            partner_shared[f] += 1
+partner_total = collections.Counter()
+for files in by_hash.values():
+    for f in files:
+        partner_total[f] += 1
+expected_rows = sorted(partner_shared.items(), key=lambda kv: (-kv[1], kv[0]))
+
+from librarian import history, store
+
+r = history.index(repo, full=True)
+if not r.get("ok"):
+    sys.exit(f"initial index of the co-change ground-truth fixture failed: {r}")
+conn = store.connect(repo)
+q = store.query(conn, "changes_with", {"path": "a.py"}, repo)
+conn.close()
+
+got_rows = [(row["path"], row["shared_commits"]) for row in q["rows"]]
+if got_rows != expected_rows:
+    sys.exit(f"changes_with rows do not match ground truth from git log: module={got_rows}, "
+              f"git={expected_rows}")
+if q["anchor_commits"] != len(anchor_hashes):
+    sys.exit(f"anchor_commits does not match git's own count: module={q['anchor_commits']}, "
+              f"git={len(anchor_hashes)}")
+for row in q["rows"]:
+    exp_total = partner_total[row["path"]]
+    if row["partner_commits"] != exp_total:
+        sys.exit(f"partner_commits for {row['path']} does not match git's own count: "
+                  f"module={row['partner_commits']}, git={exp_total}")
+
+print(f"  ok: changes_with({{'path': 'a.py'}}) matches git log directly: {got_rows}")
+PY
+
+echo "== librarian query: co-change damping excludes a sweep at the default cap, and raising max_files brings it back =="
+LIB_DAMP="$PWD/lib-cochange-damping"
+mkdir -p "$LIB_DAMP"
+gitc -C "$LIB_DAMP" init -q
+echo 0 > "$LIB_DAMP/a.py"; gitc -C "$LIB_DAMP" add -A; gitc -C "$LIB_DAMP" commit -qm "add a"
+echo 0 > "$LIB_DAMP/a_test.py"; gitc -C "$LIB_DAMP" add -A; gitc -C "$LIB_DAMP" commit -qm "add a_test"
+# Push the considered-commit count comfortably above YOUNG_HISTORY (20) so the
+# young-index caveat cannot contaminate this fixture's damping assertions.
+for i in $(seq 1 18); do
+  printf 'line %s\n' $(seq 1 "$((i + 1))") > "$LIB_DAMP/a.py"
+  printf 'line %s\n' $(seq 1 "$((i + 1))") > "$LIB_DAMP/a_test.py"
+  gitc -C "$LIB_DAMP" add -A
+  gitc -C "$LIB_DAMP" commit -qm "a+a_test together $i"
+done
+echo 0 > "$LIB_DAMP/lonely.py"; gitc -C "$LIB_DAMP" add -A; gitc -C "$LIB_DAMP" commit -qm "lonely alone"
+# the sweep: a.py plus 29 junk files in ONE commit - 30 files, over
+# DEFAULT_MAX_COMMIT_FILES=25
+echo sweep > "$LIB_DAMP/a.py"
+for i in $(seq 1 29); do echo sweep > "$LIB_DAMP/junk$i.py"; done
+gitc -C "$LIB_DAMP" add -A
+gitc -C "$LIB_DAMP" commit -qm "mass reformat sweep"
+python3 - "$LIBPATH" "$LIB_DAMP" <<'PY'
+import sys
+libpath, repo = sys.argv[1], sys.argv[2]
+sys.path.insert(0, libpath)
+from librarian import history, store
+
+r = history.index(repo, full=True)
+if not r.get("ok"):
+    sys.exit(f"initial index of the damping fixture failed: {r}")
+conn = store.connect(repo)
+
+# direction 1: at the default cap, the sweep is excluded entirely
+q_default = store.query(conn, "changes_with", {"path": "a.py"}, repo)
+partners_default = {row["path"] for row in q_default["rows"]}
+if any(p.startswith("junk") for p in partners_default):
+    sys.exit(f"a junk file from the sweep appeared as a partner at the default cap: {partners_default}")
+if "a_test.py" not in partners_default:
+    sys.exit(f"a_test.py (the real co-change partner) is missing at the default cap: {partners_default}")
+if q_default["damping"]["commits_skipped_too_broad"] != 1:
+    sys.exit(f"expected exactly 1 commit skipped as too broad, got {q_default['damping']}")
+
+# direction 2: raising max_files past the sweep size brings its edges back
+q_raised = store.query(conn, "changes_with", {"path": "a.py", "max_files": 40}, repo)
+partners_raised = {row["path"] for row in q_raised["rows"]}
+junk_seen = {p for p in partners_raised if p.startswith("junk")}
+if not junk_seen:
+    sys.exit(f"raising max_files past the sweep size did not surface any junk partner: {partners_raised}")
+if q_raised["damping"]["commits_skipped_too_broad"] != 0:
+    sys.exit(f"expected 0 commits skipped once max_files covers the sweep, got {q_raised['damping']}")
+
+conn.close()
+print(f"  ok: default cap excludes the sweep ({len(partners_default)} partner(s), 1 skipped); "
+      f"max_files=40 surfaces {len(junk_seen)} junk partner(s), 0 skipped")
+PY
+
+echo "== librarian query: coupling_between shows a too-broad shared commit rather than hiding it =="
+python3 - "$LIBPATH" "$LIB_DAMP" <<'PY'
+import sys
+libpath, repo = sys.argv[1], sys.argv[2]
+sys.path.insert(0, libpath)
+from librarian import store
+
+conn = store.connect(repo)
+q = store.query(conn, "coupling_between", {"path": "a.py", "other_path": "junk1.py"}, repo)
+conn.close()
+if not q.get("ok"):
+    sys.exit(f"coupling_between(a.py, junk1.py) reported an error: {q}")
+if q["shared_commits"] != 1:
+    sys.exit(f"expected exactly 1 shared commit between a.py and junk1.py, got {q['shared_commits']}")
+if q["shared_counted"] != 0 or q["shared_too_broad"] != 1:
+    sys.exit(f"expected shared_counted=0 shared_too_broad=1, got shared_counted={q['shared_counted']} "
+              f"shared_too_broad={q['shared_too_broad']}")
+if not q["rows"] or not q["rows"][0]["too_broad"]:
+    sys.exit(f"the sweep commit was listed but not marked too_broad: {q['rows']}")
+if not any("no edge at all" in c for c in q["caveats"]):
+    sys.exit(f"missing the 'no edge at all' caveat when every shared commit is too broad: {q['caveats']}")
+print("  ok: coupling_between lists the sweep commit and marks it too_broad, rather than hiding it")
+PY
+
+echo "== librarian query: changes_with's empty/annotated payloads stay distinguishable (unknown, damped-away, alone, young) =="
+LIB_YOUNG="$PWD/lib-cochange-young"
+mkdir -p "$LIB_YOUNG"
+gitc -C "$LIB_YOUNG" init -q
+echo 0 > "$LIB_YOUNG/x.py"; gitc -C "$LIB_YOUNG" add -A; gitc -C "$LIB_YOUNG" commit -qm "add x"
+echo 0 > "$LIB_YOUNG/y.py"; gitc -C "$LIB_YOUNG" add -A; gitc -C "$LIB_YOUNG" commit -qm "add y"
+echo 1 > "$LIB_YOUNG/x.py"; echo 1 > "$LIB_YOUNG/y.py"
+gitc -C "$LIB_YOUNG" add -A; gitc -C "$LIB_YOUNG" commit -qm "x+y together"
+python3 - "$LIBPATH" "$LIB_DAMP" "$LIB_YOUNG" <<'PY'
+import sys
+libpath, damp_repo, young_repo = sys.argv[1], sys.argv[2], sys.argv[3]
+sys.path.insert(0, libpath)
+from librarian import history, store
+
+conn = store.connect(damp_repo)
+q_unknown = store.query(conn, "changes_with", {"path": "does-not-exist.py"}, damp_repo)
+q_damped = store.query(conn, "changes_with", {"path": "junk1.py"}, damp_repo)
+q_alone = store.query(conn, "changes_with", {"path": "lonely.py"}, damp_repo)
+conn.close()
+
+texts = {
+    "unknown": q_unknown.get("empty_reason") or "",
+    "damped": q_damped.get("empty_reason") or "",
+    "alone": q_alone.get("empty_reason") or "",
+}
+if q_unknown["rows"] or q_damped["rows"] or q_alone["rows"]:
+    sys.exit(f"one of the three empty cases unexpectedly had rows: "
+              f"unknown={q_unknown['rows']}, damped={q_damped['rows']}, alone={q_alone['rows']}")
+if "no commit in the index touches" not in texts["unknown"]:
+    sys.exit(f"unknown-path text wrong: {texts['unknown']!r}")
+if "skipped as too broad" not in texts["damped"]:
+    sys.exit(f"damped-away text wrong: {texts['damped']!r}")
+if q_damped["anchor_commits_all"] != 1 or q_damped["anchor_commits"] != 0:
+    sys.exit(f"junk1.py anchor counts wrong: all={q_damped['anchor_commits_all']} "
+              f"considered={q_damped['anchor_commits']}")
+if "nothing else changed in any of them" not in texts["alone"]:
+    sys.exit(f"genuinely-alone text wrong: {texts['alone']!r}")
+if len(set(texts.values())) != 3:
+    sys.exit(f"the three empty_reason texts are not pairwise distinct: {texts}")
+for name, q in (("unknown", q_unknown), ("damped", q_damped), ("alone", q_alone)):
+    if any("little history" in c for c in q.get("caveats") or []):
+        sys.exit(f"the young-index caveat leaked into the non-young '{name}' result: {q['caveats']}")
+
+# the fourth, separately-triggered annotation: a genuinely young index
+r2 = history.index(young_repo, full=True)
+if not r2.get("ok"):
+    sys.exit(f"initial index of the young fixture failed: {r2}")
+conn2 = store.connect(young_repo)
+q_young = store.query(conn2, "changes_with", {"path": "x.py"}, young_repo)
+conn2.close()
+if not q_young["rows"]:
+    sys.exit(f"expected x.py/y.py to co-change at least once in the young fixture: {q_young}")
+young_caveats = [c for c in q_young["caveats"] if "little history" in c]
+if not young_caveats:
+    sys.exit(f"a 3-commit index did not carry the young-history caveat: {q_young['caveats']}")
+if young_caveats[0] in texts.values():
+    sys.exit("the young-index caveat collided with one of the three empty_reason texts")
+
+print("  ok: unknown path, damped-away path, genuinely-alone path and a young index are four "
+      "distinct, non-colliding answers")
+PY
+
 cd "$ROOT"
 echo "ALL CHECKS PASSED"

@@ -3,6 +3,15 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-09-24
+
+### Added
+- Three co-change queries on the history index: `changes_with` (files that most often change in the same commits as a path, ranked by frequency), `coupling_between` (inspect a claimed edge commit by commit), and `hotspots` (most-changed paths, optionally within a directory). These queries answer correlation over the commit stream, work on any language or config without parsing, and cost no new indexing — they run on the `files_changed` rows phase 1 already built. **Critical limits:** an empty result means no evidence of coupling, not "nothing uses this" — a real dependency that has simply never changed produces no edges at all, so stable code is invisible to this signal. Test files shown as changing with source files "change with" the code, never "cover" it — the index contains change history, not execution data.
+- `history-librarian` now knows all nine queries: the original six (`recent`, `commits_touching`, `files_in_commit`, `commits_between`, `search_subjects`, and `commit_detail`), plus the three new co-change queries. A single agent consults history for both temporal and change-coupling questions.
+
+### Changed
+- Co-change queries exclude commits touching more than 25 files by default (treating them as sweeps: reformats, renames, license-header passes, initial imports). Every answer reports how many commits were considered and how many were skipped as too broad, so the evidence behind each ranking is visible. The threshold is overridable per call with `max_files`. Vocabulary throughout is "changes with", never "depends on" or "imports" — the queries find correlation in the commit stream, not dependencies in source.
+
 ## [0.4.0] - 2026-09-24
 
 ### Added

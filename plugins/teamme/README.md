@@ -127,7 +127,7 @@ the `.db`, since a binary file cannot be merged).
 |---|---|
 | `teamme_librarian_status` | What the index holds: row counts, the last indexed commit, how far behind `HEAD` it is |
 | `teamme_librarian_refresh` | Brings the index up to date — incremental by default, `full=true` to reindex from scratch |
-| `teamme_librarian_query` | A bounded, named question: `recent`, `commits_touching` (a path or directory), `files_in_commit`, `commits_between` (a date range), `search_subjects` (a literal substring) — never arbitrary SQL |
+| `teamme_librarian_query` | A bounded, named question — nine in total, never arbitrary SQL: six read commit history (`recent`, `commits_touching`, `files_in_commit`, `commits_between`, `search_subjects`, `commit_detail`); three read co-change coupling out of the same commit stream (`changes_with`, `coupling_between`, `hotspots`) — see The history librarian below |
 
 These need only a git repository, not teamme's scaffolding, and work whether or not a project has run
 `/teamme:init-team`. Measured on this repository's own history (10 commits, 122 file rows): a first
@@ -147,6 +147,23 @@ of the form "X was added in commit Y" actually holds — citing a commit SHA for
 from the index above rather than raw `git log`. The list queries in the table above return only the
 commit **subject**; when a subject alone does not explain a change, the librarian reaches for
 `commit_detail`, which returns the full message body (capped at 4000 characters).
+
+Three more queries read **co-change** off the same commit stream instead of parsing any source:
+`changes_with` (the files that most often changed in the same commits as a given path, each row
+carrying its own evidence — how many commits it shares, the partner's own commit count, and the most
+recent shared commit), `coupling_between` (the commits where two specific paths both changed, so a
+claimed edge can be inspected rather than believed), and `hotspots` (the most-changed paths,
+optionally under one directory). This is **correlation, not a call graph**: two files that always
+change together may share a cause rather than a dependency, so the librarian reports the edge as
+"changes with" — never "depends on" or "imports". A commit touching more than `max_files` (default 25)
+files is treated as a sweep and left out of every edge count, since one reformat or rename would
+otherwise couple everything it touched to everything else; every co-change answer says how many
+commits it considered and how many it skipped. Stable code that never changed has no edge here, so a
+thin or empty result means no evidence of coupling was found, not that nothing is related. The same
+signal covers tests without knowing any test framework: a test file that keeps changing alongside a
+source file is the test-to-code edge, reported as "these tests change with this code" — never "these
+tests cover this code", since coverage is a claim about what executes and the index has no execution
+in it.
 
 Team agents are instructed to consult it instead of reading git themselves —
 `/teamme:init-team`'s shared guardrail block and the generated `/intake` command's grounding step

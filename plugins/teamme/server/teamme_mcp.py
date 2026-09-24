@@ -639,8 +639,18 @@ TOOLS = [
             "files_in_commit, commits_between (a date range), search_subjects (a literal substring "
             "of the commit subject), commit_detail (ONE commit in full, including the message BODY "
             "and its changed files - the list queries return the subject line only, so this is the "
-            "query to reach for when the question is *why* a change was made). Parameterized and "
-            "row-capped on purpose - there is no "
+            "query to reach for when the question is *why* a change was made). Three more read "
+            "CO-CHANGE out of the same commit stream, which is how this index answers 'what is "
+            "related to this?' without parsing any source: changes_with (the files that most often "
+            "changed in the same commits as a path, each row carrying its evidence - how many "
+            "shared commits and the most recent one), coupling_between (the commits where two "
+            "paths both changed, so a claimed edge can be inspected rather than believed), and "
+            "hotspots (the most-changed paths, optionally under one directory). Co-change is "
+            "CORRELATION, NOT A CALL GRAPH: report it as 'changes with', never as 'depends on' or "
+            "'imports'. Commits touching more than `max_files` files (default 25) are skipped when "
+            "counting edges, because one sweep - a reformat, a rename, an initial import - couples "
+            "everything it touched; every co-change answer says how many commits it considered and "
+            "how many it skipped. Parameterized and row-capped on purpose - there is no "
             "arbitrary SQL, and an answer that would be an unbounded dump is truncated with a "
             "notice instead. INTENDED CALLER: a librarian agent, which reads these rows and "
             "answers in prose; other agents should consult the librarian rather than this tool. "
@@ -654,10 +664,21 @@ TOOLS = [
                            "description": "Which index to ask. Defaults to history."},
                 query={"type": "string",
                        "enum": ["recent", "commits_touching", "files_in_commit",
-                                "commits_between", "search_subjects", "commit_detail"]},
+                                "commits_between", "search_subjects", "commit_detail",
+                                "changes_with", "coupling_between", "hotspots"]},
                 path={"type": "string",
-                      "description": "For commits_touching: a repo-relative file or directory. "
-                                     "An absolute path inside the project is accepted."},
+                      "description": "For commits_touching, changes_with and coupling_between: a "
+                                     "repo-relative file or directory. For hotspots: an optional "
+                                     "directory to rank within. An absolute path inside the "
+                                     "project is accepted."},
+                other_path={"type": "string",
+                            "description": "For coupling_between: the second path, compared "
+                                           "against `path`."},
+                max_files={"type": "integer",
+                           "description": "Co-change damping. A commit touching more than this "
+                                          "many files is treated as a sweep and left out of the "
+                                          "counts. Defaults to 25; every answer reports how many "
+                                          "commits were skipped by it."},
                 hash={"type": "string", "description": "For files_in_commit and commit_detail: a full or "
                                                        "abbreviated commit hash. An abbreviation matching more "
                                                        "than one commit is reported, never silently resolved."},
@@ -992,6 +1013,114 @@ def _render_detail(q: dict, store) -> str:
     return "\n".join(out)
 
 
+def _short_subject(text, width: int = 60) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= width else text[: width - 1] + "…"
+
+
+def _render_damping(d: dict) -> list:
+    """How the co-change cap changed the numbers above it. Printed every time,
+    including when it skipped nothing: a ranking whose largest input is
+    invisible can only be believed, not checked."""
+    if not d:
+        return []
+    out = [
+        f"  evidence base:  {d.get('commits_considered')} commit(s) considered of "
+        f"{d.get('commits_indexed')} indexed; {d.get('commits_skipped_too_broad')} skipped as too "
+        f"broad (more than {d.get('max_files')} files in one commit - a sweep couples everything "
+        f"it touched)",
+    ]
+    if d.get("commits_without_file_rows"):
+        out.append(f"                  {d['commits_without_file_rows']} indexed commit(s) carry no "
+                   f"file rows at all (merges record none) and contribute no edges")
+    if d.get("note"):
+        out.append(f"                  {d['note']}")
+    out.append(f"                  change the cap with `max_files` (now {d.get('max_files')})")
+    return out
+
+
+def _render_caveats(q: dict) -> list:
+    items = q.get("caveats") or []
+    if not items:
+        return []
+    return ["  reading this:"] + [f"    - {item}" for item in items]
+
+
+def _render_cochange(which: str, q: dict, store) -> str:
+    """The three co-change answers. Each row prints its evidence on its own line,
+    so a position in the ranking can be checked rather than taken on faith."""
+    out = []
+    rows = q.get("rows") or []
+
+    if which == "changes_with":
+        out.append(f"  files that CHANGE WITH {q.get('path')} - correlation, not a call graph")
+        out.append(f"  '{q.get('path')}' changed in {q.get('anchor_commits')} considered commit(s)"
+                   + (f" ({q.get('anchor_commits_all')} in the index before damping)"
+                      if q.get("anchor_commits_all") != q.get("anchor_commits") else "")
+                   + f"; {len(rows)} partner(s) shown, most shared commits first")
+        for r in rows:
+            mark = "  WEAK - a single shared commit" if r.get("weak") else ""
+            out.append(f"    {r.get('shared_commits')}x  {r.get('path')}{mark}")
+            out.append(f"         changed in {r.get('partner_commits')} considered commit(s) of its "
+                       f"own; overlap {r.get('jaccard')}; last together "
+                       f"{r.get('last_short_hash')} {(r.get('last_date') or '')[:10]} "
+                       f"\"{_short_subject(r.get('last_subject'))}\"")
+
+    elif which == "coupling_between":
+        out.append(f"  commits where BOTH {q.get('path')} and {q.get('other_path')} changed")
+        out.append(f"  {q.get('shared_commits')} shared commit(s): {q.get('shared_counted')} counted "
+                   f"as evidence, {q.get('shared_too_broad')} too broad (more than "
+                   f"{q.get('max_files')} files) and ignored by changes_with")
+        out.append(f"  on its own: {q.get('path')} in {q.get('commits_touching_path')} commit(s), "
+                   f"{q.get('other_path')} in {q.get('commits_touching_other_path')}")
+        out.append("  every shared commit is listed below, sweeps included and marked - this query "
+                   "exists to be inspected, so it damps nothing")
+        for r in rows:
+            mark = "  [TOO BROAD - not counted as evidence]" if r.get("too_broad") else ""
+            out.append(f"    {r.get('short_hash')} {(r.get('date') or '')[:10]} "
+                       f"{r.get('author') or ''}  {_short_subject(r.get('subject'), 70)}")
+            out.append(f"         {r.get('files_in_commit')} file(s) in that commit{mark}")
+        if q.get("note"):
+            out.append(f"  note: {q['note']}")
+
+    else:  # hotspots
+        scope = q.get("path")
+        out.append("  most-changed paths" + (f" under {scope}" if scope else " in the repository")
+                   + " - how often, not how important")
+        for r in rows:
+            mark = "  WEAK - changed once" if r.get("weak") else ""
+            out.append(f"    {r.get('commits')}x  {r.get('path')}{mark}")
+            out.append(f"         {r.get('first_date')} .. {(r.get('last_date') or '')[:10]}; last "
+                       f"{r.get('last_short_hash')} \"{_short_subject(r.get('last_subject'))}\"")
+
+    if not rows:
+        out.append(f"  no rows. {q.get('empty_reason') or ''}".rstrip())
+    if q.get("truncated"):
+        out.append(f"  ... TRUNCATED at {q.get('limit')} rows. Narrow the question or raise `limit` "
+                   f"(max {store.MAX_LIMIT}); this tool never returns an unbounded dump.")
+    out += _render_damping(q.get("damping"))
+    out += _render_caveats(q)
+    return "\n".join(out)
+
+
+def _repo_signal_notes(history, root) -> list:
+    """What git knows that the index cannot: a shallow clone is missing the very
+    history these rankings are computed from, and it should say so rather than
+    rank confidently over a truncated stream. Never raises and never blocks the
+    answer - a probe that fails simply adds nothing."""
+    try:
+        p = history.probe(root)
+    except Exception:
+        return []
+    if not isinstance(p, dict):
+        return []
+    if p.get("shallow"):
+        return ["    - this is a SHALLOW clone: git is missing older commits, so the co-change "
+                "counts above are computed from a truncated history. `git fetch --unshallow` and "
+                "refresh before treating them as a ranking."]
+    return []
+
+
 def tool_librarian_query(root: pathlib.Path, args: dict) -> dict:
     lib = librarian()
     if lib is None:
@@ -1040,6 +1169,10 @@ def tool_librarian_query(root: pathlib.Path, args: dict) -> dict:
         return text_result(f"teamme_librarian_query: {q.get('error')}", True)
     if which == "commit_detail":
         return text_result(f"{name} / commit_detail\n" + _render_detail(q, _store))
+    if which in ("changes_with", "coupling_between", "hotspots"):
+        body = [f"{name} / {which}: {q['count']} row(s)", _render_cochange(which, q, _store)]
+        body += _repo_signal_notes(_history, root)
+        return text_result("\n".join(body))
     lines = [f"{name} / {which}: {q['count']} row(s)", _render_rows(q)]
     if q.get("truncated"):
         lines.append(
