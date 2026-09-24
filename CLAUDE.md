@@ -56,6 +56,16 @@ probe asserted to have no false positive against a stranger's repo carrying its 
 stdin closed. The MCP repair path is covered too: `teamme_install` repairs an `installed-outdated`
 fixture over the real JSON-RPC pipe and leaves its `intake.md` byte-identical.
 
+Hook freshness — whether an installed hook script still matches the plugin's shipped copy, not just
+whether it exists — has its own coverage, since `hook_freshness()` is the one shared comparison that
+both `preflight.py`'s own check and `teamme_install` call: a present-but-modified hook drives
+`installed-outdated` and is named in the `hooks` check's detail line, distinct from a missing one
+(watched failing first, by forcing `hook_freshness` to always return `same`); when the plugin's
+templates cannot be located — the normal case for the hook/CLI path, see Known gaps — the check
+degrades to existence-only and still PASSes, with a detail line saying freshness was not verified,
+proven never to fail for that reason; and over the MCP pipe, `teamme_install` leaves a hook that
+differs from the plugin's copy untouched without `force=true`, and only `force=true` replaces it.
+
 The worklog data model gets its own coverage: ten concurrent `note` calls on one task all survive
 the lockfile; a stale (crashed-process) lockfile is broken rather than wedging a write and leaves no
 lock/tmp debris behind; the nag lifecycle is checked in both directions — a note leaves the `Stop`
@@ -129,13 +139,16 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   (`installed-outdated`), never an existence condition. States are now four, not three:
   `not-installed` (no evidence teamme was ever set up here — the only state where the installer is
   right), `installed-outdated` (evidence of an install exists, but a hook script or the `hooks`
-  block is missing or stale — repair with `teamme_install` / `/teamme:team-doctor`, never
-  `/teamme:init-team`), `installed-not-live` (scaffolding complete, hooks registered, but no
-  `SessionStart` has run them yet — needs `/hooks` or a restart), `live` (a `SessionStart` heartbeat
-  proves hooks are firing). `installed-outdated` halts `templates/intake.md`: its exit code follows
-  the `PASS`/`FAIL` items, not the `state:` line, so an outdated install halts `/intake` until
-  repaired even though most of the team already works — documented in the README's install-and-verify
-  section, since that is exactly what an upgrading user hits first.
+  block is missing, or a hook script is present but differs from the plugin's copy — repair with
+  `teamme_install` / `/teamme:team-doctor`, never `/teamme:init-team`; a differing hook is left in
+  place by a plain repair, since the difference could be a deliberate local edit rather than an old
+  file, and is only replaced with `force=true`), `installed-not-live` (scaffolding complete, hooks
+  registered, but no `SessionStart` has run them yet — needs `/hooks` or a restart), `live` (a
+  `SessionStart` heartbeat proves hooks are firing). `installed-outdated` halts
+  `templates/intake.md`: its exit code follows the `PASS`/`FAIL` items, not the `state:` line, so an
+  outdated install halts `/intake` until repaired even though most of the team already works —
+  documented in the README's install-and-verify section, since that is exactly what an upgrading
+  user hits first.
 - **`/teamme:queue` exists because `/intake`'s own "queue" outcome still cost a full response.**
   The triage table always had a queue disposition, but reaching it still meant grounding,
   classifying and briefing a request the user only wanted parked. `/queue` is that same outcome
@@ -144,6 +157,14 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   ("later", "once you finish X", "queue this") *before* it checks the phase, so a parked request
   arriving through `/intake` gets the cheap path too, instead of being fully grounded because the
   phase happened to be idle.
+- **Hook freshness has exactly one implementation, shared by `preflight.py` and `teamme_install`.**
+  `hook_freshness()` — a byte-exact comparison — lives once, in `preflight.py`; `teamme_mcp.py`
+  loads and delegates to it rather than re-implementing the comparison. Two implementations is
+  precisely the failure mode this closes: the installer skipping a file it calls "differs" while the
+  health check calls the same install fresh. Vocabulary follows the same reasoning: a hook that does
+  not match the plugin's copy is reported as "differs from the plugin's copy", never "outdated" or
+  "wrong" — it may be a deliberate local edit, and a plain repair leaves it alone on purpose. Only
+  `force=true` (or `/teamme:team-doctor`, which can pass it) replaces it.
 - **A `dispatched` work-log status, distinct from `blocked`.** Async dispatch to another agent is
   this team's normal mode, and it had no representation: `active` nagged every turn even though
   nothing that session could do would advance it, and `blocked` told the user they owed an input
@@ -173,6 +194,16 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   intake.md` predates the preflight block entirely (no Preflight section, no `state:` handling), so
   `/intake` in this repo does not halt on an incomplete install the way a freshly-generated one would.
   Tracked as T24.
+- **Hook-freshness detection only works where `preflight.py` can locate the plugin's own
+  templates** — `teamme_status`, `teamme_install`, and `/teamme:team-doctor`, all of which run inside
+  the plugin process, where `CLAUDE_PLUGIN_ROOT` (or the MCP server's own known templates directory)
+  points at them. Inside a user's project, the hook/CLI path — `.claude/hooks/preflight.py check`,
+  which is what `/intake`'s own halt check runs — normally has no `CLAUDE_PLUGIN_ROOT` and so cannot
+  find the plugin's copies to compare against. It degrades to existence-only there and PASSes, with a
+  detail line saying freshness was not verified — never a failure, by design. Consequence: an
+  upgrading user's `/intake` halts on a hook script that is *missing*, but not on one that is present
+  and merely differs from the plugin's copy; only `/teamme:team-doctor` or the MCP tools catch that.
+  Tracked as T26.
 
 ## Conventions
 

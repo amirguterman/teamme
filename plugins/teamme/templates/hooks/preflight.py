@@ -8,7 +8,8 @@ Four states, and telling them apart is the whole point:
                      state where /teamme:init-team is the right advice
   installed-outdated teamme was installed here, but the scaffolding is no longer
                      complete - typically an install from an earlier release that
-                     predates a hook script this version expects. REPAIR it
+                     predates a hook script this version expects, or one whose
+                     hook scripts are still the older release's. REPAIR it
                      (`teamme_install` / /teamme:team-doctor); never re-run the
                      installer over a working team
   installed-not-live the hooks are on disk and registered in settings.json, but
@@ -66,6 +67,12 @@ REQUIRED_EVENTS = ("UserPromptSubmit", "PreToolUse", "SessionStart", "Stop")
 SETTINGS_FILES = ("settings.json", "settings.local.json")
 HEARTBEAT_NAME = "heartbeat.json"
 
+# A directory only counts as the plugin's shipped templates/hooks if this file
+# sits beside the others AND the settings template is next door. That second
+# probe is what stops a project's own .claude/hooks from being mistaken for the
+# templates and compared against itself - which would report every install fresh.
+TEMPLATE_MARKER = "settings.hooks.json"
+
 INSTALL_FIX = (
     "run the `teamme_install` MCP tool, or /teamme:team-doctor, to repair the scaffolding - or "
     "/teamme:init-team if this project has never been set up"
@@ -80,6 +87,15 @@ REPAIR_FIX = (
     "over a working team"
 )
 
+# A hook that is present but does not match the shipped copy needs a *different*
+# repair from a missing one: teamme_install deliberately refuses to overwrite it,
+# because the difference may be a deliberate local edit rather than an old file.
+FORCE_FIX = (
+    "run the `teamme_install` MCP tool with force=true, or /teamme:team-doctor - a plain repair "
+    "leaves a hook that differs in place on purpose (it could be a local edit), so replacing it "
+    "with the version this release ships takes force=true"
+)
+
 
 def project_root(project_dir=None) -> pathlib.Path:
     if project_dir:
@@ -89,6 +105,85 @@ def project_root(project_dir=None) -> pathlib.Path:
 
 def heartbeat_path(project_dir=None) -> pathlib.Path:
     return project_root(project_dir) / ".claude" / "intake" / HEARTBEAT_NAME
+
+
+# --------------------------------------------------------------------------- #
+# freshness: one definition of "does the installed hook match the shipped one"
+# --------------------------------------------------------------------------- #
+
+def _is_template_hooks_dir(p) -> bool:
+    """True only for the plugin's own templates/hooks directory. Never raises."""
+    try:
+        p = pathlib.Path(p)
+        return bool(
+            p.is_dir()
+            and (p / "preflight.py").is_file()
+            and (p.parent / TEMPLATE_MARKER).is_file()
+        )
+    except Exception:
+        return False
+
+
+def template_hooks_dir(hint=None):
+    """Where the plugin's shipped hook scripts are, or None if they cannot be
+    found from here. Never raises.
+
+    This runs as a hook *inside a user's project*, where the plugin directory is
+    usually unreachable: CLAUDE_PLUGIN_ROOT is only set for hooks a plugin
+    registers itself, and teamme's hooks are registered by the project. So None
+    is an ordinary, expected answer, and every caller must treat it as "could not
+    verify", never as "broken".
+    """
+    candidates = []
+    try:
+        if hint:
+            h = pathlib.Path(str(hint)).expanduser()
+            candidates += [h, h / "hooks", h / "templates" / "hooks"]
+    except Exception:
+        pass
+    try:
+        env = os.environ.get("CLAUDE_PLUGIN_ROOT")
+        if env:
+            e = pathlib.Path(env).expanduser()
+            candidates += [e / "templates" / "hooks", e / "hooks"]
+    except Exception:
+        pass
+    try:
+        # The case that matters for the MCP server: this file IS the template.
+        candidates.append(pathlib.Path(__file__).resolve().parent)
+    except Exception:
+        pass
+    for c in candidates:
+        if _is_template_hooks_dir(c):
+            try:
+                return pathlib.Path(c).resolve()
+            except Exception:
+                return pathlib.Path(c)
+    return None
+
+
+def hook_freshness(installed, template) -> str:
+    """'same', 'differs', or 'unknown' - the ONE definition of whether an
+    installed hook script matches the copy this release ships.
+
+    teamme_install reads this to decide whether to refuse an overwrite without
+    force=true, and _check_hooks reads it to decide whether an install is stale.
+    A second implementation would drift, and the two disagreeing is exactly the
+    bug this exists to prevent: the installer skipping a file it calls "differs"
+    while the health check called the same install fresh.
+
+    Byte-exact on purpose, and named "differs" rather than "outdated" for the
+    same reason the installer is: a deliberate local edit lands here too, and it
+    is divergence, which is all this claims. Never raises.
+    """
+    try:
+        a = pathlib.Path(installed)
+        b = pathlib.Path(template)
+        if not a.is_file() or not b.is_file():
+            return "unknown"
+        return "same" if a.read_bytes() == b.read_bytes() else "differs"
+    except Exception:
+        return "unknown"
 
 
 # --------------------------------------------------------------------------- #
@@ -184,19 +279,63 @@ def _check_python(root: pathlib.Path) -> dict:
     )
 
 
-def _check_hooks(root: pathlib.Path) -> dict:
+def _check_hooks(root: pathlib.Path, templates=None) -> dict:
+    """Present AND current. Missing and stale are different problems with
+    different repairs, so they are reported separately - "5/6 present" told a
+    user nothing when the real trouble was three scripts from the last release.
+
+    When the shipped templates cannot be found this degrades to the old
+    existence-only check and says so: an install that cannot see its own
+    templates is not thereby broken, and this must never fail for that.
+    """
     d = root / ".claude" / "hooks"
+    total = len(REQUIRED_HOOKS)
     missing = [n for n in REQUIRED_HOOKS if not (d / n).is_file()]
+    present = [n for n in REQUIRED_HOOKS if n not in missing]
+
+    tdir = template_hooks_dir(templates)
+    try:
+        # Comparing a directory with itself would call every install fresh.
+        if tdir is not None and tdir == d.resolve():
+            tdir = None
+    except Exception:
+        pass
+
+    stale, unchecked = [], []
+    if tdir is not None:
+        for n in present:
+            verdict = hook_freshness(d / n, tdir / n)
+            if verdict == "differs":
+                stale.append(n)
+            elif verdict != "same":
+                unchecked.append(n)
+
+    parts, fixes = [], []
     if missing:
+        parts.append(f"missing: {', '.join(missing)}")
+        fixes.append(INSTALL_FIX)
+    if stale:
+        parts.append(f"differs from the plugin's copy: {', '.join(stale)}")
+        fixes.append(FORCE_FIX)
+
+    if parts:
         return _item(
             "hooks",
             "hook scripts",
             False,
-            f"{len(REQUIRED_HOOKS) - len(missing)}/{len(REQUIRED_HOOKS)} in .claude/hooks - "
-            f"missing: {', '.join(missing)}",
-            INSTALL_FIX,
+            f"{len(present)}/{total} in .claude/hooks - " + "; ".join(parts),
+            "; also: ".join(fixes),
         )
-    return _item("hooks", "hook scripts", True, f"{len(REQUIRED_HOOKS)}/{len(REQUIRED_HOOKS)} in .claude/hooks")
+
+    if tdir is None:
+        detail = f"{total}/{total} in .claude/hooks (plugin templates not reachable from here, so " \
+                 f"freshness was not verified)"
+    elif unchecked:
+        detail = f"{total}/{total} in .claude/hooks, matching the plugin's copy except " \
+                 f"{len(unchecked)} the plugin does not ship: {', '.join(unchecked)}"
+    else:
+        detail = f"{total}/{total} in .claude/hooks, all matching the plugin's copy"
+    return _item("hooks", "hook scripts", True, detail)
 
 
 def _check_command(root: pathlib.Path) -> dict:
@@ -360,7 +499,7 @@ def _check_liveness(root: pathlib.Path, stage: str = "complete") -> dict:
             "liveness",
             "hooks firing",
             False,
-            "never here - this install predates part of the current scaffolding",
+            "never here - part of this install predates the current scaffolding",
             "repair the install first (`teamme_install`, or /teamme:team-doctor), then start a new "
             "session - until the scaffolding is complete a restart cannot record a heartbeat",
         )
@@ -386,9 +525,14 @@ def _check_liveness(root: pathlib.Path, stage: str = "complete") -> dict:
 # the diagnosis
 # --------------------------------------------------------------------------- #
 
-def diagnose(project_dir=None) -> dict:
+def diagnose(project_dir=None, templates=None) -> dict:
     """Full diagnosis as plain data. Never raises: a check that blows up is
-    reported as a failed check, so a caller can always render something."""
+    reported as a failed check, so a caller can always render something.
+
+    `templates` is an optional hint at the plugin's templates directory, for the
+    one caller that knows where it is (the MCP server). Without it the hook
+    self-locates, and where it cannot, the freshness comparison degrades to the
+    existence check rather than failing."""
     try:
         root = project_root(project_dir)
     except Exception as exc:  # pragma: no cover - only a pathological cwd
@@ -404,7 +548,7 @@ def diagnose(project_dir=None) -> dict:
     checks = []
     for cid, fn in (
         ("python3", _check_python),
-        ("hooks", _check_hooks),
+        ("hooks", lambda r: _check_hooks(r, templates)),
         ("command", _check_command),
         ("settings", _check_settings),
         ("intake_dir", _check_intake_dir),
@@ -446,7 +590,8 @@ def diagnose(project_dir=None) -> dict:
         state = "installed-outdated"
         summary = (
             "teamme is installed here (" + "; ".join(evidence or ["scaffolding present"]) + ") but "
-            "part of its scaffolding is missing - repair it, do not reinstall"
+            "part of its scaffolding is missing or no longer matches this release - repair it, do "
+            "not reinstall"
         )
     elif live["ok"]:
         state = "live"
@@ -460,8 +605,12 @@ def diagnose(project_dir=None) -> dict:
         # an alternative. In an existing install that advice is actively harmful,
         # so it is rewritten here - once, where the state is actually known.
         for c in checks:
-            if c.get("fix") == INSTALL_FIX:
-                c["fix"] = REPAIR_FIX
+            fix = c.get("fix") or ""
+            # Substring, not equality: a check can now carry INSTALL_FIX joined
+            # to another repair (missing hooks AND stale ones), and that combined
+            # line must still lose its init-team advice.
+            if INSTALL_FIX in fix:
+                c["fix"] = fix.replace(INSTALL_FIX, REPAIR_FIX)
             elif c.get("id") == "command" and c.get("fix"):
                 # intake.md really is generated, not copied, so that one check
                 # has to keep pointing at the installer - scoped to itself, so it

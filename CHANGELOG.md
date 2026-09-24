@@ -3,6 +3,18 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-09-24
+
+### Fixed
+- Preflight only checked that hook scripts *existed*, not that they matched the copies the plugin ships. A project could carry scripts from an older release, be repaired, and report `live` while still running the old ones (including a router that told every project to read an `ARCHITECTURE.md` it does not have). Preflight and the installer now share one comparison, so the health check and the installer cannot disagree.
+- A combined missing-and-differing fix line could slip past the guard that scrubs `/teamme:init-team` out of an existing install's advice, so an install that was both could still be told to run the installer over its own team.
+
+### Changed
+- Missing hook scripts and differing ones are reported separately, with separate fixes. A hook that merely differs is left alone by a plain repair on purpose — it may be a deliberate local edit — and replacing it takes `force=true` (or `/teamme:team-doctor`).
+
+### Known limitation
+- Freshness is only checked where the plugin's templates are reachable: `teamme_status`, `teamme_install`, `/teamme:team-doctor`. Inside a project, `/intake`'s own preflight normally cannot locate them, degrades to an existence-only check and passes. So `/intake` halts on a *missing* hook but not on one that merely differs. Users deciding whether to upgrade should learn that from this changelog entry.
+
 ## [0.2.0] - 2026-09-24
 
 ### Removed

@@ -118,7 +118,7 @@ A project's teamme install is always in one of four states:
 | State | Meaning | Remediation |
 |---|---|---|
 | `not-installed` | no evidence teamme was ever set up here | `/teamme:init-team` — the only state where the installer is the right advice |
-| `installed-outdated` | teamme **is** installed here, but part of the scaffolding is missing or stale — typically an install from an earlier release that predates a hook script this version expects | repair only — `/teamme:team-doctor` or the `teamme_install` MCP tool. Never the installer: it would re-run the questionnaire and regenerate the roster over a team that already works |
+| `installed-outdated` | teamme **is** installed here, but part of the scaffolding is missing, or a hook script is present but differs from the plugin's copy — typically an install from an earlier release | repair only — `/teamme:team-doctor` or the `teamme_install` MCP tool. Never the installer: it would re-run the questionnaire and regenerate the roster over a team that already works. A hook that differs is left alone by a plain repair, since the difference could be a deliberate local edit — add `force=true` (or let `/teamme:team-doctor` ask) to replace it with the plugin's copy |
 | `installed-not-live` | the hook scripts and `.claude/settings.json` hooks block both exist, but no `SessionStart` has fired them yet — usually because `.claude/` held no settings file when the session started | `/hooks` or restart |
 | `live` | a `SessionStart` heartbeat proves the hooks are actually running | none |
 
@@ -127,6 +127,12 @@ A project's teamme install is always in one of four states:
 `state:` line, so an outdated install halts `/intake` until it is repaired — even though the team is
 already set up and most of it works. This is the state an upgrading user meets first, on the release
 that adds the next hook script.
+
+Only `/teamme:team-doctor` and the MCP tools can tell a hook that differs from the plugin's copy
+apart from one that is current — they know where the plugin's own templates live. `/intake`'s own
+check, run from inside the project, can confirm a hook script exists but not whether its contents
+still match this release: a missing hook still halts it, a hook that is present but merely differs
+does not.
 
 Check the state at any time with **`/teamme:team-doctor`** — it reports every check with a `fix:`
 line for each failure, and offers to repair a partial install (missing hook scripts, a missing

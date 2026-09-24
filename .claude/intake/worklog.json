@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "next_id": 25,
+  "next_id": 27,
   "tasks": [
     {
       "id": "T1",
@@ -365,6 +365,42 @@
       "created": "2026-09-24T08:59:39+00:00",
       "updated": "2026-09-24T08:59:39+00:00",
       "status_changed": "2026-09-24T08:59:39+00:00"
+    },
+    {
+      "id": "T25",
+      "title": "preflight only checks hook scripts exist, not that they match the current templates - a stale install reports complete",
+      "status": "done",
+      "priority": "P1",
+      "lane": "teamme-hook-engineer",
+      "notes": [
+        "Found during the real-harness test in speedrun-nanosuit: route-to-intake.py, worklog-enforce.py and worklog.py all DIFFER from the current templates there, and _check_hooks passes them because it is a pure existence test (preflight.py:167, is_file only). So an install can be outdated in a way installed-outdated cannot see - the same blind spot class as T23, which only caught MISSING files. An install carrying the pre-T5 route-to-intake.py still tells users to read ARCHITECTURE.md and still reports healthy once preflight.py is copied in. Needs a content check (hash/mtime against the shipped templates) feeding the installed-outdated verdict.",
+        "CORRECTION after reading teamme_mcp.py:266-277: teamme_install DOES compare content and refuses to overwrite a differing hook, reporting 'differs (call again with force=true)'. So the upgrade is not silent - the install tool tells you. The defect is that preflight disagrees with it: _check_hooks is existence-only, so after a no-force repair preflight reports live while stale hooks remain, including a pre-T5 route-to-intake.py still naming ARCHITECTURE.md. Fix is cheap: install() already has the comparison; share it with the check so the verdict matches the installer.",
+        "preflight now compares installed hooks against the shipped templates via one shared hook_freshness() that teamme_install also uses; stale hooks fail the check as installed-outdated with a force=true fix, distinguished from missing ones; degrades to existence-only when templates are unreachable. validate.sh passes.",
+        "VERIFIED BY ME: names all three differing files on the real project, state installed-outdated, zero init-team; this repo still reports 6/6 all matching and live, so no false positive; speedrun-nanosuit untouched.",
+        "Added 3 assertions to scripts/validate.sh for hook staleness detection: (1) present-but-modified hook drives installed-outdated, names the file (regression test for the freshness bug); (2) templates-unreachable path degrades to existence-only and PASSES on a stale-but-otherwise-healthy fixture; (3) MCP teamme_install leaves a stale hook alone without force=true and replaces it with force=true, verified over the real JSON-RPC pipe. Watched each fail first (hook_freshness forced to always return 'same'; the None-branch made to fail instead of degrade; force check disabled; copyfile removed from the force path) then restored and confirmed ./scripts/validate.sh prints ALL CHECKS PASSED. Only scripts/validate.sh was touched.",
+        "Created version 0.2.1 changelog entry documenting preflight hook validation fixes and version bump with justification",
+        "ALL LANES LANDED, verified by me: stale detection names all three differing hooks on the real project with zero init-team; this repo reports 6/6 all matching and live (no false positive); 3 new validate.sh assertions each watched failing; docs Known gaps 8->9 with T26 recorded; released as 0.2.1 with the limitation stated in the entry itself."
+      ],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-24T09:38:14+00:00",
+      "updated": "2026-09-24T09:58:52+00:00",
+      "status_changed": "2026-09-24T09:58:52+00:00"
+    },
+    {
+      "id": "T26",
+      "title": "Design call: inside a user's project CLAUDE_PLUGIN_ROOT is unset, so the hook/CLI preflight cannot see the templates and never flags stale hooks",
+      "status": "open",
+      "priority": "P2",
+      "lane": "teamme-hook-engineer",
+      "notes": [
+        "Reported honestly by the T25 lane rather than left to be discovered. Freshness is only caught where preflight is loaded from the plugin - teamme_status, teamme_install, /teamme:team-doctor. The CLI/hook path degrades to existence-only and PASSES, so an upgrading user's /intake halts on MISSING hooks but not on stale ones. Closing it needs a decision about how an in-project hook locates the plugin root; the degraded-pass is the safe default until then."
+      ],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-24T09:48:57+00:00",
+      "updated": "2026-09-24T09:48:57+00:00",
+      "status_changed": "2026-09-24T09:48:57+00:00"
     }
   ]
 }

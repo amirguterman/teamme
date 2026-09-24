@@ -358,6 +358,160 @@ intake_dst = broken_copy("intake_dir", lock_intake_dir)
 print("  ok: not-installed on an empty project; hooks/settings/intake_dir each fail independently with a fix")
 PY
 
+echo "== preflight: a present-but-modified hook drives installed-outdated and names the file =="
+STALE_FIXTURE="$PWD/pf-stale"
+cp -r pf-full "$STALE_FIXTURE"
+python3 -c "
+import pathlib
+p = pathlib.Path('$STALE_FIXTURE/.claude/hooks/worklog.py')
+p.write_bytes(p.read_bytes() + b'\n# locally modified\n')
+"
+STALE_JSON_FILE="$PWD/pf-stale.json"
+set +e
+python3 "$PF" check --json --project-dir "$STALE_FIXTURE" > "$STALE_JSON_FILE"
+STALE_RC=$?
+set -e
+[ "$STALE_RC" -ne 0 ] || fail "preflight exited 0 with a stale (present-but-modified) hook in place"
+python3 -c "
+import json
+d = json.load(open('$STALE_JSON_FILE'))
+if d.get('state') != 'installed-outdated':
+    raise SystemExit(f\"expected installed-outdated for a stale hook, got {d.get('state')!r}: {d}\")
+if d.get('ok'):
+    raise SystemExit('preflight reported ok=true with a stale hook in place')
+hooks_check = next(c for c in d['checks'] if c['id'] == 'hooks')
+if hooks_check.get('ok'):
+    raise SystemExit(f'the hooks check itself still reported ok=true: {hooks_check}')
+if 'worklog.py' not in hooks_check.get('detail', ''):
+    raise SystemExit(f'the stale filename was not named in the hooks check detail: {hooks_check}')
+if not hooks_check.get('fix'):
+    raise SystemExit(f'the stale hooks check failed with no fix line: {hooks_check}')
+"
+echo "  ok: a stale hook (not missing, just modified) drives installed-outdated, exit non-zero, names the file"
+
+echo "== preflight: unreachable templates degrade freshness to existence-only and PASS, never fail =="
+ISOLATED_DIR="$PWD/isolated-preflight"
+mkdir -p "$ISOLATED_DIR"
+cp "$PF" "$ISOLATED_DIR/preflight.py"
+ISO_PF="$ISOLATED_DIR/preflight.py"
+set +e
+env -u CLAUDE_PLUGIN_ROOT python3 "$ISO_PF" check --project-dir "$STALE_FIXTURE" >/dev/null
+ISO_RC=$?
+set -e
+[ "$ISO_RC" -eq 0 ] || fail "preflight exited $ISO_RC on a stale-but-otherwise-healthy install once its templates were unreachable (must degrade to existence-only and PASS)"
+ISO_JSON_FILE="$PWD/pf-degraded.json"
+env -u CLAUDE_PLUGIN_ROOT python3 "$ISO_PF" check --json --project-dir "$STALE_FIXTURE" > "$ISO_JSON_FILE"
+python3 -c "
+import json
+d = json.load(open('$ISO_JSON_FILE'))
+if not d.get('ok'):
+    raise SystemExit(f'degraded run reported ok=false: {d}')
+if d.get('state') != 'live':
+    raise SystemExit(f\"expected state live once freshness could not be verified, got {d.get('state')!r}: {d}\")
+hooks_check = next(c for c in d['checks'] if c['id'] == 'hooks')
+if not hooks_check.get('ok'):
+    raise SystemExit(f'the hooks check failed in degraded mode instead of degrading: {hooks_check}')
+if 'not verified' not in hooks_check.get('detail', ''):
+    raise SystemExit(f'the degraded hooks check did not say freshness was unverified: {hooks_check}')
+"
+echo "  ok: templates unreachable from a project -> freshness not verified, hooks check still PASSES"
+
+echo "== mcp server: teamme_install leaves a stale hook alone without force, replaces it with force=true =="
+FORCE_PROJ="$PWD/force-repair-proj"
+cp -r pf-full "$FORCE_PROJ"
+python3 -c "
+import pathlib
+p = pathlib.Path('$FORCE_PROJ/.claude/hooks/worklog.py')
+p.write_bytes(p.read_bytes() + b'\n# locally modified\n')
+"
+python3 - "$ROOT" "$FORCE_PROJ" <<'PY'
+import json, pathlib, subprocess, sys
+
+root = pathlib.Path(sys.argv[1])
+proj = pathlib.Path(sys.argv[2])
+server = root / "plugins/teamme/server/teamme_mcp.py"
+hook_path = proj / ".claude" / "hooks" / "worklog.py"
+template_path = root / "plugins/teamme/templates/hooks/worklog.py"
+stale_bytes = hook_path.read_bytes()
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+def call_text(resp):
+    result = resp.get("result") or {}
+    return result, "".join(c.get("text", "") for c in result.get("content") or [])
+
+
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_status", "arguments": {"project_dir": str(proj)}}})
+    result, text = call_text(recv(proc))
+    if "state: installed-outdated" not in text:
+        sys.exit(f"teamme_status did not report installed-outdated for a stale hook: {text!r}")
+
+    # without force: the stale file must be left exactly alone
+    send(proc, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {"name": "teamme_install", "arguments": {"project_dir": str(proj)}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"teamme_install (no force) reported an error: {text}")
+    if hook_path.read_bytes() != stale_bytes:
+        sys.exit("teamme_install without force modified a stale hook - it must refuse without force=true")
+    if "differs" not in text:
+        sys.exit(f"teamme_install without force did not report the hook as differing from the plugin's copy: {text}")
+
+    send(proc, {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                "params": {"name": "teamme_status", "arguments": {"project_dir": str(proj)}}})
+    result, text = call_text(recv(proc))
+    if "state: installed-outdated" not in text:
+        sys.exit(f"status changed even though the stale hook was correctly left alone: {text!r}")
+
+    # with force=true: replaced with the plugin's copy
+    send(proc, {"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                "params": {"name": "teamme_install",
+                           "arguments": {"project_dir": str(proj), "force": True}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"teamme_install (force=true) reported an error: {text}")
+    if hook_path.read_bytes() != template_path.read_bytes():
+        sys.exit("teamme_install force=true did not restore the hook to match the plugin's copy")
+    if "replaced" not in text:
+        sys.exit(f"teamme_install force=true did not report the hook as replaced: {text}")
+
+    send(proc, {"jsonrpc": "2.0", "id": 6, "method": "tools/call",
+                "params": {"name": "teamme_status", "arguments": {"project_dir": str(proj)}}})
+    result, text = call_text(recv(proc))
+    if "state: installed-outdated" in text:
+        sys.exit(f"status still reports installed-outdated after a forced repair: {text!r}")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+print("  ok: teamme_install refuses a stale hook without force=true, and force=true replaces it and clears the state")
+PY
+
 # A 0.1.0-shaped install: the five original hooks, no preflight.py, an
 # already-generated intake.md, and a settings.json missing the preflight.py
 # heartbeat entry this release added. Building this from real template pieces

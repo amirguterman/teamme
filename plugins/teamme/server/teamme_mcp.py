@@ -108,6 +108,27 @@ def required_hooks(project_dir=None) -> tuple:
         return ()
 
 
+def hook_freshness(installed: pathlib.Path, template: pathlib.Path, project_dir=None) -> str:
+    """'same' / 'differs' / 'unknown', delegated to preflight.py.
+
+    Deliberately NOT a byte comparison written here: preflight's _check_hooks
+    calls the same function, and two copies of "does this installed hook match
+    the shipped one" is precisely how the installer came to skip a file it called
+    `differs` while the health check called that install fresh. If preflight
+    cannot be loaded at all, `unknown` keeps the conservative behaviour - an
+    existing file is left alone unless force=true.
+    """
+    mod = preflight(project_dir)
+    fn = getattr(mod, "hook_freshness", None) if mod is not None else None
+    if fn is None:
+        return "unknown"
+    try:
+        verdict = fn(installed, template)
+    except Exception:
+        return "unknown"
+    return verdict if verdict in ("same", "differs", "unknown") else "unknown"
+
+
 def resolve_project(args: dict) -> pathlib.Path:
     raw = (args or {}).get("project_dir") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     return pathlib.Path(raw).expanduser().resolve()
@@ -125,7 +146,14 @@ def diagnose(root: pathlib.Path) -> dict:
             "summary": "preflight.py could not be loaded from the plugin - reinstall teamme",
         }
     try:
-        return mod.diagnose(str(root))
+        # The server always knows where the shipped templates are; the hook
+        # usually does not. Handing the hint over is what lets teamme_status
+        # check hook freshness at all. An older installed copy of preflight.py
+        # (loaded as the fallback) takes one argument - fall back to that.
+        try:
+            return mod.diagnose(str(root), str(templates_dir()))
+        except TypeError:
+            return mod.diagnose(str(root))
     except Exception as exc:
         return {
             "ok": False,
@@ -264,16 +292,15 @@ def install(root: pathlib.Path, force: bool = False) -> dict:
         for src in scripts:
             dst = dst_hooks / src.name
             if dst.is_file():
-                try:
-                    same = dst.read_bytes() == src.read_bytes()
-                except Exception:
-                    same = False
-                if same:
+                verdict = hook_freshness(dst, src, root)
+                if verdict == "same":
                     skipped.append(f".claude/hooks/{src.name} (already current)")
                     continue
                 if not force:
+                    why = ("differs from the plugin's copy" if verdict == "differs"
+                           else "could not be compared with the plugin's copy")
                     skipped.append(
-                        f".claude/hooks/{src.name} (differs from the plugin's copy - left as is; "
+                        f".claude/hooks/{src.name} ({why} - left as is; "
                         f"call again with force=true to overwrite)"
                     )
                     continue
@@ -387,7 +414,9 @@ TOOLS = [
             ".claude/intake/, and merge the hooks block into .claude/settings.json while preserving "
             "everything already there. Idempotent. Run this when teamme_status says not-installed, "
             "and to REPAIR an install when it says installed-outdated - an outdated install must be "
-            "repaired this way, never by re-running /teamme:init-team over an existing team."
+            "repaired this way, never by re-running /teamme:init-team over an existing team. A hook "
+            "script that is present but differs from the plugin's copy is reported and left alone; "
+            "pass force=true to replace it."
         ),
         "inputSchema": {
             "type": "object",

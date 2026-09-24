@@ -10,7 +10,11 @@ It validates the manifests, compiles every hook and the MCP server, checks that 
 runs the scaffolding end to end in a throwaway project, drives the MCP server over a real JSON-RPC
 pipe, and drives `preflight.py` through each of its four install states — including
 `installed-outdated` against a synthetic 0.1.0-shaped install, asserting it is never told to run
-`/teamme:init-team`. CI runs exactly this. Please make it pass before opening a pull request.
+`/teamme:init-team`. It also checks hook freshness on its own: a present-but-modified hook drives
+`installed-outdated` and is named in the failure; the path where the plugin's templates cannot be
+located degrades to existence-only and still passes; and `teamme_install` leaves a hook that differs
+from the plugin's copy alone unless called with `force=true`. CI runs exactly this. Please make it
+pass before opening a pull request.
 
 ## Layout
 
@@ -43,6 +47,13 @@ These run on other people's machines, inside their editing loop. They must:
   command with a synthesized payload before wiring it into settings.
 - **Stay project-agnostic.** No project names, paths or stack assumptions in `templates/hooks/`.
   Anything project-specific belongs in the `{{PLACEHOLDER}}`s of `templates/intake.md`.
+- **Never duplicate the freshness comparison.** Whether an installed hook script still matches the
+  plugin's shipped copy is decided once, by `hook_freshness()` in `preflight.py`; `teamme_mcp.py`
+  loads and calls it rather than reimplementing the byte comparison — two copies is how they end up
+  disagreeing. A hook that differs from the plugin's copy is left in place by a plain repair, since
+  the difference could be a deliberate local edit; only `force=true` overwrites it. Never call a
+  differing hook "outdated" or "wrong" in output or docs — "differs from the plugin's copy" is what
+  the check actually knows.
 
 ## Rules for the MCP server
 
