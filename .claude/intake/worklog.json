@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "next_id": 28,
+  "next_id": 30,
   "tasks": [
     {
       "id": "T1",
@@ -205,7 +205,7 @@
       "id": "T14",
       "title": "Ship 3 librarian agents + MCP servers: self-updating project indexes, selectable in /init-team, wired to the lanes that consult them",
       "status": "open",
-      "priority": "P1",
+      "priority": "P0",
       "lane": "teamme-prompt-author",
       "notes": [
         "USER: deferred by request ('later once you finish'). Queued behind T8.",
@@ -213,11 +213,23 @@
         "GOAL: teamme maps the project once via librarians instead of every generated agent re-deriving the same map its own way. The librarians are the project-comprehension layer, not roster filler.",
         "OPEN DESIGN QUESTIONS for the future brief: (1) 'gate' needs defining - MCP tool-level refusal like teamme_install (precedent now exists in T8) vs a hook, which invariant #1 forbids from blocking; (2) 'self-updated autonomously with hooks' needs a trigger that cannot loop (invariant #2) and cannot block (invariant #1) - SessionStart is the safe candidate, PostToolUse is not; (3) which 3 - the reference set is git-history, tests-coverage and compliance, but teamme's own layer boundaries may imply different ones; (4) a librarian's memory is per-project state: committed or gitignored? (5) invariant #4 - librarian prompts are project-agnostic templates, their INDEXES are project-specific.",
         "HISTORY-LIBRARIAN SCOPE (user, for the future brief): go beyond answering 'what changed in file X'. Two capabilities: (1) build a codebase MAP from historical changes read chronologically - the commit stream is the evidence, so structure emerges from how the code actually evolved rather than from a one-off static scan; (2) print a COMPLETE DEPENDENCY TREE of anything - workflow -> references -> scopes -> features -> tests, with the tests leg answered by consulting the tests-librarian rather than re-deriving it. That cross-librarian consultation is the pattern already present in the reference implementation (compliance-officer consults tests-librarian) and is what makes the map cheap: each librarian owns one axis and is asked, never re-computed.",
-        "Related: T27 (cross-project grants) may be the access-control layer this needs - librarian indexes are the obvious cross-project payload."
+        "Related: T27 (cross-project grants) may be the access-control layer this needs - librarian indexes are the obvious cross-project payload.",
+        "STORAGE DECISION (user's steer): back the librarian indexes with sqlite3, which is in the PYTHON STANDARD LIBRARY (3.45.1 on this machine) - so a real indexed DB costs no dependency and invariant #3 still holds. This is a material upgrade on the reference implementation's append-only jsonl + bash grep helper: it makes the indexes queryable rather than searchable. The dependency tree the user asked for (workflow -> references -> scopes -> features -> tests) is a recursive CTE, which SQLite does natively; jsonl cannot express it without rebuilding a graph in memory each time.",
+        "SCOPE CORRECTION: indexing needs NO cross-project identity. A librarian's DB lives inside the project (.claude/agent-memory/ or beside it) and is isolated positionally, exactly like worklog.json. The identity problem I raised applies only to T27 (sharing across projects), not to building the indexes.",
+        "WHAT TO INDEX (user): code, git history, bugs. Natural tables - commits (hash, author, date, scope tag), files_changed (commit -> path), symbols/imports/references (the dependency graph), tests (test -> source edges, coverage gaps), and the work log's own tasks, which already exist and could join to the files a task touched. The MCP server is the natural owner of the connection: it already runs as a process holding the project path, so it can expose query tools instead of every agent shelling out to grep.",
+        "HONEST GAP IN MY GROUNDING: I read _librarian-template.md and the headers of history-librarian.md and tests-librarian.md, but NOT compliance-officer.md (55KB) in full. The future brief must read it properly - it is the largest of the four and the one that shows how a librarian is consulted BY another agent rather than invoked directly.",
+        "FULL SPEC (user, verbatim intent): teamme provides OUT-OF-THE-BOX native indexing via a local DB owned by the MCP server. Capabilities: codebase mapping; a workflow expert; links between every aspect of the project; mapping existing tests to code, components and features; reported bugs too if an issue-tracking librarian is enabled; and a TREE MAP OF GIT HISTORY driven by reasoning about what actually happened in each commit - so any aspect of the development is easy to query, related changes are visible, and commit messages act as a STORYTELLING tool giving precise understanding of when, what and WHY a change was made. Self-refreshed on each plan before it is marked resolved, via hooks acting as gates that enforce committing the refreshed indexes along with the change.",
+        "STORAGE FORK (user): make it selectable whether the librarians' data is committed with the code or lives alongside it uncommitted. Applies to ALL generated knowledge - librarian indexes, the MCP server's knowledge base, and the agents' memories - not just one of them.",
+        "DESIGN TENSION 1 - a SQLite file cannot be committed sanely. It is binary, so git cannot merge it: two teammates indexing different commits produce divergent files that conflict irreconcilably, and every reindex churns the whole blob. This is probably WHY the reference implementation chose append-only commits.jsonl plus rolling markdown summaries - those merge. Likely resolution: keep the COMMITTED artifact append-only text (jsonl/markdown) and treat SQLite as a locally-rebuilt query layer derived from it. That satisfies both halves of the user's fork: committed-with-code means the text artifacts, uncommitted means gitignore them and rebuild locally. Do not commit the .db.",
+        "DESIGN TENSION 2 - 'hooks acting as gates that enforce committing' vs invariant #1: invariant #1 governs the WRITE GUARD (PreToolUse must fail open). A Stop hook that refuses to end a turn is a different, already-sanctioned mechanism - worklog-enforce.py stop already blocks on an active task. So an index-freshness gate belongs on Stop, not PreToolUse, and must obey invariant #2: state what re-arms it or it traps the session. The T10 lesson applies directly - stamp against a status-change field, never a mutation timestamp, or refreshing the index re-arms the nag that demanded the refresh.",
+        "REFRESH COST: 'self-refresh on each plan' must be incremental (from the last indexed commit, as the reference implementation does), never a full rescan - this runs inside the user's editing loop. Budget it like preflight: a hook that adds perceptible latency to every turn will be disabled by users, and a disabled gate enforces nothing.",
+        "*** TITLE IS NOW WRONG - READ THIS FIRST *** The task title says 'selectable in /init-team'. The user has corrected that: librarians are NOT team members and NOT offered in the roster questionnaire. Two tiers: (1) TEAM AGENTS - generated per project by /init-team, do the work; (2) LIBRARIANS - shipped BY THE PLUGIN, not generated, enabled/disabled per librarian at the PLUGIN level, with their own rules, skills and hooks. When enabled, team agents CONSULT them as a quick grounded source of truth. Out-of-the-box means exactly this: present without being chosen, not an extra roster lane.",
+        "REVERSES A RECORDED DECISION: CLAUDE.md 'Decisions already made' states 'The plugin ships no agents/ of its own by design - teams are generated per project'. Librarians would be the FIRST plugin-shipped agents. The user owns that call, but the brief must REPLACE that decision entry with the new reasoning (why librarians are shipped where teams are generated: they are project-agnostic machinery, not project-specific roles) rather than leave the docs contradicting the code. Also note the consequence the old decision flagged - nothing validates generated agent files - now partly changes, because shipped librarians CAN be validated by validate.sh like any other shipped file.",
+        "OPEN: librarians 'have their own hooks'. teamme today ships hooks only as TEMPLATES copied into a project (.claude/hooks/). A plugin-shipped agent's hooks could instead be plugin-level (a hooks/hooks.json in the plugin, which the harness loads directly) - a mechanism teamme has never used. Decide which, and note that plugin-level hooks are NOT copied per project, so enable/disable has to gate them at runtime rather than by presence."
       ],
       "blocked_on": "",
       "created": "2026-09-17T18:05:01+00:00",
-      "updated": "2026-09-24T13:53:16+00:00",
+      "updated": "2026-09-24T14:28:42+00:00",
       "status_changed": "2026-09-17T18:20:55+00:00"
     },
     {
@@ -424,6 +436,34 @@
       "created": "2026-09-24T13:53:16+00:00",
       "updated": "2026-09-24T13:53:16+00:00",
       "status_changed": "2026-09-24T13:53:16+00:00"
+    },
+    {
+      "id": "T28",
+      "title": "worklog.py has no retitle action, so a task whose scope is corrected keeps a misleading title forever",
+      "status": "open",
+      "priority": "P2",
+      "lane": "teamme-hook-engineer",
+      "notes": [],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-24T14:28:42+00:00",
+      "updated": "2026-09-24T14:28:42+00:00",
+      "status_changed": "2026-09-24T14:28:42+00:00"
+    },
+    {
+      "id": "T29",
+      "title": "Point the teamme marketplace back at GitHub - it is currently the local working tree",
+      "status": "open",
+      "priority": "P1",
+      "lane": "teamme-docs-writer",
+      "notes": [
+        "ENVIRONMENT STATE, not visible in git: the 'teamme' marketplace was switched to Directory (/home/ubuntu/source/teamme) to test 0.2.x before main had it. main now has everything (78b54d6), so this should go back: claude plugin marketplace remove teamme && claude plugin marketplace add amirguterman/teamme. Until then every install and every test exercises the uncommitted working tree rather than what users receive - which is the exact blind spot that let T23 reach a release. Also: the plugin is currently installed at PROJECT scope for /home/ubuntu/source/speedrun-nanosuit only, so this repo has no /teamme:* commands and its own preflight reports 'NOT compared'. Reinstalling at user scope (the default) would fix both."
+      ],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-24T14:30:05+00:00",
+      "updated": "2026-09-24T14:30:05+00:00",
+      "status_changed": "2026-09-24T14:30:05+00:00"
     }
   ]
 }
