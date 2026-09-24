@@ -331,17 +331,18 @@
     {
       "id": "T21",
       "title": "validate.sh runtime is dominated by ~100 python3 startups, making it very sensitive to a slow host",
-      "status": "open",
+      "status": "dropped",
       "priority": "P2",
       "lane": "teamme-validation-engineer",
       "notes": [
-        "CORRECTION - this task's premise does not hold on this machine today. Re-measured 2026-09-24: 'python3 -c pass' is 0.02s over 7 runs, not the ~1.1s recorded when this task was written. Whatever made the interpreter start pathologically slow (WSL2 filesystem or AV scanning, never diagnosed) is no longer happening. The suite is no longer dominated by interpreter startup, so the stated justification is gone. Do not act on the ~1.1s figure. Re-time the suite before deciding whether this task is still worth doing - it may be a straight drop."
+        "CORRECTION - this task's premise does not hold on this machine today. Re-measured 2026-09-24: 'python3 -c pass' is 0.02s over 7 runs, not the ~1.1s recorded when this task was written. Whatever made the interpreter start pathologically slow (WSL2 filesystem or AV scanning, never diagnosed) is no longer happening. The suite is no longer dominated by interpreter startup, so the stated justification is gone. Do not act on the ~1.1s figure. Re-time the suite before deciding whether this task is still worth doing - it may be a straight drop.",
+        "dropped: Premise refuted by two independent measurements. This task was written because python3 -c pass took ~1.1s on this machine; it is 0.02s today, and the suite runs in 8.5s with 11 more sections than when the task was filed. There is no interpreter-startup cost left to optimize away. Dropped, not done - if a slow host ever reappears, the reasoning is here and the task can be reopened rather than rediscovered."
       ],
       "blocked_on": "",
       "dispatched_to": "",
       "created": "2026-09-17T23:32:28+00:00",
-      "updated": "2026-09-24T15:37:42+00:00",
-      "status_changed": "2026-09-17T23:32:28+00:00"
+      "updated": "2026-09-24T17:26:21+00:00",
+      "status_changed": "2026-09-24T17:26:21+00:00"
     },
     {
       "id": "T22",
