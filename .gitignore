@@ -15,3 +15,9 @@ __pycache__/
 .claude/librarians/index.db-shm
 .claude/librarians/*/*.lock
 .claude/librarians/*/.*.tmp
+
+# This repo's own librarian record, untracked for now. Whether the .jsonl is
+# committed alongside the code is a real per-project choice and is decided in
+# phase 2 of the librarian work (T14); until the freshness gate exists, a
+# committed index just goes stale on every commit that does not refresh it.
+.claude/librarians/history/commits.jsonl
