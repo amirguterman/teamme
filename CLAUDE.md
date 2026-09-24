@@ -45,10 +45,16 @@ CI runs exactly this. It compiles every hook and the MCP server, checks that `.m
 exercises the scaffolding in a throwaway project: fail-open with no intake active, deny during
 grounding, lift on approval, `Stop` firing exactly once. It also drives the MCP server over a real
 JSON-RPC pipe — `teamme_worklog` refuses with an error naming `teamme_install` before install and
-succeeds after — and drives `preflight.py` directly: `not-installed` with a non-zero exit on an
-empty project, `live` on a scaffolded-and-heartbeated one, and the `hooks`, `settings` and
-`intake_dir` checks each failing independently with a `fix:` line. `heartbeat` is proven silent and
-always exit-0, even with no `.claude/` and stdin closed.
+succeeds after — and drives `preflight.py` directly through all four states: `not-installed` with a
+non-zero exit on an empty project, `installed-outdated` on a synthetic pre-upgrade install with a
+`fix:` line that never once names `init-team` (watched failing first, by reverting `installed` to
+the old hook-count definition and confirming the fixture flipped back to `not-installed`),
+`installed-not-live`, and `live` on a scaffolded-and-heartbeated one — plus the `hooks`, `settings`
+and `intake_dir` checks each failing independently with a `fix:` line, and the install-evidence
+probe asserted to have no false positive against a stranger's repo carrying its own unrelated
+`SessionStart` hook. `heartbeat` is proven silent and always exit-0, even with no `.claude/` and
+stdin closed. The MCP repair path is covered too: `teamme_install` repairs an `installed-outdated`
+fixture over the real JSON-RPC pipe and leaves its `intake.md` byte-identical.
 
 The worklog data model gets its own coverage: ten concurrent `note` calls on one task all survive
 the lockfile; a stale (crashed-process) lockfile is broken rather than wedging a write and leaves no
@@ -110,11 +116,26 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   write-locked. Instead `teamme_worklog` and `teamme_intake_phase` refuse — naming `teamme_install`
   — when the scaffolding is missing, and `init-team.md`/`team-doctor.md` refuse in prompt text.
   Neither is a harness guarantee; a later turn can still skip the refusal. Say so if asked.
-- **Three install states, not two.** `not-installed` (no `hooks` block in `settings.json`),
-  `installed-not-live` (hooks registered but no `SessionStart` has run them yet — needs `/hooks` or a
-  restart), `live` (a `SessionStart` heartbeat proves hooks are firing). Before `preflight.py` these
-  were indistinguishable from outside: a freshly registered, never-restarted install looked exactly
-  like a broken one.
+- **`installed` must never be derived from a hook list that grows, and that took a P0 to learn.**
+  `preflight.py` originally scored "is teamme installed here" off `REQUIRED_HOOKS` — the tuple of
+  hook scripts this release expects. `REQUIRED_HOOKS` grows every release that adds a hook, so a
+  complete, working install from an *older* release started scoring less than 6/6 the moment a new
+  hook shipped, and was reported `not-installed` and told to run `/teamme:init-team` — which
+  re-runs the questionnaire and regenerates the roster over a team that already works. That would
+  have hit every existing user on the release that added `preflight.py` itself to the list. The fix
+  is structural: existence is now evidence-based — a `settings.json` hooks block naming one of
+  teamme's own scripts, and/or a generated `.claude/commands/intake.md` — and neither probe changes
+  when a release adds a hook script. A missing hook *script* became a **repair** condition
+  (`installed-outdated`), never an existence condition. States are now four, not three:
+  `not-installed` (no evidence teamme was ever set up here — the only state where the installer is
+  right), `installed-outdated` (evidence of an install exists, but a hook script or the `hooks`
+  block is missing or stale — repair with `teamme_install` / `/teamme:team-doctor`, never
+  `/teamme:init-team`), `installed-not-live` (scaffolding complete, hooks registered, but no
+  `SessionStart` has run them yet — needs `/hooks` or a restart), `live` (a `SessionStart` heartbeat
+  proves hooks are firing). `installed-outdated` halts `templates/intake.md`: its exit code follows
+  the `PASS`/`FAIL` items, not the `state:` line, so an outdated install halts `/intake` until
+  repaired even though most of the team already works — documented in the README's install-and-verify
+  section, since that is exactly what an upgrading user hits first.
 - **`/teamme:queue` exists because `/intake`'s own "queue" outcome still cost a full response.**
   The triage table always had a queue disposition, but reaching it still meant grounding,
   classifying and briefing a request the user only wanted parked. `/queue` is that same outcome
@@ -148,6 +169,10 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
 - `teamme_intake_phase` is not separately gate-tested; only `teamme_worklog` exercises the shared
   gate-on-install path against the MCP server.
 - Version bumps are manual: `plugin.json` `version` plus a `CHANGELOG.md` entry.
+- This repo's own dogfood install is `installed-outdated` by the definition above: `.claude/commands/
+  intake.md` predates the preflight block entirely (no Preflight section, no `state:` handling), so
+  `/intake` in this repo does not halt on an incomplete install the way a freshly-generated one would.
+  Tracked as T24.
 
 ## Conventions
 

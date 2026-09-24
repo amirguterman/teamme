@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "next_id": 22,
+  "next_id": 25,
   "tasks": [
     {
       "id": "T1",
@@ -319,6 +319,52 @@
       "created": "2026-09-17T23:32:28+00:00",
       "updated": "2026-09-17T23:32:28+00:00",
       "status_changed": "2026-09-17T23:32:28+00:00"
+    },
+    {
+      "id": "T22",
+      "title": "teamme_mcp.py hardcodes serverInfo.version 0.1.0; it drifts from plugin.json on every bump",
+      "status": "open",
+      "priority": "P2",
+      "lane": "teamme-hook-engineer",
+      "notes": [],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-24T08:36:20+00:00",
+      "updated": "2026-09-24T08:36:20+00:00",
+      "status_changed": "2026-09-24T08:36:20+00:00"
+    },
+    {
+      "id": "T23",
+      "title": "preflight misdiagnoses every existing 0.1.0 install as not-installed and tells the user to run /init-team over a working team",
+      "status": "done",
+      "priority": "P0",
+      "lane": "teamme-hook-engineer",
+      "notes": [
+        "Reproduced against /home/ubuntu/source/speedrun-nanosuit, a real 0.1.0 install: hook registration PASSES (all 4 events) and intake command PASSES, yet state reports not-installed, because 'hook scripts' fails on the newly-added preflight.py and liveness reports 'never' (0.1.0 settings never wired the heartbeat). Needs a fourth state - installed-outdated - whose remediation is a repair (teamme_install / team-doctor), never /init-team. This is the upgrade path every existing user will hit.",
+        "GROUNDED. Root cause: preflight.py:335 scaffolded = hooks.ok AND settings.ok; _check_hooks fails if ANY name in REQUIRED_HOOKS is absent, and preflight.py was added to that tuple in 0.2.0. Structural: every future release adding a hook retroactively marks all existing installs not-installed. Grounding also found four consumers the plan missed: queue.md:52-55 infers install state independently and hard-codes init-team; the CLI exits on ok not state, and intake.md:38 halts on non-zero, so an outdated install will halt /intake until repaired; teamme_mcp.py:353 ties teamme_install to the literal not-installed; teamme_mcp.py:234 globs *.py while REQUIRED_HOOKS is a separate list that can drift.",
+        "preflight: 'installed' now derives from install evidence (registered teamme hooks / generated intake.md), not the growing REQUIRED_HOOKS list; added the installed-outdated state with repair-only remediation, a third liveness branch, and a REPAIR_FIX swap in diagnose(). MCP: teamme_status/teamme_install advise repair on installed-outdated, and install audits templates/hooks against REQUIRED_HOOKS. Pipe-tested against the real 0.1.0 install (speedrun-nanosuit) plus synthetic 0.1.0/empty/full/heartbeat/malformed cases; validate.sh passes; .claude/hooks copies re-synced.",
+        "Extended scripts/validate.sh with 4 new preflight assertions covering the installed vs complete regression: (1) a synthetic 0.1.0-shaped fixture (5 original hooks, no preflight.py, settings.json missing the heartbeat entry) asserts state==installed-outdated, non-zero exit, and no fix text containing init-team; (2) full scaffolding pre-heartbeat now explicitly asserts installed-not-live before the existing live-baseline check; (3) a stranger's repo with an unrelated SessionStart hook and no teamme scaffolding asserts state==not-installed (false-positive guard on _install_evidence); (4) a JSON-RPC-driven teamme_install call against the outdated fixture asserts the repaired state becomes installed-not-live (never installed-outdated) and that .claude/commands/intake.md content is byte-identical before/after. Each new assertion was observed failing (reverting installed=complete flips the fixture back to not-installed with init-team in the fix text; forcing liveness true breaks assertion 2; broadening the evidence probe match breaks assertion 3; simulating an intake.md overwrite in install() breaks assertion 4) and then restored to passing. ./scripts/validate.sh prints ALL CHECKS PASSED.",
+        "Folded P0 install-state fix into 0.2.0 (unreleased): CHANGELOG date updated to 2026-09-24, entry corrected from three install states to four (not-installed, installed-outdated, installed-not-live, live), evidence-based existence checking explained. plugin.json and CHANGELOG now agree on v0.2.0. validate.sh passes.",
+        "ALL LANES LANDED, verified by me: speedrun-nanosuit (a real 0.1.0 install) now reports installed-outdated with zero init-team mentions; four new validate.sh assertion groups pass, each watched failing first; docs corrected in 4 files with Known gaps growing 7->8; changelog re-dated 2026-09-24 with the false three-states claim removed."
+      ],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-24T08:44:40+00:00",
+      "updated": "2026-09-24T09:06:03+00:00",
+      "status_changed": "2026-09-24T09:06:03+00:00"
+    },
+    {
+      "id": "T24",
+      "title": "This repo's own .claude/commands/intake.md predates the preflight block and lacks it entirely",
+      "status": "open",
+      "priority": "P1",
+      "lane": "teamme-prompt-author",
+      "notes": [],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-24T08:59:39+00:00",
+      "updated": "2026-09-24T08:59:39+00:00",
+      "status_changed": "2026-09-24T08:59:39+00:00"
     }
   ]
 }

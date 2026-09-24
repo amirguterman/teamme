@@ -3,7 +3,7 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] - 2026-09-18
+## [0.2.0] - 2026-09-24
 
 ### Removed
 - `/build-agent-team` command — replaced with `/teamme:init-team` for clearer namespace.
@@ -16,8 +16,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - MCP server (`teamme_mcp.py`) with tools: `teamme_status` (always available), `teamme_install`
   (scaffolds and repairs, idempotent), and `teamme_worklog` / `teamme_intake_phase` (guard-gated).
   Added `dispatch` action to `teamme_worklog` for managing the new `dispatched` status.
-- Preflight check module (`preflight.py`) distinguishing three install states: not-installed,
-  installed-not-live (hook state not yet proven), and live (validated by `SessionStart` heartbeat).
+- Preflight check module (`preflight.py`) distinguishing four install states: not-installed
+  (no hooks block), installed-outdated (hooks registered but release added new ones), installed-not-live
+  (hooks block present but `SessionStart` not yet run them), and live (validated by `SessionStart`
+  heartbeat). Evidence-based existence checking prevents prior releases from being falsely marked as
+  not-installed on upgrade.
 - Preflight validation step at the start of every command, halting with a repair recommendation
   list when the install is broken.
 - `dispatched` work-log status — "in flight with another agent", counted as unfinished, skipped by

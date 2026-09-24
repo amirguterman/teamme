@@ -270,6 +270,12 @@ tpl = json.loads(pathlib.Path('$ROOT/plugins/teamme/templates/settings.hooks.jso
 pathlib.Path('pf-full/.claude/settings.json').write_text(json.dumps(tpl, indent=2) + chr(10))
 pathlib.Path('pf-full/.claude/commands/intake.md').write_text('---\ndescription: x\n---\nbody\n')
 "
+NOTLIVE_JSON_FILE="$PWD/pf-full-notlive.json"
+set +e
+python3 "$PF" check --json --project-dir "$PWD/pf-full" > "$NOTLIVE_JSON_FILE"
+set -e
+NOTLIVE_STATE=$(python3 -c "import json; print(json.load(open('$NOTLIVE_JSON_FILE'))['state'])")
+[ "$NOTLIVE_STATE" = "installed-not-live" ] || fail "full scaffolding with no heartbeat reported state '$NOTLIVE_STATE', expected installed-not-live"
 CLAUDE_PROJECT_DIR="$PWD/pf-full" python3 "$PF" heartbeat </dev/null >/dev/null
 python3 - "$PF" "$PWD/pf-empty" "$PWD/pf-full" <<'PY'
 import json, pathlib, shutil, subprocess, sys
@@ -350,6 +356,151 @@ intake_dst = broken_copy("intake_dir", lock_intake_dir)
 (intake_dst / ".claude" / "intake").chmod(0o700)  # so the temp-dir cleanup can remove it
 
 print("  ok: not-installed on an empty project; hooks/settings/intake_dir each fail independently with a fix")
+PY
+
+# A 0.1.0-shaped install: the five original hooks, no preflight.py, an
+# already-generated intake.md, and a settings.json missing the preflight.py
+# heartbeat entry this release added. Building this from real template pieces
+# (not hand-authored JSON) is what makes the fixture honest.
+make_outdated_fixture() {
+  local dir="$1"
+  mkdir -p "$dir/.claude/hooks" "$dir/.claude/intake" "$dir/.claude/commands"
+  cp "$H/intake-state.py" "$H/intake-guard.py" "$H/route-to-intake.py" \
+     "$H/worklog-enforce.py" "$H/worklog.py" "$dir/.claude/hooks/"
+  python3 -c "
+import json, pathlib
+tpl = json.loads(pathlib.Path('$ROOT/plugins/teamme/templates/settings.hooks.json').read_text())
+tpl['hooks']['SessionStart'] = [tpl['hooks']['SessionStart'][0]]  # drop the preflight.py heartbeat entry - 0.1.0 predates it
+pathlib.Path('$dir/.claude/settings.json').write_text(json.dumps(tpl, indent=2) + chr(10))
+pathlib.Path('$dir/.claude/commands/intake.md').write_text(
+    '---\ndescription: project-specific intake\n---\nMARKER-DO-NOT-CLOBBER project-specific body\n'
+)
+"
+}
+
+echo "== preflight: installed-outdated (a 0.1.0-shaped install) is never told to run init-team =="
+make_outdated_fixture "$PWD/pf-outdated"
+test -f "$PWD/pf-outdated/.claude/hooks/preflight.py" \
+  && fail "the 0.1.0-shaped fixture accidentally shipped preflight.py - it must predate it"
+python3 - "$PF" "$PWD/pf-outdated" <<'PY'
+import json, pathlib, subprocess, sys
+
+pf, outdated_dir = sys.argv[1], sys.argv[2]
+proc = subprocess.run(
+    ["python3", pf, "check", "--json", "--project-dir", outdated_dir],
+    capture_output=True, text=True, timeout=10,
+)
+if proc.returncode == 0:
+    sys.exit("preflight check exited 0 for a 0.1.0-shaped installed-outdated project")
+try:
+    data = json.loads(proc.stdout)
+except Exception as exc:
+    sys.exit(f"installed-outdated check produced unparseable output: {exc}\n{proc.stdout}")
+if data.get("state") != "installed-outdated":
+    sys.exit(f"expected state installed-outdated for the 0.1.0-shaped fixture, got {data.get('state')!r}: {data}")
+blob = json.dumps(data)
+if "init-team" in blob:
+    sys.exit(
+        "an installed-outdated project was told to run /teamme:init-team - this is exactly the T23 "
+        f"regression (an existing install told to reinstall over itself): {blob}"
+    )
+print("  ok: installed-outdated is reported (not not-installed), exit is non-zero, and no fix mentions init-team")
+PY
+
+echo "== preflight: the install-evidence probe has no false positives on a stranger's repo =="
+mkdir -p stranger-proj/.claude
+python3 -c "
+import json, pathlib
+pathlib.Path('stranger-proj/.claude/settings.json').write_text(json.dumps({
+    'hooks': {'SessionStart': [{'hooks': [{'type': 'command', 'command': 'python3 .claude/hooks/some-other-tool.py'}]}]}
+}, indent=2) + chr(10))
+"
+python3 - "$PF" "$PWD/stranger-proj" <<'PY'
+import json, subprocess, sys
+
+pf, stranger_dir = sys.argv[1], sys.argv[2]
+proc = subprocess.run(
+    ["python3", pf, "check", "--json", "--project-dir", stranger_dir],
+    capture_output=True, text=True, timeout=10,
+)
+data = json.loads(proc.stdout)
+if data.get("state") != "not-installed":
+    sys.exit(
+        f"a project with its own unrelated SessionStart hook and no teamme reported state "
+        f"{data.get('state')!r} instead of not-installed: {data}"
+    )
+print("  ok: an unrelated SessionStart hook does not count as teamme install evidence")
+PY
+
+echo "== mcp server: teamme_install repairs an installed-outdated project without touching intake.md =="
+make_outdated_fixture "$PWD/repair-proj"
+python3 - "$ROOT" "$PWD/repair-proj" <<'PY'
+import json, pathlib, subprocess, sys
+
+root = pathlib.Path(sys.argv[1])
+repair_proj = pathlib.Path(sys.argv[2])
+orig_intake_md = (repair_proj / ".claude" / "commands" / "intake.md").read_text()
+server = root / "plugins/teamme/server/teamme_mcp.py"
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+def call_text(resp):
+    result = resp.get("result") or {}
+    return result, "".join(c.get("text", "") for c in result.get("content") or [])
+
+
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_status",
+                           "arguments": {"project_dir": str(repair_proj)}}})
+    result, text = call_text(recv(proc))
+    if "installed-outdated" not in text:
+        sys.exit(f"teamme_status did not report installed-outdated before repair: {text!r}")
+
+    send(proc, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {"name": "teamme_install",
+                           "arguments": {"project_dir": str(repair_proj)}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"teamme_install reported an error repairing an installed-outdated project: {text}")
+    if "state: installed-outdated" in text:
+        sys.exit(f"teamme_install did not repair the installed-outdated project: {text}")
+    if "state: installed-not-live" not in text:
+        sys.exit(f"expected teamme_install to leave the project installed-not-live (repaired, not yet heartbeated): {text}")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+new_intake_md = (repair_proj / ".claude" / "commands" / "intake.md").read_text()
+if new_intake_md != orig_intake_md:
+    sys.exit(
+        "teamme_install clobbered the project-specific .claude/commands/intake.md while repairing an "
+        f"installed-outdated project.\nbefore: {orig_intake_md!r}\nafter:  {new_intake_md!r}"
+    )
+print("  ok: teamme_install repairs an installed-outdated project and leaves intake.md untouched")
 PY
 
 echo "== preflight heartbeat: silent, always exits 0, even unscaffolded with stdin closed =="

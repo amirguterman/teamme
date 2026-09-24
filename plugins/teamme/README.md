@@ -113,13 +113,20 @@ Priorities: `P0` now, `P1` normal, `P2` someday.
 Requirements: `python3` on `PATH`, and nothing else. The hooks and the bundled MCP server
 deliberately avoid `jq` and any third-party package, so they work on a bare machine.
 
-A project's teamme install is always in one of three states:
+A project's teamme install is always in one of four states:
 
-| State | Meaning |
-|---|---|
-| `not-installed` | `/teamme:init-team` has never been run here |
-| `installed-not-live` | the hook scripts and `.claude/settings.json` hooks block both exist, but no `SessionStart` has fired them yet — usually because `.claude/` held no settings file when the session started |
-| `live` | a `SessionStart` heartbeat proves the hooks are actually running |
+| State | Meaning | Remediation |
+|---|---|---|
+| `not-installed` | no evidence teamme was ever set up here | `/teamme:init-team` — the only state where the installer is the right advice |
+| `installed-outdated` | teamme **is** installed here, but part of the scaffolding is missing or stale — typically an install from an earlier release that predates a hook script this version expects | repair only — `/teamme:team-doctor` or the `teamme_install` MCP tool. Never the installer: it would re-run the questionnaire and regenerate the roster over a team that already works |
+| `installed-not-live` | the hook scripts and `.claude/settings.json` hooks block both exist, but no `SessionStart` has fired them yet — usually because `.claude/` held no settings file when the session started | `/hooks` or restart |
+| `live` | a `SessionStart` heartbeat proves the hooks are actually running | none |
+
+`installed-outdated` is real, not cosmetic: the generated `/intake` command halts on any non-zero
+`preflight.py check`, and the exit code follows the individual `PASS`/`FAIL` items rather than the
+`state:` line, so an outdated install halts `/intake` until it is repaired — even though the team is
+already set up and most of it works. This is the state an upgrading user meets first, on the release
+that adds the next hook script.
 
 Check the state at any time with **`/teamme:team-doctor`** — it reports every check with a `fix:`
 line for each failure, and offers to repair a partial install (missing hook scripts, a missing
@@ -129,7 +136,7 @@ teamme also ships an MCP server, declared in the plugin's `.mcp.json` and launch
 `python3`. If `python3` is missing, that process never starts, and Claude Code reports it in `/mcp`
 — that is what makes a missing `python3` visible instead of silently indistinguishable from a
 working, but inactive, hook. When the server is connected, `teamme_status` reports the same
-three-state diagnosis and `teamme_install` performs the same repair as `/teamme:team-doctor`;
+four-state diagnosis and `teamme_install` performs the same repair as `/teamme:team-doctor`;
 `teamme_worklog` and `teamme_intake_phase` refuse to run until the install is complete, naming
 `teamme_install` in the refusal. None of this changes the hooks' own fail-open behaviour — with
 `python3` missing, the hooks are still inert either way.

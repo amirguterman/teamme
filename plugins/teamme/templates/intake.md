@@ -33,7 +33,7 @@ python3 .claude/hooks/preflight.py check
 ```
 
 It prints one `PASS`/`FAIL` line per item, a `fix:` line under each failure, and a final `state:` of
-`not-installed`, `installed-not-live` or `live`. Exit 0 iff everything passed.
+`not-installed`, `installed-outdated`, `installed-not-live` or `live`. Exit 0 iff everything passed.
 
 Exit 0: go to step 0. Non-zero, or the script is missing: **halt.** Show the output, name the fix
 from the table, offer the repair, and do not continue into triage. Everything below this line runs
@@ -44,15 +44,27 @@ a half-working intake is worse than a refusal.
 | State | The fix |
 |---|---|
 | the command itself fails - `python3: command not found` | Nothing teamme ships can run; every hook is a `python3` script. Tell the user to install python3 (system package manager, or python.org). No repair is possible from here. |
-| `not-installed` - hook scripts or the `hooks` block in `.claude/settings.json` are missing | Run `/teamme:init-team` in this project to scaffold the team, the hooks and this command. Do not hand-assemble a partial install. |
+| `not-installed` - no registered teamme hooks and no generated intake command, so nothing was ever set up here | Run `/teamme:init-team` in this project to scaffold the team, the hooks and this command. Do not hand-assemble a partial install. This is the only state where the installer is the right advice. |
+| `installed-outdated` - teamme **is** installed here, but a hook script or the `hooks` block in `.claude/settings.json` is missing or stale, usually an install from an earlier release | Repairable, and repair is the *only* correct move: the `teamme_install` MCP tool, or `/teamme:team-doctor`. **Never `/teamme:init-team`** - it would re-run the questionnaire and regenerate the roster over a team that already works. See the halt note below: this state blocks this command until it is repaired. |
 | `installed-not-live` - everything registered, no `SessionStart` has fired here | The session started before the settings file existed, so no hook is loaded and the grounding guard would deny nothing. Run `/hooks`, or restart the session, then re-run this command. |
 | `live` but an item still `FAIL`s - a missing script, an unparseable settings file, an unwritable `.claude/intake/` | Repairable: see below. An invalid `settings.json` is the user's to fix - report it, never rewrite the file around it. |
+
+**An incomplete install halts this command until it is repaired.** The exit code follows the
+`PASS`/`FAIL` items, not the `state:` line, and every missing piece is a `FAIL` - so
+`installed-outdated` always exits non-zero and always stops the flow here, even though the team
+itself is set up and most of it works. That is intended, not a quirk: the guard, the phase lock and
+the work log are exactly the parts that go missing, and those are what this command runs on. Say so
+plainly to the user rather than leaving them guessing - name the missing files, say that repairing
+them is the only thing standing between them and `/intake`, and that re-running the check after the
+repair clears the halt. Do not work around it by skipping to step 0.
 
 **Offer the repair, ask before writing.** For a partial install, say exactly which files you would
 restore - missing scripts under `.claude/hooks/`, the missing `hooks` block merged into
 `.claude/settings.json`, the `.claude/intake/` directory - and get the user's go-ahead first. Use
-the `teamme_install` MCP tool if it is available; otherwise `/teamme:init-team` is the installer.
-`teamme_status` gives the same diagnosis and works even when the script is gone.
+the `teamme_install` MCP tool if it is available, otherwise `/teamme:team-doctor`, which repairs an
+existing install in place. `/teamme:init-team` is the installer and belongs only to
+`not-installed` - never point an install that already exists at it. `teamme_status` gives the same
+diagnosis and works even when the script is gone.
 
 Be honest about what this is: a check this command runs and a refusal it chooses, not a gate the
 harness enforces. Do not describe it as something that blocks anyone.

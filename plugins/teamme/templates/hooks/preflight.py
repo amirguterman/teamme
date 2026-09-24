@@ -1,15 +1,28 @@
 #!/usr/bin/env python3
 """Is teamme actually working in this project? The single source of truth.
 
-Three states, and telling them apart is the whole point:
+Four states, and telling them apart is the whole point:
 
-  not-installed      the scaffolding is missing - nothing can work yet
+  not-installed      nothing here was ever installed by teamme - no registered
+                     teamme hooks, no generated intake command. This is the only
+                     state where /teamme:init-team is the right advice
+  installed-outdated teamme was installed here, but the scaffolding is no longer
+                     complete - typically an install from an earlier release that
+                     predates a hook script this version expects. REPAIR it
+                     (`teamme_install` / /teamme:team-doctor); never re-run the
+                     installer over a working team
   installed-not-live the hooks are on disk and registered in settings.json, but
                      they have never fired here. Almost always means the harness
                      has not loaded them yet: approve them with /hooks, or start
                      a fresh session
   live               a session start has actually executed this script, so the
                      hook wiring is proven, not assumed
+
+"Installed" is deliberately NOT derived from the hook-script list. REQUIRED_HOOKS
+grows every release, so a complete install from an older release would otherwise
+score 5/6 and be reported as never installed - and be told to run the installer
+over a working team. Existence is evidence-based (registered teamme hooks, or the
+generated intake command); a missing hook *script* is a repair condition.
 
 Liveness is proven by a heartbeat file that SessionStart writes. It is evidence
 only: NOTHING reads it to decide whether an action is allowed. It is not a second
@@ -56,6 +69,15 @@ HEARTBEAT_NAME = "heartbeat.json"
 INSTALL_FIX = (
     "run the `teamme_install` MCP tool, or /teamme:team-doctor, to repair the scaffolding - or "
     "/teamme:init-team if this project has never been set up"
+)
+
+# The same failure in a project that IS already installed. diagnose() swaps this
+# in once the state is known, so the individual checks stay context-free and no
+# existing install is ever told to run the installer over its own team.
+REPAIR_FIX = (
+    "run the `teamme_install` MCP tool, or /teamme:team-doctor, to repair this install - teamme is "
+    "already set up in this project, so repair the scaffolding rather than re-running the installer "
+    "over a working team"
 )
 
 
@@ -273,7 +295,57 @@ def _check_intake_dir(root: pathlib.Path) -> dict:
     return _item("intake_dir", "intake state dir", True, ".claude/intake/ exists and is writable")
 
 
-def _check_liveness(root: pathlib.Path, scaffolded: bool) -> dict:
+def _install_evidence(root: pathlib.Path) -> list:
+    """Why we believe teamme was installed here, as a list of reasons ([] = none).
+
+    Both probes are deliberately independent of REQUIRED_HOOKS: neither changes
+    when a release adds a hook script, so an install can never age out of being
+    an install. Every probe is individually failure-tolerant - an unreadable
+    settings file just contributes no evidence.
+    """
+    reasons = []
+    try:
+        found, _ = _load_settings(root)
+        for name, data in found:
+            hooks = data.get("hooks")
+            if not isinstance(hooks, dict):
+                continue
+            if any(_names_a_teamme_hook(g) for g in hooks.values()):
+                reasons.append(f".claude/{name} registers teamme's hooks")
+                break
+    except Exception:
+        pass
+    try:
+        if (root / ".claude" / "commands" / "intake.md").is_file():
+            reasons.append(".claude/commands/intake.md was generated here")
+    except Exception:
+        pass
+    return reasons
+
+
+def _names_a_teamme_hook(groups) -> bool:
+    """True if any hook command in this event mentions one of teamme's scripts.
+    `any`, not `all`: an install predating the newest hook still matches."""
+    try:
+        if not isinstance(groups, list):
+            return False
+        for g in groups:
+            if not isinstance(g, dict):
+                continue
+            for h in g.get("hooks") or []:
+                cmd = h.get("command") if isinstance(h, dict) else None
+                if isinstance(cmd, str) and any(n in cmd for n in REQUIRED_HOOKS):
+                    return True
+    except Exception:
+        return False
+    return False
+
+
+def _check_liveness(root: pathlib.Path, stage: str = "complete") -> dict:
+    if stage is True:            # tolerate the old boolean argument
+        stage = "complete"
+    elif stage is False:
+        stage = "not-installed"
     hb = read_heartbeat(root)
     if hb:
         try:
@@ -281,7 +353,18 @@ def _check_liveness(root: pathlib.Path, scaffolded: bool) -> dict:
         except Exception:
             detail = "SessionStart has fired here"
         return _item("liveness", "hooks firing", True, detail)
-    if not scaffolded:
+    if stage == "outdated":
+        # Restarting alone can never produce a heartbeat here: the missing piece
+        # is the wiring itself, so the repair has to come first.
+        return _item(
+            "liveness",
+            "hooks firing",
+            False,
+            "never here - this install predates part of the current scaffolding",
+            "repair the install first (`teamme_install`, or /teamme:team-doctor), then start a new "
+            "session - until the scaffolding is complete a restart cannot record a heartbeat",
+        )
+    if stage == "not-installed":
         return _item(
             "liveness",
             "hooks firing",
@@ -332,16 +415,39 @@ def diagnose(project_dir=None) -> dict:
             checks.append(_item(cid, cid, False, f"check failed: {exc}", INSTALL_FIX))
 
     by_id = {c["id"]: c for c in checks}
-    scaffolded = by_id.get("hooks", {}).get("ok") and by_id.get("settings", {}).get("ok")
+    # Does the scaffolding still have every piece this release expects?
+    complete = bool(by_id.get("hooks", {}).get("ok") and by_id.get("settings", {}).get("ok"))
+    # Was teamme ever installed here at all? Evidence that does not grow with
+    # REQUIRED_HOOKS, so `complete` failing is a repair, not a non-install.
     try:
-        live = _check_liveness(root, bool(scaffolded))
+        evidence = _install_evidence(root)
+    except Exception:
+        evidence = [] if not complete else ["the scaffolding is present"]
+    installed = bool(evidence) or complete
+
+    if not installed:
+        stage = "not-installed"
+    elif not complete:
+        stage = "outdated"
+    else:
+        stage = "complete"
+
+    try:
+        live = _check_liveness(root, stage)
     except Exception as exc:
-        live = _item("liveness", "hooks firing", False, f"check failed: {exc}", INSTALL_FIX)
+        live = _item("liveness", "hooks firing", False, f"check failed: {exc}",
+                     REPAIR_FIX if installed else INSTALL_FIX)
     checks.append(live)
 
-    if not scaffolded:
+    if stage == "not-installed":
         state = "not-installed"
         summary = "teamme is not installed in this project"
+    elif stage == "outdated":
+        state = "installed-outdated"
+        summary = (
+            "teamme is installed here (" + "; ".join(evidence or ["scaffolding present"]) + ") but "
+            "part of its scaffolding is missing - repair it, do not reinstall"
+        )
     elif live["ok"]:
         state = "live"
         summary = "teamme is installed and its hooks are firing"
@@ -349,9 +455,25 @@ def diagnose(project_dir=None) -> dict:
         state = "installed-not-live"
         summary = "teamme is installed but its hooks have not fired here yet"
 
+    if state == "installed-outdated":
+        # Every fix line written for a fresh project offers /teamme:init-team as
+        # an alternative. In an existing install that advice is actively harmful,
+        # so it is rewritten here - once, where the state is actually known.
+        for c in checks:
+            if c.get("fix") == INSTALL_FIX:
+                c["fix"] = REPAIR_FIX
+            elif c.get("id") == "command" and c.get("fix"):
+                # intake.md really is generated, not copied, so that one check
+                # has to keep pointing at the installer - scoped to itself, so it
+                # cannot be read as "reinstall the whole project".
+                c["fix"] += (
+                    " - only that file; the rest of this install is already here, so repair the "
+                    "other failures above with `teamme_install` instead"
+                )
+
     return {
         "ok": all(c["ok"] for c in checks),
-        "installed": bool(scaffolded),
+        "installed": installed,
         "state": state,
         "project_dir": str(root),
         "checks": checks,

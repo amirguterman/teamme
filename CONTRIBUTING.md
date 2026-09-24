@@ -8,8 +8,9 @@
 
 It validates the manifests, compiles every hook and the MCP server, checks that `.mcp.json` parses,
 runs the scaffolding end to end in a throwaway project, drives the MCP server over a real JSON-RPC
-pipe, and drives `preflight.py` through each of its three install states. CI runs exactly this.
-Please make it pass before opening a pull request.
+pipe, and drives `preflight.py` through each of its four install states — including
+`installed-outdated` against a synthetic 0.1.0-shaped install, asserting it is never told to run
+`/teamme:init-team`. CI runs exactly this. Please make it pass before opening a pull request.
 
 ## Layout
 

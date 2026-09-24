@@ -51,8 +51,12 @@ mode is a model that helpfully explains what it just queued. So:
 
 Two exceptions, each still one line: an empty argument (ask for the request) and a failed `add`. If
 `worklog.py` is missing or the command exits non-zero, say so in one line and name the fix -
-`queue: teamme is not installed here - run /teamme:init-team.` Do not run the preflight check, and do
-not attempt a repair from here.
+`queue: could not reach the work log - run /teamme:team-doctor to diagnose the install.` Do not run
+the preflight check, and do not attempt a repair from here: staying cheap is this command's whole
+point. That also means you cannot tell *why* it failed - a project that was never set up and an
+existing install missing one file look identical from here, and they take opposite fixes, so do not
+claim teamme is "not installed" and do not name `/teamme:init-team`. `/teamme:team-doctor`
+distinguishes them and advises repair or install accordingly.
 
 ## 3. Touch nothing else
 

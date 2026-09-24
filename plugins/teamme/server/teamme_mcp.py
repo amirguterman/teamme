@@ -11,6 +11,8 @@ gating right once the process can run at all.
 Tools:
   teamme_status        always available - the preflight diagnosis, imported from
                        templates/hooks/preflight.py, never reimplemented here
+                       (not-installed / installed-outdated / installed-not-live /
+                       live, plus "unknown" if preflight itself cannot be loaded)
   teamme_install       scaffolds or repairs: copies missing hook scripts, creates
                        .claude/intake/, merges the hooks block into
                        .claude/settings.json without clobbering anything already
@@ -90,6 +92,20 @@ def preflight(project_dir=None):
         except Exception:
             continue
     return None
+
+
+def required_hooks(project_dir=None) -> tuple:
+    """The hook scripts an install must end up with, read from preflight.py's
+    REQUIRED_HOOKS - that tuple is the single authority. install() copies from
+    templates/hooks/ and reports anything REQUIRED_HOOKS names that the plugin
+    does not actually ship, so the two lists can never silently drift into a
+    permanently "missing", unrepairable hook."""
+    mod = preflight(project_dir)
+    names = getattr(mod, "REQUIRED_HOOKS", ()) if mod is not None else ()
+    try:
+        return tuple(n for n in names if isinstance(n, str) and n)
+    except Exception:
+        return ()
 
 
 def resolve_project(args: dict) -> pathlib.Path:
@@ -231,9 +247,20 @@ def install(root: pathlib.Path, force: bool = False) -> dict:
     dst_hooks = root / ".claude" / "hooks"
     try:
         dst_hooks.mkdir(parents=True, exist_ok=True)
-        scripts = sorted(p for p in src_hooks.glob("*.py"))
+        available = {p.name: p for p in src_hooks.glob("*.py")}
+        scripts = [available[n] for n in sorted(available)]
         if not scripts:
             problems.append(f"no hook templates found in {src_hooks} - the plugin install looks broken")
+        # Everything REQUIRED_HOOKS names must be shippable, or teamme_status
+        # would report it missing forever with no way to repair it.
+        unshipped = [n for n in required_hooks(root) if n not in available]
+        if unshipped:
+            problems.append(
+                f"the plugin does not ship {', '.join(unshipped)}, but preflight requires "
+                f"{'them' if len(unshipped) > 1 else 'it'} - teamme_status will keep reporting "
+                f"{'those' if len(unshipped) > 1 else 'that'} as missing until teamme itself is "
+                f"reinstalled or updated"
+            )
         for src in scripts:
             dst = dst_hooks / src.name
             if dst.is_file():
@@ -317,6 +344,13 @@ def install(root: pathlib.Path, force: bool = False) -> dict:
             "The hooks are registered but have not fired yet. Approve them with /hooks or start a "
             "new session; the next session start records the heartbeat that proves they run."
         )
+    elif d.get("state") == "installed-outdated":
+        lines.append(
+            "This project is still short part of the scaffolding - see the failing checks above. "
+            "It IS an existing teamme install, so keep repairing it (teamme_install, with "
+            "force=true if a hook script was left in place because it differs); do not run the "
+            "installer over the team that is already here."
+        )
     return text_result("\n".join(lines))
 
 
@@ -340,7 +374,8 @@ TOOLS = [
         "name": "teamme_status",
         "description": (
             "Report whether teamme is installed in this project and whether its hooks are actually "
-            "firing (not-installed / installed-not-live / live), one line per check with the fix "
+            "firing (not-installed / installed-outdated / installed-not-live / live), one line "
+            "per check with the fix "
             "for each failure. Always available; run it first when anything looks off."
         ),
         "inputSchema": {"type": "object", "properties": dict(PROJECT_DIR_PROP), "additionalProperties": False},
@@ -350,7 +385,9 @@ TOOLS = [
         "description": (
             "Scaffold or repair teamme in this project: copy any missing hook scripts, create "
             ".claude/intake/, and merge the hooks block into .claude/settings.json while preserving "
-            "everything already there. Idempotent. Run this when teamme_status says not-installed."
+            "everything already there. Idempotent. Run this when teamme_status says not-installed, "
+            "and to REPAIR an install when it says installed-outdated - an outdated install must be "
+            "repaired this way, never by re-running /teamme:init-team over an existing team."
         ),
         "inputSchema": {
             "type": "object",
@@ -414,15 +451,38 @@ TOOLS = [
 ]
 
 
+STATE_ADVICE = {
+    "not-installed": (
+        "Nothing has been installed here yet: run /teamme:init-team to set the project up, or "
+        "`teamme_install` for the hook scaffolding alone."
+    ),
+    "installed-outdated": (
+        "teamme IS installed here - this is an older install missing part of the current "
+        "scaffolding. Repair it with the `teamme_install` tool or /teamme:team-doctor. Do not run "
+        "the installer over the team that is already here."
+    ),
+    "installed-not-live": (
+        "Registered but never fired here: approve the hooks with /hooks, or restart Claude Code. "
+        "Nothing is being enforced until a session start records the heartbeat."
+    ),
+}
+
+
 def tool_status(root: pathlib.Path, args: dict) -> dict:
     mod = preflight(root)
     d = diagnose(root)
+    # .get, never an assumption that the state is one of the known literals -
+    # diagnose() synthesizes "unknown" when preflight itself could not be loaded.
+    advice = STATE_ADVICE.get(d.get("state") or "")
     if mod is not None:
         try:
-            return text_result("\n".join(mod.render(d)))
+            lines = list(mod.render(d))
+            if advice:
+                lines += ["", advice]
+            return text_result("\n".join(lines))
         except Exception:
             pass
-    return text_result(json.dumps(d, indent=2))
+    return text_result(json.dumps(d, indent=2) + (("\n\n" + advice) if advice else ""))
 
 
 def tool_worklog(root: pathlib.Path, args: dict) -> dict:
