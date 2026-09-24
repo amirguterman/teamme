@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "next_id": 30,
+  "next_id": 31,
   "tasks": [
     {
       "id": "T1",
@@ -225,11 +225,12 @@
         "REFRESH COST: 'self-refresh on each plan' must be incremental (from the last indexed commit, as the reference implementation does), never a full rescan - this runs inside the user's editing loop. Budget it like preflight: a hook that adds perceptible latency to every turn will be disabled by users, and a disabled gate enforces nothing.",
         "*** TITLE IS NOW WRONG - READ THIS FIRST *** The task title says 'selectable in /init-team'. The user has corrected that: librarians are NOT team members and NOT offered in the roster questionnaire. Two tiers: (1) TEAM AGENTS - generated per project by /init-team, do the work; (2) LIBRARIANS - shipped BY THE PLUGIN, not generated, enabled/disabled per librarian at the PLUGIN level, with their own rules, skills and hooks. When enabled, team agents CONSULT them as a quick grounded source of truth. Out-of-the-box means exactly this: present without being chosen, not an extra roster lane.",
         "REVERSES A RECORDED DECISION: CLAUDE.md 'Decisions already made' states 'The plugin ships no agents/ of its own by design - teams are generated per project'. Librarians would be the FIRST plugin-shipped agents. The user owns that call, but the brief must REPLACE that decision entry with the new reasoning (why librarians are shipped where teams are generated: they are project-agnostic machinery, not project-specific roles) rather than leave the docs contradicting the code. Also note the consequence the old decision flagged - nothing validates generated agent files - now partly changes, because shipped librarians CAN be validated by validate.sh like any other shipped file.",
-        "OPEN: librarians 'have their own hooks'. teamme today ships hooks only as TEMPLATES copied into a project (.claude/hooks/). A plugin-shipped agent's hooks could instead be plugin-level (a hooks/hooks.json in the plugin, which the harness loads directly) - a mechanism teamme has never used. Decide which, and note that plugin-level hooks are NOT copied per project, so enable/disable has to gate them at runtime rather than by presence."
+        "OPEN: librarians 'have their own hooks'. teamme today ships hooks only as TEMPLATES copied into a project (.claude/hooks/). A plugin-shipped agent's hooks could instead be plugin-level (a hooks/hooks.json in the plugin, which the harness loads directly) - a mechanism teamme has never used. Decide which, and note that plugin-level hooks are NOT copied per project, so enable/disable has to gate them at runtime rather than by presence.",
+        "A fourth librarian was specified after this task was written and lives in T30: a session librarian that indexes the chat history itself, continuously, so context lost to compaction can be fetched back by mark point. Same machinery as these three, different source class (the conversation, not the repo) and a different storage answer (never committable). Whatever schema and enable/disable mechanism T14 lands must accommodate it rather than be retrofitted for it."
       ],
       "blocked_on": "",
       "created": "2026-09-17T18:05:01+00:00",
-      "updated": "2026-09-24T14:28:42+00:00",
+      "updated": "2026-09-24T14:37:38+00:00",
       "status_changed": "2026-09-17T18:20:55+00:00"
     },
     {
@@ -464,6 +465,27 @@
       "created": "2026-09-24T14:30:05+00:00",
       "updated": "2026-09-24T14:30:05+00:00",
       "status_changed": "2026-09-24T14:30:05+00:00"
+    },
+    {
+      "id": "T30",
+      "title": "Session librarian: index every session turn as it happens, so context lost to compaction can be fetched back by mark point instead of re-reading the transcript",
+      "status": "open",
+      "priority": "P0",
+      "lane": "teamme-prompt-author",
+      "notes": [
+        "USER SPEC, verbatim intent: 'add auto-compaction session indexing as a librarian which can go back and fetch context from any session before compaction happened, and get it after compaction. by without requiring to read all the session, by indexing all the parts of a session (chat history) and store mark points in db. then there won't be any need to tell you to prepare for compaction, every step in a session will be indexed and added to the db of the plugin's mcp server.' The goal is explicit and testable: after a compaction, a question whose answer exists only in the pre-compaction region should resolve from the index, without re-reading the transcript.",
+        "GROUNDING, verified this session: session transcripts are real files on disk, one JSONL per session, under a per-project slug directory - this session is ~/.claude-personal/projects/-home-ubuntu-source-teamme/87e18ef7-....jsonl, and the conventional location ~/.claude/projects/<slug>/ also exists on this box with entries for other repos. JSONL is append-only, so indexing is incremental by byte offset: the indexer never re-reads what it already consumed. That is what makes 'index every step' affordable, and it is the same incremental property T14 needs for the code index.",
+        "VERIFIED, not assumed: the installed CLI (2.1.281) contains the hook event names PreCompact, SessionEnd, SubagentStop and PostToolUse alongside the four teamme already uses (grep -ao against /home/ubuntu/.local/share/claude/versions/2.1.281: PreCompact 39 hits, SessionEnd 54, SubagentStop 56, PostToolUse 189). So a compaction boundary IS observable to a hook. Confirm the payload shape and the settings key against the docs before wiring it - presence of the string proves the event exists, not what it hands the script.",
+        "DESIGN, the load-bearing decision: indexing must be CONTINUOUS, and PreCompact must be only a boundary MARKER, never the indexer's trigger. Indexing at PreCompact would just relocate 'prepare for compaction' into a hook - same single point of failure, now invisible: one slow or failed run and the entire window is gone precisely when it can no longer be recovered. Continuous is also the only shape that matches the user's words, 'every step in a session will be indexed'. The tick can come from hooks teamme already owns (UserPromptSubmit, Stop) plus SessionEnd for a final flush; each run only consumes bytes appended since the last offset. PreCompact then writes one row saying 'everything before here is no longer in context', which is exactly the mark point retrieval needs to answer 'what did we lose'.",
+        "TENSION 1, storage: this is the one librarian whose index must NEVER be committable. T14 offers a choice - commit the librarians' knowledgebase alongside the code, or keep it beside the repo. For the session index that choice must not exist. A transcript contains everything anyone typed into the session, including secrets pasted in by accident, and indexing it creates a second copy that outlives the paste-cache. It lives machine-local, gitignored, with no cross-project grant under T27 unless the user asks for that specifically and separately. Also worth deciding: a retention bound, since an unbounded index of every session on the machine grows forever.",
+        "TENSION 2, the retrieval contract is the whole feature and the easiest part to get wrong: a fetch must return a BOUNDED slice. A tool that answers 'what did we decide about X before compaction' by handing back 40k tokens of transcript has reproduced the problem it exists to solve - it just moved the cost from re-reading the file to re-reading the reply. The index needs to store enough per mark point (turn boundary, tool call, file written, task status transition, compaction boundary) to answer WHERE something was discussed, so the fetch can be a targeted range and not a dump. Define what a mark point is before writing any schema - that definition IS the design.",
+        "RELATION to T14: same machinery (plugin-shipped, enabled/disabled at plugin level, not roster-selectable, SQLite from the stdlib, consulted by team agents), different source class. The other three librarians index the repo - versioned, shareable, reconstructible from git. This one indexes the conversation - unversioned, private, machine-local, and gone if not captured as it happens. That asymmetry is why it is a separate task rather than a fourth bullet on T14, and why its storage answer differs from theirs."
+      ],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-24T14:36:35+00:00",
+      "updated": "2026-09-24T14:37:33+00:00",
+      "status_changed": "2026-09-24T14:36:35+00:00"
     }
   ]
 }
