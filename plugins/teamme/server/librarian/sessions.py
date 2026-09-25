@@ -67,8 +67,9 @@ import time
 from datetime import datetime, timezone
 
 try:
-    from . import store, transcripts
+    from . import config, store, transcripts
 except ImportError:  # loaded as a loose module rather than a package member
+    import config             # type: ignore
     import store              # type: ignore
     import transcripts        # type: ignore
 
@@ -397,6 +398,22 @@ def index(project_dir=None, full: bool = False, session=None) -> dict:
         return result
     if where.get("problem"):
         result["notes"].append(where["problem"])
+
+    # Before anything is written. store.connect_file() guards this too, so no
+    # ordering of tool calls can slip past it, but the result of the refresh is
+    # where a user is actually looking - and an index of conversation text that
+    # git can see is the one failure they most need told to their face.
+    result["gitignore"] = ig = config.ensure_ignored(root)
+    if not ig.get("ok"):
+        result["index_unprotected"] = True
+        result["notes"].append(
+            f"THE INDEX COULD NOT BE PROTECTED: teamme's ignore rule is not in place in "
+            f"{ig.get('path')} ({ig.get('problem')}). This index holds conversation text and "
+            f"git can currently see it. Fix that file, or delete "
+            f"{store.sessions_dir(root)} until you can.")
+    else:
+        for note in ig.get("notes") or []:
+            result["notes"].append(note)
 
     files = transcripts.list_sessions(where["dir"])
     result["sessions_seen"] = len(files)

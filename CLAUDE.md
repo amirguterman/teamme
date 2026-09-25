@@ -36,8 +36,13 @@ plugins/teamme/
                                    JSONL record - the transcript itself is the record
   server/librarian/config.py      per-project librarian settings (.claude/librarians/config.json):
                                    which librarians are enabled, and whether the append-only record
-                                   is committed - owned by the MCP server, enacted into .gitignore,
-                                   never hand-edited
+                                   is committed - owned by the MCP server, enacted into .gitignore on
+                                   every index open (store.connect_file, not only when configure is
+                                   called - see Decisions already made), never hand-edited
+  server/librarian/cross.py       the cross-index join: around_path/around_commit/around_task/
+                                   timeline, reading the history index, the session index and the
+                                   work log (read live, never indexed) together - served through the
+                                   existing teamme_librarian_query tool, not a new one
   templates/                      scaffolding the commands COPY into a target project
     hooks/*.py                    project-agnostic hook scripts, including preflight.py
     intake.md                     skeleton with {{PLACEHOLDER}}s the command fills in
@@ -166,6 +171,43 @@ text, confirming `.claude/librarians/sessions/` stays ignored under `commit_reco
 confirming it still stops at `MAX_WINDOW`/`MAX_WINDOW_TOTAL_CHARS` with `truncated: true`, never
 dumping the session; and degradation is checked with no `$CLAUDE_CONFIG_DIR` and no `~/.claude` at all,
 returning a named error payload rather than raising.
+
+The librarian privacy guarantee — every index gitignored the moment it exists, not only when
+`teamme_librarian_configure` happens to be called — gets five sections of its own, closing a real
+defect: in 0.6.0 `apply_gitignore()` had exactly one call site, inside `configure()`, so a project
+that only ever ran `teamme_librarian_refresh` (the path both the 0.6.0 changelog and the librarian's
+own prompt describe) ended up with `.claude/librarians/sessions/` — an index of conversation text —
+sitting in a file git would track, while this repo's own docs said it was "ALWAYS gitignored". Five
+`git check-ignore`-grounded sections prove the fix: a refresh alone, with `configure` never called,
+protects both `index.db` and `sessions/`, while a foreign `.gitignore` line survives byte-intact and
+three refreshes leave the file byte-identical after the first; a read-only `teamme_librarian_status`
+on an empty project creates neither `.claude/librarians/` nor `.gitignore` — a diagnostic call must
+never be the thing that conjures state; an unwritable `.gitignore` does not block a refresh — the
+index is still written and the result says out loud that it could not be protected rather than
+silently succeeding; `commit_record=true` followed by a plain refresh with no second `configure` call
+leaves `sessions/` ignored while `commits.jsonl` becomes committable, proving the always-ignored and
+the choice-dependent paths are independent of each other; and a `[watch-fail]` **reduced ordering
+sweep** drives all 24 permutations of 4 entry points — `status`, `refresh`, `configure(enable)`,
+`configure(commit_record)` — checking, after *every single step* rather than only at the end of each
+sequence, that if an index exists on disk it is already protected. That per-step check is the only
+assertion that actually tests "no ordering leaves a gap" rather than one path through the tool set;
+trimmed from the lane's own 504-permutation, 9-entry-point sweep to keep CI's runtime sane, but the
+property kept is the one that matters.
+
+The cross-index join (`server/librarian/cross.py`) — `around_path`, `around_commit`, `around_task`,
+`timeline`, served through the existing `teamme_librarian_query` tool rather than a new one — gets
+four sections. `around_path`'s history rows are checked directly against `git log`, with the `cross`
+module itself out of the loop, so the assertion cannot agree with a bug in the same code it is
+checking. `absent`, `disabled`, `empty` and `error` are proven to be four distinct, non-overlapping
+per-store states for both the history and the session store — `error` specifically has to be produced
+by `chmod 0o000` on a *valid* index, because a plain corrupt file is discarded and rebuilt by
+`connect_or_reset()` into `absent`, not `error`; the lane verified that distinction held before
+writing the assertion. A corrupt `worklog.json` is proven to make `timeline()` return an empty, named
+`error` store state rather than raise, and `around_commit` is proven to refuse outright — distinctly
+for an absent history index versus a disabled one — since it cannot resolve its anchor commit without
+one. And the `pad_minutes` boundary is checked at the second: a commit that lands 30 seconds after a
+task's `status_changed` is missed at `pad_minutes=0` and caught by the default 15-minute pad, with the
+widened window reported in the answer rather than applied silently.
 
 ## Design invariants
 
@@ -361,6 +403,51 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   built. Tests get no separate agent either: a test file that keeps changing alongside a source file
   *is* the test-to-code edge on the same signal, reported as "these tests change with this code", never
   "these tests cover this code" — coverage is a claim about execution, and the index has none.
+- **The librarian privacy guarantee lives at the chokepoint, not at a call site.**
+  `store.connect_file()` is the single funnel every librarian index — history's and sessions' alike —
+  is opened through, so `config.ensure_ignored()` runs there, before the first byte of an index
+  exists. A librarian that does not exist yet inherits the protection for free, because it has to go
+  through that same funnel to be born. The owning project is derived from the *path* being opened
+  (`.../.claude/librarians/...`), never from `CLAUDE_PROJECT_DIR` or the current working directory —
+  deriving it from the environment would let the guard protect one project while a different one's
+  index was actually being written. The shape of the fix matters as much as the fix itself:
+  `apply_gitignore()` having exactly one conditional call site, inside `configure()`, was the *bug* in
+  0.6.0 (see the next entry), so the fix could not be one more call site to remember at the next
+  librarian's write path — it had to be structural. `apply_gitignore()`'s own read-modify-write is now
+  taken under a lock, because it used to run only on an explicit `configure` call and now runs on
+  every index open: two concurrent refreshes could otherwise interleave and drop a line the user wrote
+  themselves.
+- **A documented default that nothing enacts is not a default.** `commit_record` has always defaulted
+  to `false`, and the docs described that as "the record stays out of git" — but before 0.7.0,
+  `commits.jsonl` (and `.claude/librarians/sessions/`, which is never a `commit_record` choice at all)
+  was only actually ignored if `teamme_librarian_configure` had been called at least once. A user who
+  only ever ran `teamme_librarian_refresh` — the exact path both the 0.6.0 changelog and the
+  librarian's own prompt describe — got an un-ignored index of their own conversation transcripts,
+  while every doc in this repo told them it was safe. This is a different failure shape from the
+  copied-fact drift T22/T26 paid for: those were a stated fact that had drifted away from the code;
+  this was a stated fact the code never enacted in the first place.
+- **The cross-index join is time-aligned and file-anchored, never id-based — measured, not assumed.**
+  The obvious join is by citation: a task id in a commit message, a commit hash in a work-log note.
+  Measured on this repository before `server/librarian/cross.py` was written: commit messages cite a
+  task id in only 3 of 18 commits, and work-log notes cite a short SHA in only 4 places, both
+  incidentally rather than by convention. A join keyed on citation would have returned almost nothing
+  while looking exactly like "nothing happened" — the worst outcome available, an empty answer that
+  reads as an absence of work rather than an absence of a recorded link. What is reliable is what a
+  machine wrote on both sides: TIME (every store has it, retroactively, for everything collected so
+  far) and FILE PATHS (`files_changed` comes from git's own `--numstat`; a session `file` mark comes
+  from an observed tool call — neither is prose). So every association `cross.py` reports is inference
+  from overlap, and every row and caveat says so: "active while" and "around", never "implements" or
+  "caused" — the same discipline the co-change queries follow with "changes with", never "depends on".
+  The work log is read live from `.claude/intake/worklog.json` on every call and joined in memory,
+  never indexed into SQLite: it is the source of truth and it is small — tens of tasks — and a second
+  copy of it in a store is precisely the failure this project has already paid for repeatedly (see
+  T22/T23 and the `.db`-is-derived-and-disposable entry below). `ATTACH DATABASE` was considered and
+  rejected: either the history or the session index may legitimately be absent or empty, and a single
+  statement spanning both would turn a missing index into a failed query instead of a partial answer
+  that names the empty store — and naming the empty store, not hiding it, is the whole point. The row
+  cap is applied *per store*, not per answer: a shared cap against this repository's 18 commits and
+  3,136 turns would return turns and no commits at all, which is exactly the thin-but-confident answer
+  this module exists to avoid.
 - **Lazy indexing over the harness's own transcripts, not a `PreCompact`/per-turn hook — and the
   original premise was wrong.** The session librarian was first specified as continuous, in-flight
   capture, so recovery would never depend on a hook firing at exactly the right moment. That premise
@@ -455,12 +542,14 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   corrupt one, a bad `installPath` — but not a record carrying more than one `teamme` entry, so the
   "belongs to a different project, ignore it" branch and the `lastUpdated` ordering among competing
   global entries are unverified.
-- **`teamme_librarian_configure` is not yet covered by `validate.sh`.** The tool, and the
-  `server/librarian/config.py` module behind it — the defaults-on-anything-unexpected loader, the
-  atomic write, the `.gitignore` enactment inside a marked block — were pipe-tested against
-  throwaway git fixtures by hand while phase 2 was built, but no `validate.sh` section drives them
-  yet. (See the entry above on the intended-caller convention for what phase 2's agent does and does
-  not enforce.)
+- **`config.py`'s atomic write is the part `validate.sh` still does not drive.**
+  `teamme_librarian_configure` itself is covered — the disabled-librarian gate, `commit_record`
+  enacted and checked with `git check-ignore`, a foreign ignore rule left alone, a corrupt config
+  degrading to defaults, and the ordering sweep all exercise it. What no section reaches is the
+  failure path *inside* the write: a crash or a full disk between the temp file and the
+  `os.replace()`. The entry above this one used to claim the whole tool was uncovered; that went
+  stale when phase 2's assertions landed and was corrected in 0.7.0, which is the same
+  documented-claim-outlives-the-code shape that `commit_record`'s unenacted default had.
 - The `commits_touching`, `commits_between`, `search_subjects` and `hotspots` query variants are
   exercised while building fixtures and ground truth for other assertions, but none has a
   `validate.sh` section asserting its own result directly — only `recent`, `files_in_commit`,
@@ -504,6 +593,25 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   its `MAX_LOST_MARKS` cap on the spine it lists; a concurrent-refresh test for `sessions` (the
   ten-concurrent-refresh assertion exists for `history`, not for `sessions`); and the per-turn
   `MAX_TURN_CHARS` index-time cap.
+- **`around_commit` and `around_task`'s row *content* is not ground-truthed the way `around_path`'s
+  is.** `around_path`'s history rows are checked directly against `git log`; nothing yet checks that
+  `around_commit`'s session/task rows or `around_task`'s commit/session rows are the *right* rows —
+  only `around_commit`'s refusal path (absent vs. disabled history) is directly asserted, alongside
+  the four per-store states and the `pad_minutes` boundary.
+- **`timeline`'s row selection is unasserted beyond the corrupt-worklog degrade.** Its three per-task
+  event kinds (`task_created`, `task_status`, `task_note`) and its commit/session rows have no
+  ground-truth check of their own.
+- **The ordering sweep does not exercise the sessions-refresh entry point or `force=true`.** The
+  24-permutation sweep covers `status`, `refresh` (history), `configure(enable)` and
+  `configure(commit_record)`; a fifth and sixth entry point — refreshing the *session* librarian, and
+  a forced repair — were dropped to avoid needing a real transcript fixture, and are unexercised by it.
+- **The prose/basename matching in `around_path`'s task rows is unexercised.** The fallback that
+  matches a bare filename (e.g. `worklog.py`) when the full repo-relative path misses a task's title
+  or notes has no assertion of its own.
+- **This repo's own `.gitignore` has no `sessions/` entry.** Nothing has leaked, because no session
+  index has ever been built here — `commits.jsonl` is this repo's only librarian file, and it is
+  tracked by deliberate choice, unrelated to this fix. The first `teamme_librarian_refresh
+  {"librarian": "sessions"}` run in this repo will write the rule itself; nothing needs doing by hand.
 
 ## Conventions
 

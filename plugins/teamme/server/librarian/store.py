@@ -78,6 +78,52 @@ def sessions_dir(project_dir=None) -> pathlib.Path:
     return librarians_dir(project_dir) / "sessions"
 
 
+def project_root_of(path):
+    """The project that owns a librarian file, derived from the PATH rather than
+    from the environment.
+
+    `.claude/librarians/` is the one piece of layout every librarian shares, so
+    the owning project can be read straight off the path. Deriving it from
+    CLAUDE_PROJECT_DIR or the cwd instead would let a guard protect one project
+    while a different one's index was being written. Returns None for a path
+    that is not under a librarians directory, and the caller does nothing.
+    """
+    try:
+        p = pathlib.Path(path).expanduser().resolve()
+    except Exception:
+        return None
+    for parent in p.parents:
+        if parent.name == "librarians" and parent.parent.name == ".claude":
+            return parent.parent.parent
+    return None
+
+
+def ignore_guard(path) -> dict:
+    """Put teamme's .gitignore block in place before a librarian file is created.
+
+    THE chokepoint for the privacy guarantee. Every librarian index is opened
+    through connect_file() below, and every record is appended through
+    append_and_insert()/rewrite_records(), so calling this here means no
+    ordering of tool calls - refresh, query, status, or a librarian that does
+    not exist yet - can produce an un-ignored index. The alternative, a call at
+    each site, is the shape of the bug this closes: one site was missed in
+    0.6.0 and an index of conversation text went un-ignored for a whole release.
+
+    Never raises, and never refuses the caller: a .gitignore that cannot be
+    written is reported (the refresh result says the index could not be
+    protected) rather than being allowed to fail an index.
+    """
+    root = project_root_of(path)
+    if root is None:
+        return None
+    try:
+        from . import config       # deferred: config imports this module
+        return config.ensure_ignored(root)
+    except Exception as exc:
+        return {"ok": False, "path": None, "changed": False, "wrote": [], "notes": [],
+                "problem": f"teamme's ignore rule could not be put in place: {exc}"}
+
+
 # --------------------------------------------------------------------------- #
 # the lock (worklog.py's pattern, generalized to a path)
 # --------------------------------------------------------------------------- #
@@ -198,6 +244,7 @@ def connect_file(path, schema: str = None, create: bool = True) -> sqlite3.Conne
     once rather than once per librarian.
     """
     p = pathlib.Path(path)
+    ignore_guard(p)         # before the first byte exists - see ignore_guard above
     if create:
         p.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(p), timeout=BUSY_TIMEOUT_MS / 1000.0)
@@ -387,6 +434,7 @@ def append_and_insert(project_dir, conn, records) -> dict:
             return {"appended": 0, "inserted": 0, "files": 0,
                     "skipped_existing": existing, "locked": lk.held}
         text = "".join(json.dumps(r, ensure_ascii=False, sort_keys=True) + "\n" for r in fresh)
+        ignore_guard(path)      # the .db line is not a choice even here
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(str(path), "a", encoding="utf-8") as fh:
@@ -426,6 +474,7 @@ def rewrite_records(project_dir, records) -> dict:
     text = "".join(
         json.dumps(r, ensure_ascii=False, sort_keys=True) + "\n" for r in preserved + records
     )
+    ignore_guard(path)
     with jsonl_lock(project_dir):
         try:
             path.parent.mkdir(parents=True, exist_ok=True)

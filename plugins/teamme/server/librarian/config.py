@@ -30,6 +30,12 @@ whatever `commit_record` says, because a binary index cannot be merged. So is
 `.claude/librarians/sessions/`, for a stronger reason - it indexes conversation
 text, and `commit_record` must not be able to put that in a repository.
 
+Neither of those two depends on anyone calling the configure tool. `ensure_ignored()`
+is called from `store.connect_file()` - the one funnel every librarian index is
+opened through - so the block is in place before the first byte of an index
+exists, on every path, including a refresh or a query by a user who never
+touches the configuration at all.
+
 Stdlib only.
 """
 
@@ -37,7 +43,10 @@ import json
 import os
 import pathlib
 
-from . import store
+try:
+    from . import store
+except ImportError:  # loaded as a loose module rather than a package member
+    import store  # type: ignore
 
 # Known to THIS release. Callers that have their own list (the MCP server does)
 # pass it in; this default only exists so the module is usable on its own.
@@ -52,6 +61,13 @@ CONFIG_NAME = "config.json"
 # rewrite; everything outside them is the user's and is never touched.
 GITIGNORE_BEGIN = "# teamme librarians - managed by the teamme_librarian_configure tool"
 GITIGNORE_END = "# end teamme librarians"
+# A second line inside the block, not a second marker: _strip_blocks() keys on
+# GITIGNORE_BEGIN alone, so a block written by an older release is still
+# recognized and rewritten rather than duplicated. It is here because the block
+# is no longer only written by the configure tool - a refresh writes it too, and
+# a user reading their own .gitignore deserves to know what put it there.
+GITIGNORE_NOTE = ("# Written automatically when a librarian index is created. Everything between "
+                  "these two markers is teamme's; nothing outside them is ever removed.")
 
 # Always ignored, regardless of commit_record - two entries, for two different
 # reasons, neither of them a fork the user gets to take:
@@ -299,6 +315,17 @@ def apply_gitignore(project_dir, commit_record: bool) -> dict:
     path = gitignore_path(project_dir)
     result = {"ok": True, "path": str(path), "changed": False, "wrote": [], "notes": [],
               "problem": None}
+    # Read-modify-write, and since ensure_ignored() calls this every time an
+    # index is opened, two refreshes can now reach it at once. The lock is the
+    # same best-effort one every other write here uses: it fails open rather
+    # than refusing, and the worst case it leaves is a duplicated block that the
+    # next call collapses - not a .gitignore truncated between a reader and a
+    # writer, which would silently drop the user's own lines.
+    with store.lock(store.librarians_dir(project_dir) / "gitignore.lock"):
+        return _apply_gitignore_locked(path, result, commit_record)
+
+
+def _apply_gitignore_locked(path, result, commit_record: bool) -> dict:
     try:
         text = path.read_text(encoding="utf-8") if path.is_file() else ""
     except Exception as exc:
@@ -347,7 +374,7 @@ def apply_gitignore(project_dir, commit_record: bool) -> dict:
         kept.pop()          # only trailing blank lines, so a re-run is byte-identical
 
     if wanted:
-        block = [GITIGNORE_BEGIN]
+        block = [GITIGNORE_BEGIN, GITIGNORE_NOTE]
         for entry in wanted:
             block.append(IGNORE_REASONS.get(entry, "# managed by teamme"))
             block.append(entry)
@@ -367,6 +394,99 @@ def apply_gitignore(project_dir, commit_record: bool) -> dict:
     except Exception as exc:
         result.update(ok=False, problem=f"could not write {path}: {exc}")
     return result
+
+
+# --------------------------------------------------------------------------- #
+# ensuring the block is there at all - the part 0.6.0 shipped missing
+#
+# apply_gitignore() above ENACTS a choice: the user said commit_record, and the
+# file is made to agree. This is a different job, and it is not a choice at all.
+# The .db and the whole sessions/ directory are ignored unconditionally, and
+# they have to be ignored BEFORE the first byte of an index exists - not as a
+# side effect of an unrelated configuration call that most users never make.
+#
+# In 0.6.0 apply_gitignore() had exactly one call site, inside configure(), and
+# only when commit_record was passed. teamme_librarian_refresh never reached it.
+# Both the changelog and the librarian's own prompt tell a user there is "no
+# data until the first teamme_librarian_refresh", so the documented path was
+# precisely the one that left an index of their conversations sitting in a file
+# git would happily add - while the docs promised that directory was always
+# ignored. ensure_ignored() is called from store.connect_file(), the single
+# funnel every librarian index is opened through, so the guarantee does not
+# depend on a future librarian's author remembering it.
+# --------------------------------------------------------------------------- #
+
+def ensure_ignored(project_dir=None) -> dict:
+    """Make sure teamme's ignore block is in place in `project_dir`. Never raises.
+
+    Idempotent and cheap enough to call every time an index is opened: it
+    re-derives the block from the CURRENT config, so it ENACTS commit_record
+    rather than overriding it, and writes nothing at all when the file already
+    says what it should.
+
+    What it creates: the project's .gitignore, and - through the lock
+    apply_gitignore takes - `.claude/librarians/`, which every caller of this
+    function is about to create anyway, because the only callers are the paths
+    that write an index. It never creates the PROJECT directory: a project_dir
+    that does not exist is reported, not brought into being, so a read-only
+    query can never be the thing that conjures a project. (Read-only paths -
+    status, and a query against an index that does not exist yet - do not reach
+    this function at all; they return before anything is opened.)
+
+    Returns the apply_gitignore() shape: {"ok", "path", "changed", "wrote",
+    "notes", "problem"}. `ok` false means the index is NOT protected, and every
+    caller that is about to write one is expected to say so out loud.
+    """
+    result = {"ok": False, "path": None, "changed": False, "wrote": [], "notes": [],
+              "problem": None}
+    try:
+        root = store.project_root(project_dir)
+        result["path"] = str(root / ".gitignore")
+        if not root.is_dir():
+            result["problem"] = (
+                f"{root} is not an existing directory, so teamme's ignore rule could not be "
+                f"written there. Nothing was created.")
+            return result
+        out = apply_gitignore(root, bool(load(root)["commit_record"]))
+        if not (root / ".git").exists():
+            # Deliberate, not an oversight: absence of .git here does NOT mean
+            # nothing is tracking this directory. It can sit inside a parent
+            # repository, or be `git init`ed tomorrow with the index already on
+            # disk. An unused .gitignore costs a few bytes; the other mistake
+            # costs someone their conversation history. So the rule is written
+            # either way, and the situation is stated rather than guessed at.
+            out["notes"].append(
+                f"there is no .git in {root}: the ignore rule was written anyway, because a "
+                f"directory with no repository of its own can still sit inside one, or become "
+                f"one later with the index already on disk")
+        return out
+    except Exception as exc:
+        result["problem"] = f"teamme's ignore rule could not be put in place: {exc}"
+        return result
+
+
+def ignored_entries(project_dir=None) -> dict:
+    """Read-only: which of teamme's ignore entries are present in .gitignore.
+
+    For status and other callers that must not write. Reports what the file
+    says; `git check-ignore` is the only real ground truth, and this deliberately
+    does not shell out to git for a status line.
+    """
+    out = {"path": None, "exists": False, "present": [], "missing": [], "problem": None}
+    try:
+        path = gitignore_path(project_dir)
+        out["path"] = str(path)
+        text = path.read_text(encoding="utf-8") if path.is_file() else None
+        if text is None:
+            out["missing"] = list(ALWAYS_IGNORED)
+            return out
+        out["exists"] = True
+        lines = {ln.strip() for ln in text.splitlines()}
+        for entry in ALWAYS_IGNORED:
+            (out["present"] if entry in lines else out["missing"]).append(entry)
+    except Exception as exc:
+        out["problem"] = f"could not read {out['path']}: {exc}"
+    return out
 
 
 # --------------------------------------------------------------------------- #

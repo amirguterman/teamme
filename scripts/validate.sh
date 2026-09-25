@@ -2979,5 +2979,753 @@ print("  ok: no $CLAUDE_CONFIG_DIR and no ~/.claude degrades to a named error pa
 PY
 
 
+echo "== librarian: [watch-fail] T40 - a refresh ALONE (teamme_librarian_configure never called) protects both indexes; a foreign gitignore line survives; repeated refreshes are byte-identical =="
+LIB_T40_A="$PWD/lib-t40-refresh-only"
+mkdir -p "$LIB_T40_A"
+gitc -C "$LIB_T40_A" init -q
+echo one > "$LIB_T40_A/f.txt"
+gitc -C "$LIB_T40_A" add f.txt
+gitc -C "$LIB_T40_A" commit -qm "c1"
+cat > "$LIB_T40_A/.gitignore" <<'EOF'
+# a rule I wrote myself, unrelated to teamme
+node_modules/
+EOF
+gitc -C "$LIB_T40_A" add .gitignore
+gitc -C "$LIB_T40_A" commit -qm "my own gitignore"
+python3 - "$ROOT" "$LIB_T40_A" <<'PY'
+import json, pathlib, subprocess, sys
+
+root = pathlib.Path(sys.argv[1])
+proj = sys.argv[2]
+server = root / "plugins/teamme/server/teamme_mcp.py"
+gitignore = pathlib.Path(proj) / ".gitignore"
+DB = ".claude/librarians/index.db"
+SESSIONS = ".claude/librarians/sessions/"
+FOREIGN = "node_modules/"
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+def call_text(resp):
+    result = resp.get("result") or {}
+    return result, "".join(c.get("text", "") for c in result.get("content") or [])
+
+
+def ignored(path: str) -> bool:
+    r = subprocess.run(["git", "check-ignore", "-q", path], cwd=proj)
+    if r.returncode not in (0, 1):
+        sys.exit(f"git check-ignore errored (rc={r.returncode}) on {path}")
+    return r.returncode == 0
+
+
+if ignored(DB):
+    sys.exit("fixture is dirty: index.db already reads as ignored before any refresh ran")
+
+before = gitignore.read_text()
+if FOREIGN not in before:
+    sys.exit(f"fixture is wrong: the foreign line is not in the starting .gitignore: {before!r}")
+
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+
+    # teamme_librarian_configure is NEVER called in this fixture - this is the
+    # exact 0.6.0 user path the changelog and the librarian prompt describe:
+    # refresh, and nothing else.
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_librarian_refresh",
+                           "arguments": {"project_dir": proj}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"refresh-only reported an error: {text}")
+    if not ignored(DB):
+        sys.exit("git check-ignore says index.db is NOT ignored after refresh alone - this is "
+                 "the T40 regression")
+    if not ignored(SESSIONS):
+        sys.exit("git check-ignore says .claude/librarians/sessions/ is NOT ignored after a "
+                 "history-only refresh - both entries are written together, unconditionally")
+    after_one = gitignore.read_text()
+    if FOREIGN not in after_one:
+        sys.exit(
+            "a refresh deleted a .gitignore line it did not write:\n"
+            f"--- before ---\n{before!r}\n--- after ---\n{after_one!r}"
+        )
+    if after_one.count("# teamme librarians") != 1 or after_one.count("# end teamme librarians") != 1:
+        sys.exit(f"expected exactly one teamme block after the first refresh, got:\n{after_one!r}")
+
+    # refresh twice more; the file must not grow or change at all
+    for i in range(2):
+        send(proc, {"jsonrpc": "2.0", "id": 3 + i, "method": "tools/call",
+                    "params": {"name": "teamme_librarian_refresh",
+                               "arguments": {"project_dir": proj}}})
+        result, text = call_text(recv(proc))
+        if result.get("isError"):
+            sys.exit(f"repeat refresh #{i + 1} reported an error: {text}")
+    after_three = gitignore.read_text()
+    if after_three != after_one:
+        sys.exit(
+            "three refreshes did not leave .gitignore byte-identical after the first:\n"
+            f"--- after 1st ---\n{after_one!r}\n--- after 3rd ---\n{after_three!r}"
+        )
+    if after_three.count("# teamme librarians") != 1 or after_three.count("# end teamme librarians") != 1:
+        sys.exit(f"repeated refreshes duplicated the teamme block:\n{after_three!r}")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+print("  ok: refresh alone (teamme_librarian_configure never called) ignores both index.db and "
+      "sessions/, a foreign .gitignore line survives byte-intact, and 3 refreshes are "
+      "byte-identical after the first")
+PY
+
+echo "== librarian: a read-only status on an empty project creates nothing (no .claude/librarians, no .gitignore) =="
+LIB_T40_B="$PWD/lib-t40-empty-status"
+mkdir -p "$LIB_T40_B"
+gitc -C "$LIB_T40_B" init -q
+python3 - "$ROOT" "$LIB_T40_B" <<'PY'
+import json, pathlib, subprocess, sys
+
+root = pathlib.Path(sys.argv[1])
+proj = pathlib.Path(sys.argv[2])
+server = root / "plugins/teamme/server/teamme_mcp.py"
+librarians_dir = proj / ".claude" / "librarians"
+gitignore = proj / ".gitignore"
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+if librarians_dir.exists():
+    sys.exit(f"fixture is dirty: {librarians_dir} already exists before any tool call")
+
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_librarian_status",
+                           "arguments": {"project_dir": str(proj)}}})
+    resp = recv(proc)
+    result = resp.get("result") or {}
+    if result.get("isError"):
+        sys.exit(f"status on an empty project reported an error: {result}")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+if librarians_dir.exists():
+    sys.exit(f"a read-only status call created {librarians_dir} - status must never write state")
+if gitignore.exists():
+    sys.exit(f"a read-only status call created {gitignore} - status must never write state")
+
+print("  ok: teamme_librarian_status on an empty project creates neither .claude/librarians nor .gitignore")
+PY
+
+echo "== librarian: [watch-fail] an unwritable .gitignore does not block a refresh - the index is still written, and the result SAYS it could not be protected =="
+LIB_T40_C="$PWD/lib-t40-unwritable"
+mkdir -p "$LIB_T40_C"
+gitc -C "$LIB_T40_C" init -q
+echo one > "$LIB_T40_C/f.txt"
+gitc -C "$LIB_T40_C" add f.txt
+gitc -C "$LIB_T40_C" commit -qm "c1"
+echo "# read-only, pre-existing" > "$LIB_T40_C/.gitignore"
+chmod 0444 "$LIB_T40_C/.gitignore"
+python3 - "$ROOT" "$LIB_T40_C" <<'PY'
+import json, pathlib, subprocess, sys
+
+root = pathlib.Path(sys.argv[1])
+proj = sys.argv[2]
+server = root / "plugins/teamme/server/teamme_mcp.py"
+DB = ".claude/librarians/index.db"
+db_path = pathlib.Path(proj) / DB
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+def call_text(resp):
+    result = resp.get("result") or {}
+    return result, "".join(c.get("text", "") for c in result.get("content") or [])
+
+
+def ignored(path: str) -> bool:
+    r = subprocess.run(["git", "check-ignore", "-q", path], cwd=proj)
+    if r.returncode not in (0, 1):
+        sys.exit(f"git check-ignore errored (rc={r.returncode}) on {path}")
+    return r.returncode == 0
+
+
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_librarian_refresh",
+                           "arguments": {"project_dir": proj}}})
+    result, text = call_text(recv(proc))
+    if not result.get("isError"):
+        sys.exit(f"refresh against an unwritable .gitignore did not report isError: {text!r}")
+    if "UNPROTECTED" not in text:
+        sys.exit(f"an unwritable .gitignore was not called out in the refresh result: {text!r}")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+if not db_path.exists():
+    sys.exit("the refresh did not write the index at all - it should index anyway and only "
+             "report the .gitignore failure, not silently do nothing")
+if ignored(DB):
+    sys.exit("index.db reads as ignored even though .gitignore was unwritable - the fixture is "
+             "stale, this assertion proves nothing")
+
+print("  ok: an unwritable .gitignore does not block the refresh; the index is written and the "
+      "result names the failure out loud - silence here is how the original bug felt safe")
+PY
+chmod 0644 "$LIB_T40_C/.gitignore" 2>/dev/null || true
+
+echo "== librarian: commit_record=true, then refresh alone (no second configure call) - sessions/ stays ignored, commits.jsonl becomes committable =="
+LIB_T40_D="$PWD/lib-t40-commit-record"
+mkdir -p "$LIB_T40_D"
+gitc -C "$LIB_T40_D" init -q
+echo one > "$LIB_T40_D/f.txt"
+gitc -C "$LIB_T40_D" add f.txt
+gitc -C "$LIB_T40_D" commit -qm "c1"
+python3 - "$ROOT" "$LIB_T40_D" <<'PY'
+import json, pathlib, subprocess, sys
+
+root = pathlib.Path(sys.argv[1])
+proj = sys.argv[2]
+server = root / "plugins/teamme/server/teamme_mcp.py"
+SESSIONS = ".claude/librarians/sessions/"
+RECORD = ".claude/librarians/history/commits.jsonl"
+DB = ".claude/librarians/index.db"
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+def call_text(resp):
+    result = resp.get("result") or {}
+    return result, "".join(c.get("text", "") for c in result.get("content") or [])
+
+
+def ignored(path: str) -> bool:
+    r = subprocess.run(["git", "check-ignore", "-q", path], cwd=proj)
+    if r.returncode not in (0, 1):
+        sys.exit(f"git check-ignore errored (rc={r.returncode}) on {path}")
+    return r.returncode == 0
+
+
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_librarian_configure",
+                           "arguments": {"project_dir": proj, "commit_record": True}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"commit_record=true reported an error: {text}")
+
+    # from here on ONLY refresh is called - never configure again.
+    send(proc, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {"name": "teamme_librarian_refresh",
+                           "arguments": {"project_dir": proj}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"refresh under commit_record=true reported an error: {text}")
+
+    if not ignored(SESSIONS):
+        sys.exit("sessions/ is NOT ignored under commit_record=true after a plain refresh - the "
+                 "asymmetry (db+sessions always ignored, record only sometimes) is broken")
+    if not ignored(DB):
+        sys.exit("index.db is NOT ignored under commit_record=true - it must always be")
+    if ignored(RECORD):
+        sys.exit("commits.jsonl is STILL ignored under commit_record=true - it should be "
+                 "committable")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+print("  ok: commit_record=true leaves commits.jsonl committable while a plain refresh keeps "
+      "the sessions index and index.db ignored - the asymmetry holds with no second configure call")
+PY
+
+echo "== librarian: [watch-fail] reduced ordering sweep - no ordering of {status, refresh, configure(enable), configure(commit_record)} leaves an index unprotected (git check-ignore is ground truth) =="
+LIB_SWEEP_BASE="$PWD/lib-sweep-base"
+mkdir -p "$LIB_SWEEP_BASE"
+gitc -C "$LIB_SWEEP_BASE" init -q
+echo one > "$LIB_SWEEP_BASE/f.txt"
+gitc -C "$LIB_SWEEP_BASE" add f.txt
+gitc -C "$LIB_SWEEP_BASE" commit -qm "c1"
+python3 - "$ROOT" "$PWD" "$LIB_SWEEP_BASE" <<'PY'
+import itertools, json, pathlib, shutil, subprocess, sys, time
+
+root = pathlib.Path(sys.argv[1])
+work = pathlib.Path(sys.argv[2])
+base = sys.argv[3]
+server = root / "plugins/teamme/server/teamme_mcp.py"
+DB = ".claude/librarians/index.db"
+SESSIONS = ".claude/librarians/sessions/"
+
+# TRIMMED from the T40 lane's 504-permutation / 9-entry-point / 952-assertion
+# sweep: 4 entry points instead of 9 (dropping the sessions-refresh and
+# force=true variants, which need a real transcript fixture to exercise
+# meaningfully), and every permutation of all 4 (24 orderings) rather than a
+# sample of 3-call sequences drawn from 9. What is kept is the property that
+# matters: after EVERY step of EVERY ordering - not just at the end - if the
+# index exists on disk it must already be protected.
+ENTRY_POINTS = ("status", "refresh", "configure_enable", "configure_commit_record")
+
+
+def call(proc, call_id, name, args):
+    proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": call_id, "method": "tools/call",
+                                 "params": {"name": name, "arguments": args}}) + "\n")
+    proc.stdin.flush()
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    resp = json.loads(line)
+    result = resp.get("result") or {}
+    return result.get("isError"), "".join(c.get("text", "") for c in result.get("content") or [])
+
+
+def ignored(proj, path):
+    r = subprocess.run(["git", "check-ignore", "-q", path], cwd=proj)
+    if r.returncode not in (0, 1):
+        sys.exit(f"git check-ignore errored (rc={r.returncode}) on {path} in {proj}")
+    return r.returncode == 0
+
+
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+call_id = 0
+checked_after_write = 0
+permutations = list(itertools.permutations(ENTRY_POINTS))
+try:
+    proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 0, "method": "initialize",
+                                 "params": {"protocolVersion": "2025-06-18"}}) + "\n")
+    proc.stdin.flush()
+    proc.stdout.readline()
+
+    for pi, perm in enumerate(permutations):
+        proj = work / f"sweep-{pi}"
+        shutil.copytree(base, proj)
+        for step in perm:
+            call_id += 1
+            if step == "status":
+                err, text = call(proc, call_id, "teamme_librarian_status", {"project_dir": str(proj)})
+            elif step == "refresh":
+                err, text = call(proc, call_id, "teamme_librarian_refresh", {"project_dir": str(proj)})
+            elif step == "configure_enable":
+                err, text = call(proc, call_id, "teamme_librarian_configure",
+                                 {"project_dir": str(proj), "librarian": "history", "enable": True})
+            else:  # configure_commit_record
+                err, text = call(proc, call_id, "teamme_librarian_configure",
+                                 {"project_dir": str(proj), "commit_record": False})
+            if err and step == "refresh":
+                sys.exit(f"refresh failed mid-sweep (perm {perm}): {text}")
+            db_path = proj / ".claude" / "librarians" / "index.db"
+            if db_path.exists():
+                checked_after_write += 1
+                if not ignored(str(proj), DB):
+                    sys.exit(f"UNPROTECTED: index.db exists but is NOT git-ignored after step "
+                             f"'{step}' in ordering {perm}")
+                if not ignored(str(proj), SESSIONS):
+                    sys.exit(f"UNPROTECTED: sessions/ is NOT git-ignored after step '{step}' in "
+                             f"ordering {perm} (index.db already exists)")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+if checked_after_write == 0:
+    sys.exit("the sweep never actually created an index - the property was never exercised")
+
+print(f"  ok: {len(permutations)} ordering(s) of {len(ENTRY_POINTS)} entry points "
+      f"({checked_after_write} post-write checks, every one immediately after the step that "
+      f"wrote), no ordering ever left an index unprotected")
+PY
+
+echo "== librarian cross-index: [watch-fail] around_path's history rows match git log directly, module out of the loop =="
+LIB_CROSS_PATH="$PWD/cross-around-path"
+mkdir -p "$LIB_CROSS_PATH"
+gitc -C "$LIB_CROSS_PATH" init -q
+echo one > "$LIB_CROSS_PATH/a.py"
+gitc -C "$LIB_CROSS_PATH" add a.py
+gitc -C "$LIB_CROSS_PATH" commit -qm "c1 touches a.py" --date="2026-01-01T00:00:00+00:00"
+echo one > "$LIB_CROSS_PATH/b.py"
+gitc -C "$LIB_CROSS_PATH" add b.py
+gitc -C "$LIB_CROSS_PATH" commit -qm "c2 touches b.py" --date="2026-01-01T00:01:00+00:00"
+echo two > "$LIB_CROSS_PATH/a.py"
+gitc -C "$LIB_CROSS_PATH" add a.py
+gitc -C "$LIB_CROSS_PATH" commit -qm "c3 touches a.py again" --date="2026-01-01T00:02:00+00:00"
+python3 - "$LIBPATH" "$LIB_CROSS_PATH" <<'PY'
+import pathlib, subprocess, sys
+sys.path.insert(0, sys.argv[1])
+proj = sys.argv[2]
+from librarian import cross, history
+
+r = history.index(proj, full=True)
+if not r.get("ok"):
+    sys.exit(f"history.index() failed building the fixture: {r}")
+
+truth = subprocess.run(["git", "log", "--format=%H", "--", "a.py"], cwd=proj,
+                       capture_output=True, text=True, check=True).stdout.split()
+if len(truth) != 2:
+    sys.exit(f"fixture is wrong: expected 2 commits touching a.py from git itself, got {truth}")
+
+q = cross.query("around_path", {"path": "a.py"}, proj)
+if not q.get("ok"):
+    sys.exit(f"around_path failed: {q}")
+hist_hashes = [row["hash"] for row in q["rows"] if row.get("store") == "history"]
+if hist_hashes != truth:
+    sys.exit(
+        "around_path's history rows do not match git log directly (module out of the loop):\n"
+        f"  git log:     {truth}\n"
+        f"  around_path: {hist_hashes}"
+    )
+print(f"  ok: around_path('a.py') returned exactly the {len(truth)} commit(s) git log reports "
+      f"for that path, in git's own order")
+PY
+
+echo "== librarian cross-index: absent / disabled / empty / error are four distinct, non-overlapping per-store states (history and sessions) =="
+LIB_CROSS_STATE="$PWD/cross-state"
+mkdir -p "$LIB_CROSS_STATE/absent" "$LIB_CROSS_STATE/disabled" "$LIB_CROSS_STATE/empty" "$LIB_CROSS_STATE/error"
+for d in absent disabled empty error; do
+  gitc -C "$LIB_CROSS_STATE/$d" init -q
+  echo one > "$LIB_CROSS_STATE/$d/f.txt"
+  gitc -C "$LIB_CROSS_STATE/$d" add f.txt
+  gitc -C "$LIB_CROSS_STATE/$d" commit -qm "c1"
+done
+python3 - "$LIBPATH" "$LIB_CROSS_STATE" <<'PY'
+import json, os, pathlib, sys
+sys.path.insert(0, sys.argv[1])
+root = pathlib.Path(sys.argv[2])
+from librarian import cross, history, sessions, store
+
+seen = {}
+
+
+def check(name, opener, proj, expect_state):
+    conn, st = opener(proj)
+    if conn is not None:
+        conn.close()
+    if st["state"] != expect_state:
+        sys.exit(f"{name}: expected state {expect_state!r}, got {st!r}")
+    seen.setdefault(expect_state, set()).add(name)
+
+
+# absent: never refreshed
+check("history/absent", cross._open_history, str(root / "absent"), "absent")
+check("sessions/absent", cross._open_sessions, str(root / "absent"), "absent")
+
+# disabled: config.json turns both off
+cfg_dir = root / "disabled" / ".claude" / "librarians"
+cfg_dir.mkdir(parents=True)
+(cfg_dir / "config.json").write_text(json.dumps({
+    "librarians": {"history": {"enabled": False}, "sessions": {"enabled": False}},
+    "commit_record": False,
+}))
+check("history/disabled", cross._open_history, str(root / "disabled"), "disabled")
+check("sessions/disabled", cross._open_sessions, str(root / "disabled"), "disabled")
+
+# empty: schema present, zero rows
+hconn = store.connect(str(root / "empty"))
+hconn.close()
+sconn, _ = sessions.connect_or_reset(str(root / "empty"))
+sconn.close()
+check("history/empty", cross._open_history, str(root / "empty"), "empty")
+check("sessions/empty", cross._open_sessions, str(root / "empty"), "empty")
+
+# error: a real, valid index, made unreadable by permissions (never a corrupt
+# file - connect_or_reset() would just discard and rebuild that, which is
+# "absent", not "error". A permission-denied OperationalError is what actually
+# reaches the caller as an exception.)
+r = history.index(str(root / "error"), full=True)
+if not r.get("ok") or not r.get("commits"):
+    sys.exit(f"could not build the 'error' history fixture: {r}")
+sconn, _ = sessions.connect_or_reset(str(root / "error"))
+sconn.close()
+os.chmod(store.db_path(str(root / "error")), 0o000)
+os.chmod(sessions.db_path(str(root / "error")), 0o000)
+try:
+    check("history/error", cross._open_history, str(root / "error"), "error")
+    check("sessions/error", cross._open_sessions, str(root / "error"), "error")
+finally:
+    os.chmod(store.db_path(str(root / "error")), 0o644)
+    os.chmod(sessions.db_path(str(root / "error")), 0o644)
+
+for state in ("absent", "disabled", "empty", "error"):
+    names = seen.get(state, set())
+    if len(names) != 2:
+        sys.exit(f"expected exactly 2 stores in state {state!r}, got {names}")
+
+print("  ok: absent, disabled, empty and error are four distinct states for both the history "
+      "and the sessions store - never conflated with one another")
+PY
+
+echo "== librarian cross-index: a corrupt worklog.json reads as empty with a named reason (never an exception), and around_commit refuses when history is disabled or absent =="
+LIB_CROSS_REFUSE="$PWD/cross-refuse"
+mkdir -p "$LIB_CROSS_REFUSE/corrupt-worklog/.claude/intake"
+gitc -C "$LIB_CROSS_REFUSE/corrupt-worklog" init -q
+echo one > "$LIB_CROSS_REFUSE/corrupt-worklog/f.txt"
+gitc -C "$LIB_CROSS_REFUSE/corrupt-worklog" add f.txt
+gitc -C "$LIB_CROSS_REFUSE/corrupt-worklog" commit -qm "c1"
+printf '{not json' > "$LIB_CROSS_REFUSE/corrupt-worklog/.claude/intake/worklog.json"
+mkdir -p "$LIB_CROSS_REFUSE/no-history"
+gitc -C "$LIB_CROSS_REFUSE/no-history" init -q
+echo one > "$LIB_CROSS_REFUSE/no-history/f.txt"
+gitc -C "$LIB_CROSS_REFUSE/no-history" add f.txt
+gitc -C "$LIB_CROSS_REFUSE/no-history" commit -qm "c1"
+python3 - "$LIBPATH" "$LIB_CROSS_REFUSE" <<'PY'
+import json, pathlib, sys
+sys.path.insert(0, sys.argv[1])
+root = pathlib.Path(sys.argv[2])
+from librarian import cross
+
+# 1. corrupt worklog.json -> reads as empty, names the reason, never raises
+corrupt = str(root / "corrupt-worklog")
+tasks, st = cross.read_worklog(corrupt)
+if tasks != []:
+    sys.exit(f"a corrupt worklog.json produced task rows instead of an empty list: {tasks}")
+if st["state"] != "error":
+    sys.exit(f"a corrupt worklog.json was not reported as state=error: {st}")
+if "could not be read as JSON" not in (st.get("detail") or ""):
+    sys.exit(f"the reason was not named: {st}")
+if "treated as empty" not in (st.get("detail") or ""):
+    sys.exit(f"the worklog.py rule ('treated as empty') was not echoed: {st}")
+
+# a query built on top of it must degrade the same way, not raise
+q = cross.query("timeline", {}, corrupt)
+if not q.get("ok"):
+    sys.exit(f"timeline() raised/refused entirely over a corrupt worklog: {q}")
+wl_state = q["stores"].get("worklog") or {}
+if wl_state.get("state") != "error":
+    sys.exit(f"timeline()'s worklog store state was not 'error': {wl_state}")
+
+# 2. around_commit refuses outright without a history index - absent, then disabled
+no_hist = str(root / "no-history")
+r_absent = cross.around_commit({"hash": "deadbeef"}, no_hist, 10)
+if r_absent.get("ok"):
+    sys.exit(f"around_commit succeeded with no history index at all: {r_absent}")
+if "cannot resolve a commit without the history index" not in (r_absent.get("error") or ""):
+    sys.exit(f"the absent-history refusal did not name the reason: {r_absent}")
+if "does not exist yet" not in (r_absent.get("error") or ""):
+    sys.exit(f"the absent case did not read as absent (vs disabled): {r_absent}")
+
+cfg_dir = root / "no-history" / ".claude" / "librarians"
+cfg_dir.mkdir(parents=True)
+(cfg_dir / "config.json").write_text(json.dumps({
+    "librarians": {"history": {"enabled": False}}, "commit_record": False}))
+r_disabled = cross.around_commit({"hash": "deadbeef"}, no_hist, 10)
+if r_disabled.get("ok"):
+    sys.exit(f"around_commit succeeded with history disabled: {r_disabled}")
+if "switched off" not in (r_disabled.get("error") or ""):
+    sys.exit(f"the disabled case did not read as disabled (vs absent): {r_disabled}")
+
+print("  ok: a corrupt worklog.json degrades to empty-with-a-reason (direct call and through "
+      "timeline()), never an exception; around_commit refuses distinctly for absent vs disabled "
+      "history, anchoring on nothing in neither case")
+PY
+
+echo "== mcp server: a corrupt worklog.json never crashes the pipe - the process survives to answer the next call =="
+python3 - "$ROOT" "$LIB_CROSS_REFUSE/corrupt-worklog" <<'PY'
+import json, pathlib, subprocess, sys
+
+root = pathlib.Path(sys.argv[1])
+proj = sys.argv[2]
+server = root / "plugins/teamme/server/teamme_mcp.py"
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_librarian_query",
+                           "arguments": {"project_dir": proj, "query": "timeline"}}})
+    resp = recv(proc)
+    if "result" not in resp:
+        sys.exit(f"the call over a corrupt worklog produced no result at all: {resp}")
+
+    # the pipe must still be alive: a second, unrelated call must still answer
+    send(proc, {"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}})
+    resp2 = recv(proc)
+    if "result" not in resp2:
+        sys.exit(f"the server did not survive a corrupt worklog - the next call got: {resp2}")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    rc = proc.wait(timeout=5)
+if rc not in (0, None):
+    sys.exit(f"the server process exited non-zero ({rc}) after the corrupt-worklog call")
+
+print("  ok: a corrupt worklog.json over the real JSON-RPC pipe never crashes the server - the "
+      "next, unrelated call still answers")
+PY
+
+echo "== librarian cross-index: [watch-fail] the pad_minutes boundary - a commit that lands seconds after a task's status_changed is missed at pad_minutes=0 and caught by the default pad =="
+LIB_CROSS_PAD="$PWD/cross-pad"
+mkdir -p "$LIB_CROSS_PAD/.claude/intake"
+gitc -C "$LIB_CROSS_PAD" init -q
+echo base > "$LIB_CROSS_PAD/base.txt"
+gitc -C "$LIB_CROSS_PAD" add base.txt
+gitc -C "$LIB_CROSS_PAD" commit -qm "c0 base" --date="2026-01-01T00:00:00+00:00"
+echo closed >> "$LIB_CROSS_PAD/base.txt"
+gitc -C "$LIB_CROSS_PAD" add base.txt
+# lands 30s after the task's status_changed stamp below - inside the measured
+# 1-41s range the T39 lane found on this repo's own real data.
+gitc -C "$LIB_CROSS_PAD" commit -qm "c1 closes the task" --date="2026-01-01T01:00:30+00:00"
+cat > "$LIB_CROSS_PAD/.claude/intake/worklog.json" <<'EOF'
+{
+  "version": 1, "next_id": 2,
+  "tasks": [{
+    "id": "T1", "title": "pad boundary task", "status": "done",
+    "priority": "P1", "lane": "", "notes": [], "blocked_on": "", "dispatched_to": "",
+    "created": "2026-01-01T00:00:00+00:00", "updated": "2026-01-01T01:00:00+00:00",
+    "status_changed": "2026-01-01T01:00:00+00:00"
+  }]
+}
+EOF
+python3 - "$LIBPATH" "$LIB_CROSS_PAD" <<'PY'
+import pathlib, subprocess, sys
+sys.path.insert(0, sys.argv[1])
+proj = sys.argv[2]
+from librarian import cross, history
+
+r = history.index(proj, full=True)
+if not r.get("ok") or r.get("commits") != 2:
+    sys.exit(f"could not build the pad_minutes fixture: {r}")
+
+closing_hash = subprocess.run(
+    ["git", "log", "-1", "--format=%H", "--grep=closes the task"], cwd=proj,
+    capture_output=True, text=True, check=True).stdout.strip()
+if not closing_hash:
+    sys.exit("fixture is wrong: could not find the closing commit by its own message")
+
+q0 = cross.query("around_task", {"task": "T1", "pad_minutes": 0}, proj)
+if not q0.get("ok"):
+    sys.exit(f"around_task(pad_minutes=0) failed: {q0}")
+hashes0 = {row["hash"] for row in q0["rows"] if row.get("store") == "history"}
+if closing_hash in hashes0:
+    sys.exit(
+        f"pad_minutes=0 unexpectedly caught the closing commit {closing_hash} - the fixture's "
+        f"timing no longer demonstrates the boundary this test exists to prove"
+    )
+
+qd = cross.query("around_task", {"task": "T1"}, proj)  # default pad_minutes
+if not qd.get("ok"):
+    sys.exit(f"around_task(default pad_minutes) failed: {qd}")
+hashesd = {row["hash"] for row in qd["rows"] if row.get("store") == "history"}
+if closing_hash not in hashesd:
+    sys.exit(
+        f"the DEFAULT pad_minutes still missed the closing commit {closing_hash} that landed "
+        f"30s after status_changed - this is exactly the miss T39 found and pad_minutes exists "
+        f"to fix. window: {qd.get('window')}"
+    )
+if "Padded" not in (qd.get("window_basis") or ""):
+    sys.exit(f"the widened window was not reported in window_basis: {qd.get('window_basis')!r}")
+
+print("  ok: pad_minutes=0 misses the commit that closed the task 30s after status_changed; the "
+      f"default pad ({qd.get('pad_minutes')} min) catches it and says the window was widened")
+PY
+
+
 cd "$ROOT"
 echo "ALL CHECKS PASSED"

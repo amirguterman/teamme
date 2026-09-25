@@ -32,8 +32,9 @@ import time
 from datetime import datetime, timezone
 
 try:
-    from . import store
+    from . import config, store
 except ImportError:  # loaded as a loose module rather than a package member
+    import config  # type: ignore
     import store  # type: ignore
 
 REC = b"\x01"     # start of a log entry
@@ -296,6 +297,19 @@ def index(project_dir=None, full: bool = False) -> dict:
             else f"not a git repository: {root}")
         result["elapsed_seconds"] = round(time.time() - started, 4)
         return result
+
+    # Before the first byte of the index. connect_or_reset() guards this too;
+    # this call is the one whose answer reaches the user's refresh result.
+    result["gitignore"] = ig = config.ensure_ignored(root)
+    if not ig.get("ok"):
+        result["index_unprotected"] = True
+        result["notes"].append(
+            f"THE INDEX COULD NOT BE PROTECTED: teamme's ignore rule is not in place in "
+            f"{ig.get('path')} ({ig.get('problem')}). index.db is binary and unmergeable and "
+            f"must not be committed; git can currently see it.")
+    else:
+        for note in ig.get("notes") or []:
+            result["notes"].append(note)
 
     conn = None
     try:

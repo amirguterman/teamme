@@ -219,7 +219,7 @@ LIBRARIANS = ("history", "sessions")
 
 
 def librarian():
-    """(store, history, config, sessions) from the plugin's own server/librarian/, or None.
+    """(store, history, config, sessions, cross) from the plugin's server/librarian/, or None.
 
     The substrate lives in the PLUGIN and is never copied into a project: it is
     invoked here, so it can never join the list of hook scripts an install is
@@ -239,6 +239,7 @@ def librarian():
             importlib.import_module("librarian.history"),
             importlib.import_module("librarian.config"),
             importlib.import_module("librarian.sessions"),
+            importlib.import_module("librarian.cross"),
         )
     except Exception as exc:
         _LIBRARIAN_ERROR = str(exc)
@@ -678,7 +679,25 @@ TOOLS = [
             "to LOCATE, then window to READ. Tool output - file contents that were read, command "
             "output - is not indexed, and reasoning is not in the transcript at all; every result "
             "says so. The query name alone says which index it belongs to, so `librarian` does "
-            "not need to be passed."
+            "not need to be passed.\n\n"
+            "FOUR MORE are CROSS-INDEX and belong to no single librarian: they read the history "
+            "index, the session index AND the work log (.claude/intake/worklog.json, read live "
+            "and never indexed) together, and answer 'what happened around this file / commit / "
+            "task / time'. around_path (commits that touched it, sessions where it was read or "
+            "written, tasks whose notes name it), around_commit (the session turns near it in "
+            "time and the tasks open when it landed), around_task (its own record, the commits "
+            "in its inferred active window, the session region it was worked in), and timeline "
+            "(everything from all three stores between two instants). EVERY link between stores "
+            "is TIME OVERLAP, not a recorded relationship: report them as 'active while' or "
+            "'around', NEVER as 'implements' or 'caused' - the same discipline co-change follows "
+            "with 'changes with'. The id-based join was measured on real data and does not exist: "
+            "commit messages and work-log notes cite each other only incidentally, so a join "
+            "keyed on citation would return almost nothing while looking like 'nothing happened'. "
+            "Each row carries its own address - a hash, a session id and seq, a task id - so the "
+            "next question goes deeper with commit_detail or window; this is a SPINE, it points "
+            "rather than pastes. Each store is gated and capped SEPARATELY and the answer names "
+            "any store that contributed nothing and why (disabled, absent, empty, behind), "
+            "because an empty index and an empty answer otherwise look identical."
         ),
         "inputSchema": {
             "type": "object",
@@ -690,7 +709,9 @@ TOOLS = [
                        "enum": ["recent", "commits_touching", "files_in_commit",
                                 "commits_between", "search_subjects", "commit_detail",
                                 "changes_with", "coupling_between", "hotspots",
-                                "sessions", "search_turns", "window", "compaction"]},
+                                "sessions", "search_turns", "window", "compaction",
+                                "around_path", "around_commit", "around_task",
+                                "timeline"]},
                 path={"type": "string",
                       "description": "For commits_touching, changes_with and coupling_between: a "
                                      "repo-relative file or directory. For hotspots: an optional "
@@ -707,8 +728,12 @@ TOOLS = [
                 hash={"type": "string", "description": "For files_in_commit and commit_detail: a full or "
                                                        "abbreviated commit hash. An abbreviation matching more "
                                                        "than one commit is reported, never silently resolved."},
-                since={"type": "string", "description": "For commits_between: YYYY-MM-DD or an ISO timestamp."},
-                until={"type": "string", "description": "For commits_between: YYYY-MM-DD or an ISO timestamp."},
+                since={"type": "string", "description": "For commits_between and timeline, and "
+                                                        "optionally around_path: YYYY-MM-DD or an "
+                                                        "ISO timestamp."},
+                until={"type": "string", "description": "For commits_between and timeline, and "
+                                                        "optionally around_path: YYYY-MM-DD or an "
+                                                        "ISO timestamp."},
                 text={"type": "string", "description": "For search_subjects and search_turns: a literal "
                                                        "substring; wildcards are not special."},
                 session={"type": "string",
@@ -732,9 +757,24 @@ TOOLS = [
                 kind={"type": "string",
                       "enum": ["prompt", "message", "recap", "answer", "tool", "file",
                                "compaction"],
-                      "description": "For search_turns: restrict to one kind of mark point."},
+                      "description": "For search_turns, timeline and around_task: restrict to "
+                                     "one kind of mark point. For around_path only `file` (a "
+                                     "tool that wrote the path) and `tool` (anything else that "
+                                     "named it) apply - the other kinds carry prose, not paths."},
                 main_thread_only={"type": "boolean",
                                   "description": "For search_turns: exclude subagent turns."},
+                task={"type": "string",
+                      "description": "For around_task: a work-log task id, such as T12."},
+                minutes={"type": "integer",
+                         "description": "For around_commit: how far either side of the commit "
+                                        "counts as 'around' it. Defaults to 120, max 43200 "
+                                        "(30 days)."},
+                pad_minutes={"type": "integer",
+                             "description": "For around_task: how far the task's inferred active "
+                                            "window is widened either side. Defaults to 15, "
+                                            "because a status is stamped seconds before or after "
+                                            "the commit it refers to; pass 0 for the exact "
+                                            "window. Always reported in the answer."},
                 limit={"type": "integer", "description": "Row cap. Defaults to 30 for history "
                                                          "queries and 20 for session ones; hard "
                                                          "maximum 200 and 100."},
@@ -942,16 +982,49 @@ def _render_sessions_status(st: dict) -> list:
     out.append(f"  index:           {st.get('db')} (derived, disposable)")
     out.append("  record:          the transcripts themselves - this librarian keeps no second "
                "copy of them")
-    out.append("  privacy:         .claude/librarians/sessions/ is ALWAYS gitignored; "
-               "commit_record does not apply to it")
+    out += _render_sessions_privacy(st)
     return out
+
+
+def _render_sessions_privacy(st: dict) -> list:
+    """The privacy line, checked rather than asserted.
+
+    status() writes nothing, so it cannot repair the rule - but it can refuse to
+    repeat a promise the file does not keep. The entry is ensured on every index
+    open, so a missing one here means the last attempt failed.
+    """
+    lib = librarian()
+    if lib is None:
+        return ["  privacy:         .claude/librarians/sessions/ should be gitignored - teamme "
+                "could not load its own librarian code to check"]
+    _config = lib[2]
+    try:
+        state = _config.ignored_entries(st.get("project_dir"))
+    except Exception as exc:
+        return [f"  privacy:         could not read the project's .gitignore ({exc})"]
+    if _config.SESSIONS_IGNORE in (state.get("present") or []):
+        return ["  privacy:         .claude/librarians/sessions/ is gitignored by "
+                f"{state.get('path')}; commit_record does not apply to it"]
+    if not st.get("db_exists"):
+        # Nothing to be exposed yet. The rule is written before the index is,
+        # so its absence here is the expected state, not a warning.
+        return ["  privacy:         .claude/librarians/sessions/ will be added to "
+                f"{state.get('path')} before the index is created; commit_record does not "
+                "apply to it"]
+    return [
+        "  privacy:         NOT IGNORED. `" + _config.SESSIONS_IGNORE + "` is not in "
+        f"{state.get('path')}"
+        + (f" ({state['problem']})" if state.get("problem") else ""),
+        "                   This index holds conversation text and git can see it. A refresh "
+        "puts the rule back; if it cannot, it says so.",
+    ]
 
 
 def tool_librarian_status(root: pathlib.Path, args: dict) -> dict:
     lib = librarian()
     if lib is None:
         return librarian_missing()
-    _store, _history, _config, _sessions = lib
+    _store, _history, _config, _sessions, _cross = lib
     cfg = _config.load(root, LIBRARIANS)
     lines = [f"librarian indexes in {root}", ""]
     for name in LIBRARIANS:
@@ -1030,11 +1103,49 @@ def tool_librarian_status(root: pathlib.Path, args: dict) -> dict:
     return text_result("\n".join(lines))
 
 
+# The refresh result carries the unprotected-index warning in `notes` too, so a
+# caller that is not this server still gets the whole story. Here it would be
+# printed twice, so the note is dropped in favour of the fuller block below. If
+# this prefix ever drifts, the failure is a duplicated warning - never a lost
+# one.
+UNPROTECTED_NOTE = "THE INDEX COULD NOT BE PROTECTED"
+
+
+def _notes(r: dict) -> list:
+    return [n for n in (r.get("notes") or []) if not str(n).startswith(UNPROTECTED_NOTE)]
+
+
+def _render_ignore_state(r: dict, reassurance) -> list:
+    """What happened to the .gitignore, printed at the bottom of a refresh.
+
+    Two rules. A failure is stated in full, because a refresh that wrote an
+    index git can see is exactly the moment a user needs to know. And the
+    reassuring line is printed ONLY when it is true - a doc that says "always
+    gitignored" over an index that is not is how T40 got past everyone.
+    """
+    ig = r.get("gitignore") or {}
+    if r.get("index_unprotected") or (ig and not ig.get("ok")):
+        return [
+            "  UNPROTECTED:  teamme could not put its ignore rule in place in "
+            f"{ig.get('path')}:",
+            f"                {ig.get('problem')}",
+            "                The index was still written and is usable, but git can see it. "
+            "Fix that file and refresh again.",
+        ]
+    out = []
+    if ig.get("changed"):
+        out.append(f"  protected:    wrote {', '.join(ig.get('wrote') or [])} to "
+                   f"{ig.get('path')}")
+    if reassurance:
+        out.append(f"  {reassurance}")
+    return out
+
+
 def tool_librarian_refresh(root: pathlib.Path, args: dict) -> dict:
     lib = librarian()
     if lib is None:
         return librarian_missing()
-    _store, _history, _config, _sessions = lib
+    _store, _history, _config, _sessions, _cross = lib
     name, refusal = _pick_librarian(args)
     if refusal:
         return refusal
@@ -1069,11 +1180,12 @@ def tool_librarian_refresh(root: pathlib.Path, args: dict) -> dict:
             f"  now holds:    {r.get('sessions')} session(s), {r.get('turns')} turn(s), "
             f"{r.get('marks')} mark point(s), {r.get('compactions')} compaction(s)",
         ]
-        for note in r.get("notes") or []:
+        for note in _notes(r):
             lines.append(f"  note:         {note}")
-        lines.append("  the index is machine-local and always gitignored - it holds conversation "
-                     "text, so commit_record does not apply to it")
-        return text_result("\n".join(lines))
+        lines += _render_ignore_state(r, "the index is machine-local and always gitignored - it "
+                                         "holds conversation text, so commit_record does not "
+                                         "apply to it")
+        return text_result("\n".join(lines), bool(r.get("index_unprotected")))
     lines = [
         f"teamme_librarian_refresh ({name}): {r['mode']} index in {r.get('elapsed_seconds')}s",
         f"  added:        {r.get('commits_added', 0)} commit(s), {r.get('files_added', 0)} file change(s)",
@@ -1083,11 +1195,12 @@ def tool_librarian_refresh(root: pathlib.Path, args: dict) -> dict:
         lines.append(f"  indexed to:   {r['head'][:12]}")
     if r.get("fallback"):
         lines.append(f"  FELL BACK:    {r['fallback']}")
-    for note in r.get("notes") or []:
+    for note in _notes(r):
         lines.append(f"  note:         {note}")
     if r.get("malformed_records"):
         lines.append(f"  skipped:      {r['malformed_records']} unparsable log record(s)")
-    return text_result("\n".join(lines))
+    lines += _render_ignore_state(r, None)
+    return text_result("\n".join(lines), bool(r.get("index_unprotected")))
 
 
 def _render_rows(q: dict) -> str:
@@ -1249,29 +1362,44 @@ def _repo_signal_notes(history, root) -> list:
     return []
 
 
-def _route_query(args: dict, which: str, _store, _sessions):
+def _route_query(args: dict, which: str, _store, _sessions, _cross):
     """(librarian, refusal) for a query name.
 
     Query names are unique across librarians, so `librarian` does not have to be
     passed - but if it IS passed and disagrees with the query, that is refused
     rather than silently overridden: a caller who asked for the wrong index
     should be told, not quietly given the right one.
+
+    The cross-index queries answer to "cross", which is NOT a librarian: they
+    read both indexes and the work log, gate each one separately, and report
+    which of them contributed nothing. Passing `librarian` with one of them is
+    refused for the same reason as any other disagreement - it names a single
+    index for a question that deliberately spans three stores.
     """
     if which in _sessions.QUERY_NAMES:
         owner = "sessions"
     elif which in _store.QUERY_NAMES:
         owner = "history"
+    elif which in _cross.QUERY_NAMES:
+        owner = "cross"
     else:
         return None, text_result(
             f"unknown query '{which}'.\n"
             f"  history:  {', '.join(_store.QUERY_NAMES)}\n"
-            f"  sessions: {', '.join(_sessions.QUERY_NAMES)}", True)
+            f"  sessions: {', '.join(_sessions.QUERY_NAMES)}\n"
+            f"  cross:    {', '.join(_cross.QUERY_NAMES)}", True)
     asked = args.get("librarian")
     if asked is not None:
         asked = str(asked).strip().lower()
         if asked not in LIBRARIANS:
             return None, text_result(
                 f"unknown librarian '{asked}'. Available: {', '.join(LIBRARIANS)}", True)
+        if owner == "cross":
+            return None, text_result(
+                f"'{which}' reads the history index, the session index AND the work log "
+                f"together, so it belongs to no single librarian and `librarian` does not apply. "
+                f"Nothing was read. Drop the argument - each store is gated on its own and the "
+                f"answer says which of them had nothing.", True)
         if asked != owner:
             return None, text_result(
                 f"'{which}' is a {owner} query, but librarian was given as '{asked}'. Nothing was "
@@ -1411,15 +1539,192 @@ def _session_query(root: pathlib.Path, args: dict, which: str, _sessions) -> dic
                        + _render_session_rows(which, q, _sessions))
 
 
+# --------------------------------------------------------------------------- #
+# the cross-index spine
+#
+# Three stores, one answer, and the honesty that makes it usable: every row says
+# which store it came from and carries its own address, and the payload says
+# which store contributed NOTHING and why. A thin answer that looks complete is
+# the failure this rendering exists to prevent.
+# --------------------------------------------------------------------------- #
+
+def _cross_row_lines(r: dict) -> list:
+    """One interleaved row: when, which store, what, and how to go deeper."""
+    # ts_utc, not the store's own string: git prints the committer's offset and
+    # the transcripts print UTC, so a correctly ordered list of raw strings
+    # still reads as out of order.
+    when = (r.get("ts_utc") or r.get("ts") or "")[:19] or "(no timestamp)"
+    store_name = r.get("store")
+    out = []
+    if store_name == "history":
+        out.append(f"    {when}  [history] {r.get('short_hash') or ''}  {r.get('subject') or ''}")
+        detail = r.get("relation") or ""
+        if r.get("path"):
+            detail += f"  ({r['path']} +{r.get('additions')}/-{r.get('deletions')})"
+        out.append(f"         {detail}")
+        out.append(f"         fetch: {{\"query\": \"commit_detail\", \"hash\": "
+                   f"\"{r.get('short_hash') or r.get('hash')}\"}}")
+    elif store_name == "sessions":
+        who = f"  (subagent: {r.get('agent') or '?'})" if r.get("subagent") else ""
+        out.append(f"    {when}  [sessions] {r.get('kind')}  {r.get('session')} "
+                   f"seq {r.get('seq')}{who}")
+        near = r.get("seconds_from_anchor")
+        rel = r.get("relation") or ""
+        if near is not None:
+            rel = f"{rel} by {abs(int(near))}s" if near else rel
+        out.append(f"         {rel}")
+        body = r.get("label") or r.get("preview") or ""
+        if body:
+            out.append(f"         {body}")
+        out.append(f"         fetch: {{\"query\": \"window\", \"session\": "
+                   f"\"{r.get('session')}\", \"seq\": {r.get('seq')}}}")
+    else:
+        out.append(f"    {when}  [worklog] {r.get('id')} {r.get('priority') or ''} "
+                   f"[{r.get('status')}]  {r.get('title') or ''}")
+        bits = [r.get("relation") or ""]
+        if r.get("lane"):
+            bits.append(f"lane {r['lane']}")
+        if r.get("matched_in"):
+            bits.append("matched in " + ", ".join(r["matched_in"]))
+        if r.get("inference"):
+            bits.append(r["inference"])
+        out.append("         " + "; ".join(b for b in bits if b))
+        out.append(f"         timestamp shown is `{r.get('epoch_from')}` "
+                   f"(created {(r.get('created') or '?')[:19]}, status_changed "
+                   f"{(r.get('status_changed') or '?')[:19]})")
+        out.append(f"         fetch: {r.get('fetch_with')}")
+    return out
+
+
+def _render_cross(which: str, q: dict) -> str:
+    out = []
+
+    if which == "around_path":
+        out.append(f"  around {q.get('path')}"
+                   + (f"  (given as {q.get('path_as_given')})"
+                      if q.get("path_as_given") != q.get("path") else ""))
+        if q.get("since") or q.get("until"):
+            out.append(f"  restricted to {q.get('since') or 'the beginning'} .. "
+                       f"{q.get('until') or 'now'}")
+    elif which == "around_commit":
+        a = q.get("anchor") or {}
+        out.append(f"  around commit {a.get('short_hash')}  {a.get('subject')}")
+        out.append(f"  by {a.get('author')} at {a.get('date')}")
+        files = q.get("files_changed") or []
+        out.append(f"  it changed {'at least ' if q.get('files_truncated') else ''}{len(files)} "
+                   f"file(s)" + (":" if files else " - a merge records none, by design"))
+        for f in files:
+            out.append(f"      {f.get('path')}  +{f.get('additions')}/-{f.get('deletions')}")
+        if q.get("files_truncated"):
+            out.append(f"      ... TRUNCATED at the {q.get('limit')}-row cap - raise `limit` for "
+                       f"the rest, or ask files_in_commit")
+        out.append(f"  window: +/- {q.get('window_minutes')} minute(s) "
+                   f"({(q.get('window') or ['?', '?'])[0]} .. {(q.get('window') or ['?', '?'])[1]})")
+    elif which == "around_task":
+        out.append(f"  around {q.get('task')} [{q.get('status')}]  {q.get('title')}")
+        w = q.get("window")
+        out.append(f"  INFERRED ACTIVE WINDOW: {w[0]} .. {w[1]}  ({q.get('window_hours')} hour(s))"
+                   if w else "  no window could be inferred")
+        out.append(f"      basis: {q.get('window_basis')}")
+        if q.get("notes_total"):
+            out.append(f"  the task carries {q['notes_total']} note(s)"
+                       + (" (only the first few are previewed below)"
+                          if q.get("notes_truncated") else "")
+                       + f"; read them in full with: python3 .claude/hooks/worklog.py show "
+                         f"{q.get('task')}")
+        regions = q.get("session_regions") or []
+        if regions:
+            out.append(f"  session regions inside that window ({len(regions)}"
+                       + (", truncated" if q.get("session_regions_truncated") else "") + "):")
+            for r in regions:
+                out.append(f"      {r.get('session')}"
+                           + (f"  [subagent: {r.get('agent') or '?'}]" if r.get("subagent") else "")
+                           + f"  {r.get('turns_in_window')} turn(s) "
+                             f"{(r.get('first_ts') or '')[:19]} .. {(r.get('last_ts') or '')[:19]}"
+                             f"  seq {r.get('seq_range')}")
+    else:  # timeline
+        out.append(f"  {q.get('since')} .. {q.get('until')}  ({q.get('range_hours')} hour(s))"
+                   + (f"  - {q['defaulted']}" if q.get("defaulted") else ""))
+        out.append(f"  session mark kinds included: {', '.join(q.get('mark_kinds') or [])}")
+
+    stores = q.get("stores") or {}
+    out.append("  all times below are UTC, normalized from each store's own format")
+    out.append("  what each store contributed (row cap is PER STORE, now "
+               f"{q.get('limit')}):")
+    for name in ("history", "sessions", "worklog"):
+        st = stores.get(name)
+        if not st:
+            continue
+        line = f"      {name:<9} {st.get('state'):<9} {st.get('rows', 0)} row(s)"
+        if st.get("truncated"):
+            line += "  TRUNCATED at the cap"
+        out.append(line)
+        if st.get("detail"):
+            out.append(f"                  {st['detail']}")
+
+    rows = q.get("rows") or []
+    if rows:
+        out.append(f"  {len(rows)} row(s), interleaved by time, newest first:")
+        for r in rows:
+            out += _cross_row_lines(r)
+    else:
+        out.append("  no rows from any store. Read the per-store lines above before concluding "
+                   "nothing happened - an empty index and an empty answer look identical here, "
+                   "which is why every store reports its own state.")
+
+    notes = None
+    if which == "around_task":
+        # The anchor row is somewhere in the time-ordered list, not necessarily
+        # first - a task whose last status change predates its own commits sorts
+        # below them.
+        notes = next((r.get("notes_preview") for r in rows if r.get("notes_preview")), None)
+    if notes:
+        out.append("  the task's own notes (clipped):")
+        for i, note in enumerate(notes, 1):
+            out.append(f"      {i}. {note}")
+
+    out.append("  reading this:")
+    for caveat in q.get("caveats") or []:
+        out.append(f"    - {caveat}")
+    return "\n".join(out)
+
+
+def _cross_query(root: pathlib.Path, args: dict, which: str, _store, _cross, _config) -> dict:
+    """Ask all three stores. Every failure is a result, never an exception."""
+    enabled = {}
+    for name in LIBRARIANS:
+        try:
+            enabled[name] = bool(_config.enabled(root, name, LIBRARIANS))
+        except Exception:
+            enabled[name] = True  # a gate that cannot be read is not a gate
+    try:
+        q = _cross.query(which, args, root, enabled)
+    except Exception as exc:  # cross.query catches its own; this is belt and braces
+        return text_result(f"teamme_librarian_query failed: {exc}", True)
+    if not q.get("ok"):
+        return text_result(f"teamme_librarian_query: {q.get('error')}", True)
+    empty = q.get("stores_with_nothing") or []
+    head = (f"cross / {which}: {q.get('count')} row(s) from "
+            f"{3 - len(empty)} of 3 store(s)"
+            + (f"; nothing from: {', '.join(empty)}" if empty else ""))
+    return text_result(head + "\n" + _render_cross(which, q))
+
+
 def tool_librarian_query(root: pathlib.Path, args: dict) -> dict:
     lib = librarian()
     if lib is None:
         return librarian_missing()
-    _store, _history, _config, _sessions = lib
+    _store, _history, _config, _sessions, _cross = lib
     which = str(args.get("query") or "").strip()
-    name, refusal = _route_query(args, which, _store, _sessions)
+    name, refusal = _route_query(args, which, _store, _sessions, _cross)
     if refusal:
         return refusal
+    if name == "cross":
+        # No librarian_disabled() call here on purpose: a cross query gates each
+        # store separately inside, so switching one librarian off narrows the
+        # answer and SAYS which store went quiet, rather than refusing the whole
+        # question. Nothing disabled is read either way.
+        return _cross_query(root, args, which, _store, _cross, _config)
     off = librarian_disabled(root, name, _config)
     if off:
         return off
@@ -1480,7 +1785,7 @@ def tool_librarian_configure(root: pathlib.Path, args: dict) -> dict:
     lib = librarian()
     if lib is None:
         return librarian_missing()
-    _store, _history, _config, _sessions = lib
+    _store, _history, _config, _sessions, _cross = lib
     enable = args.get("enabled")
     commit = args.get("commit_record")
     # A boolean sent as "true" or 1 is dropped rather than guessed at - and said

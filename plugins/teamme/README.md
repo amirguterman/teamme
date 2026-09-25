@@ -121,15 +121,17 @@ Three MCP tools work against a per-project store under `.claude/librarians/`, sh
 that index different sources. `history` indexes this project's own git commits —
 `.claude/librarians/history/commits.jsonl` (the append-only record; commit it or gitignore it, per
 project, your choice) and `.claude/librarians/index.db` (a SQLite index derived from the `.jsonl`,
-always gitignored, and rebuildable from it with no git access at all — never commit the `.db`, since a
-binary file cannot be merged). `sessions` indexes this project's own conversation transcripts instead —
+always gitignored — the rule is written the moment an index is first created, whether or not
+`teamme_librarian_configure` has ever been called, not only when a project happens to change the
+setting — and rebuildable from it with no git access at all — never commit the `.db`, since a binary
+file cannot be merged). `sessions` indexes this project's own conversation transcripts instead —
 see The session librarian below, where the storage answer is different and is not a per-project choice.
 
 | Tool | Answers |
 |---|---|
 | `teamme_librarian_status` | What an index holds: for `history`, row counts, the last indexed commit and how far behind `HEAD` it is; for `sessions`, where this project's transcripts were found and how many bytes are indexed |
 | `teamme_librarian_refresh` | Brings an index up to date — incremental by default, `full=true` to reindex from scratch. `{"librarian": "history"}` (the default) or `{"librarian": "sessions"}` |
-| `teamme_librarian_query` | A bounded, named question, never arbitrary SQL. Nine names ask `history` (`recent`, `commits_touching`, `files_in_commit`, `commits_between`, `search_subjects`, `commit_detail`, `changes_with`, `coupling_between`, `hotspots` — see The history librarian below); four more (`sessions`, `search_turns`, `window`, `compaction`) ask `sessions` and need no `librarian` argument — the query name says which index it belongs to (see The session librarian below) |
+| `teamme_librarian_query` | A bounded, named question, never arbitrary SQL. Nine names ask `history` (`recent`, `commits_touching`, `files_in_commit`, `commits_between`, `search_subjects`, `commit_detail`, `changes_with`, `coupling_between`, `hotspots` — see The history librarian below); four more (`sessions`, `search_turns`, `window`, `compaction`) ask `sessions` (see The session librarian below); four more (`around_path`, `around_commit`, `around_task`, `timeline`) are **cross-index** and read `history`, `sessions` and the work log together (see The cross-index queries below). None of the eight non-`history` names need a `librarian` argument — the query name alone says which index or indexes it belongs to |
 
 These need only a git repository, not teamme's scaffolding, and work whether or not a project has run
 `/teamme:init-team`. Measured on this repository's own history (10 commits, 122 file rows): a first
@@ -180,6 +182,12 @@ directly instead.
 | `enabled` (per librarian) | `true` | `false` makes `teamme_librarian_refresh` and `teamme_librarian_query` refuse for that librarian and name how to re-enable it; `teamme_librarian_status` keeps reporting the setting either way. The agent itself is always present — a plugin-shipped agent cannot be hidden per project — it is the tools behind it that refuse. |
 | `commit_record` | `false` | Whether `.claude/librarians/*/commits.jsonl` (the append-only record) is committed with the code or kept out of it. Flipping it **writes or removes the actual `.gitignore` entry**, inside a block teamme owns alone — it never removes an ignore line it did not write, and if a line outside that block is already ignoring the record, it says so rather than leaving `commit_record: true` silently without effect. `.claude/librarians/index.db`, the derived SQLite index, is always gitignored regardless — it is binary and cannot be merged. |
 
+Both entries are re-derived from the current configuration every time an index is opened — including
+by a plain `teamme_librarian_refresh`, before `teamme_librarian_configure` has ever been called — not
+only when `commit_record` changes through the configure tool. Before 0.7.0 that was not true: a
+project that only ever called refresh could end up with an un-ignored index despite the documented
+default, which is what closing that gap actually meant (see `CLAUDE.md`'s "Decisions already made").
+
 Both refusals are the same honest posture as the `teamme_install` gate described below, under
 Install and verify: a tool declining to act, never a harness-enforced block.
 
@@ -213,13 +221,51 @@ Two limits worth knowing before relying on it:
 
 `sessions` is switched on and off with `teamme_librarian_configure` the same way `history` is (see the
 table above), but its storage answer is not a choice: `commit_record` does not reach it.
-`.claude/librarians/sessions/` is always gitignored — a transcript can hold anything anyone typed,
-including a secret pasted in by accident — and keeps no second text copy of a conversation; the SQLite
-index is the only artifact, disposable, and rebuilt by reading the transcripts again.
+`.claude/librarians/sessions/` is always gitignored — written the moment an index is first created,
+whether or not `teamme_librarian_configure` has ever been called for this project — because a
+transcript can hold anything anyone typed, including a secret pasted in by accident; it keeps no
+second text copy of a conversation, and the SQLite index is the only artifact, disposable, and rebuilt
+by reading the transcripts again.
 
 Unlike `history`, nothing yet tells an agent to consult `sessions`: `history-librarian` and the
 generated `/intake` command's grounding step both name `history-librarian` for history questions, but
 neither mentions the session index. The tools work when called; nothing in the roster calls them yet.
+
+## The cross-index queries
+
+Four more query names on the same `teamme_librarian_query` tool — `around_path`, `around_commit`,
+`around_task`, `timeline` — answer *"what happened around this file / commit / task / time"* by
+joining `history`, `sessions` and the work log (`.claude/intake/worklog.json`, read live on every call
+and never indexed into SQLite: it is the source of truth and it is small). They belong to neither
+librarian: each store is gated and capped separately, and the answer names any store that contributed
+nothing and why (disabled, absent, empty, or behind) — except `around_commit`, which cannot resolve
+its anchor commit without the history index and refuses outright rather than answering from nothing.
+
+| Query | Answers |
+|---|---|
+| `around_path` | Everything all three stores hold about one file or directory: the commits that touched it, the sessions that read or wrote it, and the tasks whose title or notes name it |
+| `around_commit` | One commit, the conversation near it in time, and the tasks open when it landed |
+| `around_task` | One task's own record, the commits that landed in its inferred active window, and the session region it was worked in |
+| `timeline` | Everything all three stores hold between two instants |
+
+Every link between stores is **time overlap, never a recorded relationship** — reported as "active
+while" or "around", never "implements" or "caused", the same discipline the co-change queries follow
+with "changes with". This is deliberate, not a shortcut: measured on this repository before the module
+was written, commit messages cite a task id in only 3 of 18 commits and work-log notes cite a commit
+hash in only 4 places, both incidentally rather than by convention — a join keyed on citation would
+return almost nothing while looking exactly like "nothing happened". What both sides write reliably is
+time (every store has it, retroactively) and file paths (`files_changed` comes from git's own
+`--numstat`; a session `file` mark comes from an observed tool call — neither is prose), so every
+association here is inference from overlap and says so on every row.
+
+A task's own active window is inferred, not recorded — the work log stamps only the current status and
+when it last changed — and is padded 15 minutes either side by default (`pad_minutes`, `0` for the
+exact window), because a status is typically recorded seconds before or after the commit or message it
+refers to; every answer reports the window it used and whether it was widened. Each row carries its own
+store and address (a commit hash, a session id and turn number, or a task id) plus a `fetch_with` for
+going deeper with `commit_detail` or `window` — this is a spine, it points rather than pastes. The row
+cap is applied per store, not per answer: a shared cap against this repository's 18 commits and 3,136
+turns would return turns and no commits at all.
 
 ## Install and verify
 

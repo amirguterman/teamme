@@ -55,7 +55,13 @@ plugins/teamme/
   server/librarian/sessions.py    the session librarian: lazy, incremental-by-byte-offset index over
                                    those transcripts - no hook, no JSONL record, not copied into a project
   server/librarian/config.py      per-project librarian settings (enable/disable, commit_record),
-                                   enacted into .gitignore - owned by the MCP server, never hand-edited
+                                   enacted into .gitignore on every index open (store.connect_file),
+                                   not only when configure is called - owned by the MCP server, never
+                                   hand-edited
+  server/librarian/cross.py       the cross-index join (around_path/around_commit/around_task/
+                                   timeline): reads the history index, the session index and the work
+                                   log (read live, never indexed) together - served through the
+                                   existing teamme_librarian_query tool, not a new one
   templates/                      scaffolding copied into a target project
     hooks/*.py                    project-agnostic; do not hard-code a project name
     intake.md                     skeleton with {{PLACEHOLDER}}s the command fills in
@@ -109,6 +115,14 @@ on the scaffolding being installed by refusing — with an error naming `teamme_
 by denying a tool call: this server has no hook registration, so it cannot block a write or a prompt
 even if it wanted to. See `CLAUDE.md`'s "Decisions already made" for why prerequisite enforcement
 lives here and in the commands' prompt text, and never in a hook.
+
+Any new librarian index must be opened through `server/librarian/store.connect_file()` (or a helper
+that calls it) rather than opening SQLite directly — that one funnel is what puts teamme's
+`.gitignore` protection in place before the first byte of an index exists, and a call site added
+anywhere else is exactly the shape of the bug 0.7.0 fixed (see `CLAUDE.md`'s "Decisions already
+made"). The same module's `ignore_guard()` derives the owning project from the path being opened,
+never from `CLAUDE_PROJECT_DIR` or the working directory, so a misrouted call can never protect the
+wrong project's index.
 
 ## Rules for plugin-shipped agents
 

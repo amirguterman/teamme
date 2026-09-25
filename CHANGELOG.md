@@ -3,6 +3,19 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-09-25
+
+### Added
+- `teamme_librarian_query` now serves four cross-index queries that answer *"what happened around this file / commit / task / time"* by joining the history index, session index, and work log. Query names: `around_path` (everything all three stores hold about one file or directory), `around_commit` (one commit, the conversation near it in time, and the tasks open when it landed), `around_task` (one task's own record, the commits that landed in its window, and the session region it was worked in), and `timeline` (everything all three stores hold between two instants). Each row carries its own store and address, so the next question can fetch detail with `commit_detail` or `window`.
+
+### Fixed
+- **PRIVACY DEFECT shipped in 0.6.0:** librarian indexes were only gitignored if `teamme_librarian_configure` was called. A user who ran only `teamme_librarian_refresh` could end up with conversation transcripts — containing everything typed in the session, including accidentally-pasted secrets — in `.claude/librarians/sessions/` checked into git, while documentation promised that directory was always ignored. The guarantee now lives where an index is created: `.gitignore` entries are written on every index open, not just on configuration. Both history and sessions indexes are protected by this change. Existing 0.6.0 users should check whether `.claude/librarians/` is in their `.gitignore` (it should be, whether or not they called `configure`); a refresh under 0.7.0 will put the rule in place without touching lines you wrote yourself.
+
+### Known limitations
+- **Links are time overlap, not causation.** A commit that landed while a task was open is reported as "active while" — it is not evidence that the commit implements the task. Nothing in these three stores records that link today. A future version may stamp commit hashes at task status transitions.
+- **A task's active window is inferred, not recorded.** The work log stamps when a task was created and when its status last changed; nothing else. A task's window defaults to padding by 15 minutes either side (adjustable with `pad_minutes`) to account for the delay between a status change and the commit or message it refers to. Each row reports which inference was used.
+- **If a store is empty, absent or disabled, the answer says so** rather than looking complete. The one exception is `around_commit`, which refuses outright (it cannot resolve its anchor without the history index).
+
 ## [0.6.0] - 2026-09-25
 
 ### Added
