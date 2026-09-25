@@ -37,6 +37,17 @@ It then installs:
 - **`.claude/commands/intake.md`** — the only sanctioned way to request work.
 - **`.claude/hooks/`** plus the matching `settings.json` hooks.
 
+One roster item is not derived from the project the way the rest are: `devils-advocate`, offered
+alongside the derived lanes in the Phase 3 questionnaire as a selectable but declinable agent. It owns
+no layer and writes no code — it interrogates the design each other lane returns for an approved brief,
+once per lane and once across every lane at once, asking what else would satisfy the contract, what a
+design assumes that nobody checked, and what two lanes are quietly building twice or deciding
+differently without either noticing. It never decides anything itself; the orchestrator (or `/intake`,
+on a single-lane brief) is what acts on its questions. Selecting it costs one round trip on the briefs
+that reach step 6 below — the entire point on those briefs — and its prompt is copied verbatim rather
+than tailored, the same way the hook scripts are. Declining it costs nothing extra: step 6 still runs,
+with `/intake` asking the questions itself instead of dispatching the agent.
+
 ## Changing an existing team: `/teamme:modify-team`
 
 `/teamme:init-team` is the installer and should not be re-run over a team that already works — it
@@ -71,7 +82,13 @@ what to do with it.
    outcome, not a failure.
 5. **Brief and confirm** — a written brief with the layer decomposition, dependency-ordered plan,
    spec delta, risks, done criteria and how the work can actually be verified.
-6. **Dispatch** — specialists, in dependency order.
+6. **Design return** — one round between the approved brief and any code, gated by one rule said out
+   loud: engage when the brief adds a mechanism that did not exist, touches a design invariant, spans
+   more than one lane, or reverses a decision already made; skip, with the reason stated, on
+   already-specified single-lane work. When it engages, each affected lane states its approach before
+   writing anything, and `devils-advocate` — if selected (see above) — questions the set of designs
+   before intake decides what to act on.
+7. **Dispatch** — specialists, in dependency order.
 
 `/intake` also recognizes a deferral before it does anything else: if the request itself says
 "later", "once you finish X", "after the release", or "queue this", it skips straight to the queue

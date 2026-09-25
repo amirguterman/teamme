@@ -57,6 +57,12 @@ plugins/teamme/
     hooks/librarian-gate.py       PreToolUse on `git push`: ASKS (never denies) when the history
                                    index is behind HEAD, reading a one-line marker rather than the
                                    database - see Design invariants #1 and Decisions already made
+    agents/devils-advocate.md     opt-in, roster-selectable - COPIED VERBATIM into a project's
+                                   .claude/agents/ only if chosen in /teamme:init-team's Phase 3;
+                                   a third agent tier, distinct from agents/history-librarian.md
+                                   above (always present, never selectable) and from generated
+                                   .claude/agents/*.md (derived per project, never copied) - see
+                                   Decisions already made: "A third agent tier"
     intake.md                     skeleton with {{PLACEHOLDER}}s the command fills in
     settings.hooks.json           the hooks block merged into the project's settings.json
 scripts/validate.sh               manifests + hook/MCP syntax + preflight states + end-to-end smoke test
@@ -384,6 +390,54 @@ verified empirically, since a plain `$LINENO` read inside the trap reports the t
 line of the command that actually failed. The lane found no live unwrapped failure while building this;
 it is defence-in-depth for the next one, not a fix for a current gap.
 
+T49 makes a false guarantee in the manifests check true, and the way it was found matters as much as
+the fix. The check's own comment had long claimed a third prompt directory added later would fail this
+loudly rather than pass silently — but the exclusion behind that claim was `templates/` **by path
+component**, correct only because `templates/` held exactly one `.md` file (`intake.md`, a
+`{{PLACEHOLDER}}` skeleton) when it was written. Excluding the directory and excluding that one file
+were the same action *then*; they diverged the moment `templates/agents/devils-advocate.md` shipped — a
+real agent prompt, real frontmatter — and it passed silently, never once watched failing. The fix turns
+the exclusion into a **content property**: `is_skeleton()` tests for a `{{PLACEHOLDER}}`-shaped marker
+rather than a path, so a future skeleton is caught automatically and a future non-skeleton under
+`templates/` is never exempted for its directory alone. `collect_prompt_files()` is now shared by the
+real check and its own watch-fail, so the watch-fail proves the exact code path that runs rather than a
+reimplementation that could silently drift from it; `templates/agents/*.md` is validated through the
+same `check_agent_file()` the plugin's own `agents/*.md` already used — one implementation, not two that
+could disagree, the shape `hook_freshness()` already established. The watch-fail: a scratch plugin
+fixture carrying a command, a shipped agent, a template agent, a genuine `{{PLACEHOLDER}}` skeleton, and
+one rogue non-skeleton `.md` no directory claims — only the rogue file is flagged, everything else is
+correctly left alone. Worth recording as more than a routine fix: both the brief and the implementing
+lane predicted this check would **fail** unfixed, and it passed — the contradiction between a stated
+expectation and the result is the only reason anyone looked twice at a green run; had either expected a
+pass, `ALL CHECKS PASSED` would have read as confirmation instead. `README.md` is excluded from the same
+whole-tree walk by **name**, tree-wide, not by content — a narrower, differently-shaped assumption than
+the one just fixed; see Known gaps.
+
+The nineteen `[watch-fail]`-tagged sections named throughout this file (`grep -c 'echo "== .*\[watch-fail\]'`)
+are a **floor on tagged sections, not a total of watch-fails**, and this was undercounted twice before
+it was counted correctly. Six further sections encode a genuine watch-fail without a tagged header:
+`manifests` (T49, above), the two documentation checks (`identifiers-exist`/T37a,
+`rendered-labels-exist`/T37b), `preflight roster: closed tasks are exempt`, `preflight heartbeat: silent
+under a REAL pty` (its own description above — "proven silent and always exit-0" — does not mention
+that it is watch-failed; a small, separate gap from the undercount, recorded here rather than chased),
+and `librarian-gate`'s seven fail-open branches. So **at least 25 of this file's 96 `validate.sh`
+sections encode at least one watch-fail** — "at least", not "exactly", because one section can encode
+several (`changes_with`'s damping cap, above, is watch-failed four separate ways inside a single
+section). `grep -c '\[watch-fail\]'` returns 57, over-counting in the other direction since a single
+watch-fail's break-and-revert spans several matching lines. State the number precisely if you state it
+at all: 19 is a floor on tagged sections, 25 a floor on sections carrying any watch-fail, and neither
+grep — nor eyeballing one — gives the true count. This is freshly self-inflicted, worth naming plainly
+rather than quietly correcting: the same T49 pass that corrected several stale coverage claims elsewhere
+in this file first wrote "at least three" for the untagged count, eyeballed from a grep rather than
+counted, and a second pass corrected that to six only once someone actually attributed every
+`[watch-fail]` line to its enclosing section header programmatically instead of eyeballing one. Two
+successive false counts, each caught only by the next reader re-reading the claim against the code
+rather than against memory of having written it — and the second was fixed by abandoning the
+instrument, not by applying more care to it: eyeballing a grep cannot attribute a match to its
+enclosing section, so no amount of careful eyeballing was ever going to land on six. That distinction —
+wrong tool, not insufficient care — is the transferable part, and it is the concrete argument for this
+file's own standing instruction to re-read a claim against the code rather than against memory.
+
 ## Design invariants
 
 These are not style preferences. Breaking one ships a trap to someone else's machine.
@@ -599,6 +653,76 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   one such commit couples everything it touched to everything else; the cap is overridable per call, and
   every answer reports how many commits were considered and how many were skipped, so the largest input
   to a ranking is never invisible.
+- **A third agent tier: shipped-but-optional, distinct from both "always shipped" and "generated
+  per project."** The entry above establishes two tiers and their reasons: `plugins/teamme/agents/`
+  (`history-librarian`) is always present and never selectable, because its job — read the git
+  history and answer from an index — is identical in every project; generated `.claude/agents/*.md`
+  are derived per project, because there is no fixed roster that fits every codebase. Neither tier
+  fits `devils-advocate`. Its job is also identical everywhere — interrogating a stated design is the
+  same task in any codebase, so re-authoring its prompt from a description at every install would
+  only be re-deriving one answer each time, the same argument that keeps the librarian's prompt fixed
+  — but unlike the librarian, a user must be able to decline it: not every brief benefits from an
+  adversarial pass, and forcing it the way the librarian is forced would make it the compliance
+  officer its own prompt explicitly refuses to be. `plugins/teamme/templates/agents/devils-advocate.md`
+  is the shape that satisfies both: shipped and project-agnostic like the librarian, but copied
+  **verbatim** into a project's `.claude/agents/` only when selected in `/teamme:init-team`'s Phase 3
+  — the same relationship `templates/hooks/*.py` already has to `.claude/hooks/*.py` (invariant #5),
+  extended to an agent file for the first time. Because it is copied into the roster rather than
+  shipped alongside it, it joins the four places a roster is written down (see "A roster is four
+  copies" below) and `preflight.py roster` covers it like any other selectable lane — the librarian,
+  never in the roster, needs no such coverage and gets none.
+- **The design-return cycle: one round between the approved brief and the code, gated by one trigger
+  rule, run in two separate spawns over the same designs.** `/intake` step 5 (`.claude/commands/
+  intake.md`) and `commands/init-team.md`'s generated equivalent put a step between "brief approved"
+  and "dispatch": each lane whose part of the brief **leaves real implementation freedom** is
+  dispatched for *design only* — the approach it chose, what it rejected and why, what it assumes,
+  what it is uncertain about, no code written — because a brief's own contract states what must be
+  true when done, not how to get there, and the freedom in between had no round before this where
+  anyone questioned it. `devils-advocate`, if selected, runs against those returned designs in **two
+  separate spawns**, not one context doing both: **mode 1**, once per lane, carrying that lane's own
+  role framing so the question lands in its domain's vocabulary rather than in generalities; and
+  **mode 2**, once across every design at once, with no single-lane framing, for what only a view from
+  above can see — contradiction, duplication, and two lanes independently choosing different means to
+  the same end (one picks SQLite, one Postgres, for two unrelated local stores; neither is wrong in
+  isolation, and only the cross-lane view sees the project now carries two where one would serve).
+  They are separate spawns because the two passes need *opposite* attention: per-lane detail crowds
+  out the cross-cutting view, and cross-lane framing dilutes the domain-specific question — the same
+  agent degrades at both jobs if asked to hold them at once. Mode 2's rule for the collision it alone
+  can see is deliberately narrow: ask whether the divergence is **load-bearing**, never mandate
+  convergence — sometimes two lanes differ for a reason neither the advocate nor the orchestrator can
+  see, and the lanes know that. Both modes run over the *same* returned designs and their questions
+  are **merged before anything is relayed** — never mode 1 first and mode 2 afterward over the
+  revisions, which would re-open the round it just closed on the back of a sensible-looking sequence,
+  since a revision answering mode 1 can introduce a fresh collision mode 2 would then have to catch.
+  **The orchestrator alone decides** what to act on — accept a revision, overrule an objection, or hand
+  a fork to the user; the advocate never dispatches, never blocks, and never decides. **One rule gates
+  the whole step**, stated once and applied to both the design dispatch and the advocate pass together,
+  not two separate triggers: engage when the brief adds a mechanism that did not exist, touches a
+  design invariant, spans more than one lane, or reverses a decision already made; skip when it is
+  already-specified, single-lane work that introduces no new mechanism and puts no invariant in reach.
+  The branch taken is said in one line, every time — never skipped silently — and `/queue` and step 0a
+  deferrals never reach this step at all, so they cost nothing either way. **Which lanes get a design
+  round is a property of the brief's contract, never of lane identity**: a contract that fully
+  determines its own output (bump this version, add this changelog entry) leaves no design to state,
+  and writing that as a list of lane names that always skip would be a fifth copy of the roster — the
+  exact bug the "A roster is four copies" entry above exists to prevent, closed by deletion once
+  already (T57, that entry). The naming is deliberate and belongs in the reasoning, not just the
+  prompt: the *advocatus diaboli* was a real office whose holder was **not an expert on the candidate**
+  and had **no power to decide anything** — both halves are load-bearing here, since the advocate knows
+  no lane's domain better than the lane itself and decides nothing, the same as the historical office
+  existed only to keep a case from passing on its first favourable telling. Three properties were
+  specified deliberately rather than left implicit: it can return **"no objection"** or **"no
+  collisions"**, because an adversary that always finds something produces noise a lane learns to
+  discount; it **terminates** — one round across both modes together, a second only when an *answer*
+  exposed a genuinely new fork, never to re-press a question already answered, and a persisting
+  disagreement after that is a fork for the orchestrator or the user, not a debate to continue; and it
+  is **not a compliance officer** — it never checks a design against the project's invariants or style,
+  since the shared guardrail block and intake's own grounding already did that, so its friction lands
+  on reasoning, never on conformance. Finally: the designs, the questions and the answers are recorded
+  as work-log notes on the task rather than left only in a hand-back, because reasoning is not
+  recoverable after the fact (thinking blocks are stored with an empty body — see Known gaps) and the
+  note is the only lasting record of why one approach was chosen over the alternative the advocate
+  raised.
 - **No separate code librarian; `history-librarian` absorbs co-change instead.** The task that shipped
   this (T34) was titled "a code librarian... plus a tests librarian", but co-change is a **history**
   signal — the same commit stream, the same index, the same SHAs as everything else `history-librarian`
@@ -1091,6 +1215,25 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   `.claude/` file are supposed to be filled-in and project-specific versus carried verbatim, which is
   exactly the judgement `init-team.md` itself makes at generation time and no mechanical diff can
   recover after the fact.
+- **`README.md` is excluded from the prompt walk by *name*, tree-wide, not by content.** T49's fix to
+  the manifests check (see Verify above) replaced a path-based exemption for `templates/` with a
+  content-based one, keyed on whether a file actually contains a `{{PLACEHOLDER}}`-shaped marker — but
+  left `README.md` exempted by filename alone. That is structurally the same shape of assumption the
+  `templates/` rule had before the fix: correct today only because every `README.md` in the plugin
+  tree happens to be documentation with no frontmatter, not because anything checks that. The failure
+  direction is safer than the one just closed — a new doc under any other name is flagged loudly, and
+  this only goes wrong if a real, frontmatter'd prompt is ever shipped literally named `README.md`.
+  Unlikely, unverified, recorded rather than fixed.
+- **`devils-advocate` is prompt text with no eval suite, like every other prompt here.** `validate.sh`
+  proves its frontmatter parses, carries `name`/`description`, and sets none of
+  `FORBIDDEN_AGENT_KEYS` — the same coverage every agent file gets, no more. Nothing tests whether it
+  actually asks good questions, correctly returns "no objection" or "no collisions" when a design or a
+  set of designs genuinely warrants it rather than manufacturing an objection, or terminates instead of
+  looping. The whole design-return cycle is instruction, not enforcement: nothing blocks an
+  orchestrator that skips the trigger rule, runs only one mode when both apply, or acts on a question
+  without saying what it decided. Same register as every other convention this project states rather
+  than enforces (see the MCP install gate, the librarian intended-caller entry, and the push-reminder
+  entry above) — say it in the same breath as the feature, not as an afterthought.
 
 ## Conventions
 

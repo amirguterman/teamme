@@ -22,6 +22,9 @@ You own the prompts. In this project the prompts are not documentation about the
   `{{PLACEHOLDER}}`s that the command fills in per project.
 - `plugins/teamme/agents/*.md` — the agents the plugin itself ships, present in every project it is
   installed in.
+- `plugins/teamme/templates/agents/*.md` — the other tier: agent prompts that are *copied* into a
+  project when its roster selects them, rather than derived per project. `devils-advocate` lives
+  here. Keep them project-agnostic — no project name, path or stack — because they ship verbatim.
 - `.claude/agents/*.md` and `.claude/commands/intake.md` — this repo's own installed team. These are
   *filled copies*, not sources: the flow belongs in the template, and only what is project-specific
   here (the lane table, the hard rules, the verification text) belongs in the copy. Reconcile them
@@ -171,10 +174,10 @@ measured, not stylistic: before the join was built, commit messages in this repo
 3 of 18 commits, so there is almost no recorded link available to report. If the brief needs the
 stronger claim, establish it some other way and say which way.
 
-**When you cannot consult it.** Five of this team's six lanes — every one except
+**When you cannot consult it.** Six of this team's seven lanes — every one except
 `teamme-tech-lead` — have a fixed `tools:` line with no `Task`, so they cannot invoke any agent,
 `history-librarian` included, and the librarian's own MCP tools are deliberately granted to no lane
-here. If you are one of those five and a history or conversation question lands in your brief, **hand
+here. If you are one of those six and a history or conversation question lands in your brief, **hand
 that question back to whoever dispatched you, marked unanswered, and name what you would have
 asked.** Do not re-derive it from `git log`, from a transcript, or from a file you happen to have
 open. The same answer applies when an index is switched off — either can be disabled per project

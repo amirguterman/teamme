@@ -178,10 +178,10 @@ measured, not stylistic: before the join was built, commit messages in this repo
 3 of 18 commits, so there is almost no recorded link available to report. If the brief needs the
 stronger claim, establish it some other way and say which way.
 
-**When you cannot consult it.** Five of this team's six lanes — every one except
+**When you cannot consult it.** Six of this team's seven lanes — every one except
 `teamme-tech-lead` — have a fixed `tools:` line with no `Task`, so they cannot invoke any agent,
 `history-librarian` included, and the librarian's own MCP tools are deliberately granted to no lane
-here. If you are one of those five and a history or conversation question lands in your brief, **hand
+here. If you are one of those six and a history or conversation question lands in your brief, **hand
 that question back to whoever dispatched you, marked unanswered, and name what you would have
 asked.** Do not re-derive it from `git log`, from a transcript, or from a file you happen to have
 open. The same answer applies when an index is switched off — either can be disabled per project

@@ -24,7 +24,7 @@ trap on_err ERR
 
 echo "== manifests =="
 python3 - <<'PY'
-import json, pathlib, sys
+import json, pathlib, re, sys, tempfile
 root = pathlib.Path.cwd()
 
 # A plugin-shipped agent must NOT set these: the installed CLI silently
@@ -98,6 +98,115 @@ def check_scalar_shapes(fm, rel_path):
             )
 
 
+# A "skeleton" is a template a command fills in with {{PLACEHOLDER}}s before a
+# person or a real frontmatter parser ever sees it - templates/intake.md is
+# the one that exists today. That is a property of the FILE's content (it is
+# not yet a valid prompt - it is source text a command interpolates into
+# one), not a property of which directory it happens to sit in. The exclusion
+# used to be "anything under templates/", which was only ever correct because
+# templates/ held exactly one .md file when it was written; templates/agents/
+# now holds real, already-valid prompts in that same directory, so a
+# directory-wide rule started passing them by construction rather than by any
+# check - and it did, silently, until this section. Detect the property
+# instead: does the file actually contain a {{PLACEHOLDER}}-shaped marker? A
+# future skeleton (another *.md a command fills in before it is a valid
+# prompt) is picked up by this same regex automatically - it does not need a
+# new path added here. A future template that is NOT a skeleton is not
+# excluded by being under templates/ at all; it has to be accounted for by a
+# directory this check knows how to validate, same as everything else.
+PLACEHOLDER_RE = re.compile(r"\{\{[A-Z][A-Z0-9_]*\}\}")
+
+
+def is_skeleton(f: pathlib.Path) -> bool:
+    return bool(PLACEHOLDER_RE.search(f.read_text()))
+
+
+def collect_prompt_files(pdir: pathlib.Path):
+    """Every *.md file under pdir, sorted into commands/, agents/,
+    templates/agents/ and 'unaccounted' - found by the whole-tree walk but
+    claimed by none of those directories and not a {{PLACEHOLDER}} skeleton.
+    Shared by the real check below and its own watch-fail immediately after
+    this function, so the watch-fail proves this exact code path rather than
+    a reimplementation of it that could silently drift from what actually
+    runs.
+    """
+    cmds = sorted((pdir / "commands").glob("*.md")) if (pdir / "commands").is_dir() else []
+    agent_dir = pdir / "agents"
+    agents = sorted(agent_dir.glob("*.md")) if agent_dir.is_dir() else []
+    template_agent_dir = pdir / "templates" / "agents"
+    template_agents = sorted(template_agent_dir.glob("*.md")) if template_agent_dir.is_dir() else []
+    # `plugins/*/server/*.py` (the old glob) only ever reached the top-level
+    # server file and silently never checked server/librarian/*.py - the same
+    # shape as REQUIRED_HOOKS quietly covering less than its author assumed.
+    # commands/*.md-only frontmatter checking repeated that exact mistake:
+    # agents/ shipped and nothing validated it, and later templates/agents/
+    # shipped and a directory-wide "templates" exclusion silently let it pass
+    # too (see is_skeleton above). Rather than add a narrow glob per
+    # directory, walk the WHOLE plugin tree for *.md and require every file
+    # found to be accounted for by a directory this check already knows how
+    # to validate, or to be a skeleton by the content property above. A
+    # fourth prompt location added later fails this loudly instead of
+    # silently passing unchecked - see the watch-fail immediately below,
+    # which proves that claim rather than just stating it.
+    prompt_files = sorted(
+        f for f in pdir.rglob("*.md")
+        if f.name != "README.md" and not is_skeleton(f)
+    )
+    accounted = set(cmds) | set(agents) | set(template_agents)
+    unaccounted = sorted(set(prompt_files) - accounted)
+    return cmds, agents, template_agents, unaccounted
+
+
+# ---- watch-fail: an unaccounted *.md file - one this check does not know
+# how to validate - is caught and named, not silently passed. This is the
+# exact gap that let templates/agents/devils-advocate.md ship unchecked: the
+# directory-wide "templates" exclusion made the walk agree with a false claim
+# in this file's own comment ("a third prompt directory... fails this loudly
+# instead of silently passing unchecked") that nothing had ever tested. A
+# scratch plugin tree, never this repo's own plugins/teamme/. ----
+with tempfile.TemporaryDirectory() as scratch:
+    fixture = pathlib.Path(scratch) / "fixture-plugin"
+    (fixture / "commands").mkdir(parents=True)
+    (fixture / "commands" / "do-thing.md").write_text(
+        '---\ndescription: does a thing\n---\nbody\n'
+    )
+    (fixture / "agents").mkdir()
+    (fixture / "agents" / "helper.md").write_text(
+        '---\nname: helper\ndescription: helps\n---\nbody\n'
+    )
+    (fixture / "templates" / "agents").mkdir(parents=True)
+    (fixture / "templates" / "agents" / "shipped.md").write_text(
+        '---\nname: shipped\ndescription: copied verbatim\n---\nbody\n'
+    )
+    # a genuine skeleton - has a {{PLACEHOLDER}}, correctly excluded
+    (fixture / "templates" / "intake.md").write_text(
+        'skeleton for {{PROJECT}}\n'
+    )
+    # the rogue file: a real, non-skeleton *.md sitting somewhere this check
+    # does not know how to validate - README.md's own directory-wide name
+    # exclusion is deliberately NOT copied here, so this exercises the "found
+    # but unaccounted" branch, not the README carve-out.
+    (fixture / "templates" / "rogue.md").write_text(
+        'not a skeleton, not claimed by any directory this check knows\n'
+    )
+    _, _, _, watch_unaccounted = collect_prompt_files(fixture)
+if not watch_unaccounted:
+    sys.exit(
+        "[watch-fail] templates/rogue.md (a real, non-skeleton *.md this check does not "
+        "know how to validate) was NOT flagged as unaccounted - the whole-tree walk is not "
+        "actually catching a fourth prompt location the way its own comment claims"
+    )
+if [str(f.relative_to(fixture)) for f in watch_unaccounted] != ["templates/rogue.md"]:
+    sys.exit(
+        f"[watch-fail] expected exactly ['templates/rogue.md'] unaccounted, got "
+        f"{[str(f.relative_to(fixture)) for f in watch_unaccounted]} - a real command, agent, "
+        f"template agent or skeleton is being wrongly flagged, or the rogue file is being missed"
+    )
+print("  ok: [watch-fail] an unaccounted *.md (templates/rogue.md) on a scratch plugin tree is "
+      "caught and named; a command, a shipped agent, a template agent and a genuine "
+      "{{PLACEHOLDER}} skeleton on that same tree are all correctly left unflagged")
+
+
 m = json.loads((root / ".claude-plugin/marketplace.json").read_text())
 entries = m.get("plugins") or []
 if not entries:
@@ -117,7 +226,7 @@ for e in entries:
         if not p.get(key):
             sys.exit(f"{p.get('name')}: plugin.json is missing '{key}'")
 
-    cmds = sorted((pdir / "commands").glob("*.md"))
+    cmds, agents, template_agents, unaccounted = collect_prompt_files(pdir)
     if not cmds:
         sys.exit(f"{p['name']}: no commands/*.md")
     for c in cmds:
@@ -128,32 +237,14 @@ for e in entries:
             sys.exit(f"{c.relative_to(root)}: frontmatter has no 'description'")
         check_scalar_shapes(fm, c.relative_to(root))
 
-    agent_dir = pdir / "agents"
-    agents = sorted(agent_dir.glob("*.md")) if agent_dir.is_dir() else []
-
-    # `plugins/*/server/*.py` (the old glob) only ever reached the top-level
-    # server file and silently never checked server/librarian/*.py - the same
-    # shape as REQUIRED_HOOKS quietly covering less than its author assumed.
-    # commands/*.md-only frontmatter checking repeated that exact mistake:
-    # agents/ shipped and nothing validated it. Rather than add a second,
-    # equally narrow glob for agents/ next to it, walk the WHOLE plugin tree
-    # for *.md and require every file found to be accounted for by a
-    # directory this check already knows how to validate (or explicitly
-    # excluded). A third prompt directory added later fails this loudly
-    # instead of silently passing unchecked.
-    prompt_files = sorted(
-        f for f in pdir.rglob("*.md")
-        if f.name != "README.md" and "templates" not in f.relative_to(pdir).parts
-    )
-    accounted = set(cmds) | set(agents)
-    unaccounted = sorted(str(f.relative_to(root)) for f in set(prompt_files) - accounted)
     if unaccounted:
         sys.exit(
             f"{p['name']}: found *.md file(s) this manifests check does not know how to "
-            f"validate: {unaccounted} - extend the check, don't let it pass silently"
+            f"validate: {[str(f.relative_to(root)) for f in unaccounted]} - extend the "
+            f"check, don't let it pass silently"
         )
 
-    for a in agents:
+    def check_agent_file(a: pathlib.Path) -> None:
         fm, err = parse_frontmatter(a.read_text())
         if err:
             sys.exit(f"{a.relative_to(root)}: {err}")
@@ -168,7 +259,15 @@ for e in entries:
                 f"drops these for plugin-shipped agents (it warns, but nothing here catches that), so this must never ship"
             )
 
-    print(f"  ok: {p['name']} v{p.get('version','?')} - {len(cmds)} command(s), {len(agents)} agent(s)")
+    for a in agents:
+        check_agent_file(a)
+    for a in template_agents:
+        check_agent_file(a)
+
+    print(
+        f"  ok: {p['name']} v{p.get('version','?')} - {len(cmds)} command(s), "
+        f"{len(agents)} agent(s), {len(template_agents)} template agent(s)"
+    )
 PY
 
 # Locks in that the count above actually reflects the files on disk - modify-team.md

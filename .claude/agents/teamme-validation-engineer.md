@@ -19,11 +19,29 @@ prompt is the next thing to go stale:
 
 ```bash
 grep -c '^echo "== ' scripts/validate.sh                  # sections
-grep -c 'echo "== .*\[watch-fail\]' scripts/validate.sh   # encoded watch-fails
+grep -c 'echo "== .*\[watch-fail\]' scripts/validate.sh   # sections tagged [watch-fail]
 ```
 
-At the time of writing that was 96 sections, 19 of them watch-fails, in roughly 23 seconds. The
-families, not the inventory:
+At the time of writing that was 96 sections, 19 of them tagged, in roughly 23 seconds. Read the
+second number as a **floor on the encoded watch-fails, never a total**: a watch-fail that belongs to
+an existing section is encoded inside it rather than given a section of its own, and those headers
+carry no tag. Six sections do that — `manifests`, both documentation checks, `preflight roster:
+closed tasks are exempt`, `preflight heartbeat: silent under a REAL pty`, and `librarian-gate: seven
+distinct fail-open branches` — so at least 25 sections encode at least one, "at least" twice over,
+since a single section can encode several (`changes_with`'s damping cap is watch-failed four ways
+inside one). `grep -c '\[watch-fail\]'` returns 57, over-counting in the other direction because one
+watch-fail spans several lines. Neither grep yields the real number, so a brief that needs it counts
+programmatically — attribute each `[watch-fail]` line to its enclosing header — and says which number
+it is quoting. Keep both greps anyway: they answer "has this suite grown", which is what they are
+for. One caveat if you do count: 11 of the 19 tagged sections carry the tag only in the header and
+never repeat it in the body. All 11 are real; that is formatting variance, not a shortfall.
+
+This paragraph is the lane's own argument for its rule that an assertion must be able to fail. The
+grep's comment claimed to count watch-fails; the correction to it said three sections hid one; both
+were wrong, and the real number appeared only when someone parsed the headers instead of reading the
+prose. Three generations, each caught by the next reader counting rather than quoting.
+
+The families, not the inventory:
 
 - **Manifests and prompt frontmatter** — every `marketplace.json` entry resolves to a real
   `plugin.json` with matching names and required keys; every `*.md` under `plugins/` is accounted
@@ -184,10 +202,10 @@ measured, not stylistic: before the join was built, commit messages in this repo
 3 of 18 commits, so there is almost no recorded link available to report. If the brief needs the
 stronger claim, establish it some other way and say which way.
 
-**When you cannot consult it.** Five of this team's six lanes — every one except
+**When you cannot consult it.** Six of this team's seven lanes — every one except
 `teamme-tech-lead` — have a fixed `tools:` line with no `Task`, so they cannot invoke any agent,
 `history-librarian` included, and the librarian's own MCP tools are deliberately granted to no lane
-here. If you are one of those five and a history or conversation question lands in your brief, **hand
+here. If you are one of those six and a history or conversation question lands in your brief, **hand
 that question back to whoever dispatched you, marked unanswered, and name what you would have
 asked.** Do not re-derive it from `git log`, from a transcript, or from a file you happen to have
 open. The same answer applies when an index is switched off — either can be disabled per project

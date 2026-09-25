@@ -79,6 +79,26 @@ not a lane. For EACH proposed agent specify:
 - The **project-specific guardrails** to bake into its prompt (pulled from Phase 1's working
   rules — e.g. docs-first, codegen steps, migration flow, i18n source-of-truth, security model).
 
+**One roster item is the stated exception to "derive it from the codebase": `devils-advocate`.**
+Offer it as a selectable agent alongside the ones you derived, and describe it honestly: a lane that
+owns no layer and writes no code, engaged once per brief after every other lane has returned its
+design, to ask *why not otherwise* — what else would satisfy the contract, what the chosen path
+costs that the alternative does not, what the design assumes that nobody verified, and what collides
+between two lanes. It is invoked in two modes over the same set of designs: once per lane, carrying
+that lane's own role framing so the question lands in its domain's vocabulary, and once across every
+design at once, for contradiction, duplication and two lanes choosing different means to the same
+end. It never implements, never dispatches and never decides; the
+orchestrator or the intake flow decides what to act on. Its prompt is **copied verbatim** from
+`${CLAUDE_PLUGIN_ROOT}/templates/agents/devils-advocate.md` (Phase 5) — do not derive it, do not
+tailor it to this project, and do not re-author it from this description. That fixed prompt is
+exactly why this one is not derived: interrogating a stated case is the same job in every codebase,
+so regenerating it per install would only be re-deriving one answer each time.
+Say what selecting it costs and buys. It adds a design-return round between the approved brief and
+the code — each lane states its approach before writing anything, and the advocate questions the set
+of them — which costs a round trip on the briefs that engage it and is the entire point on those
+briefs. Declining it is a normal choice: the `/intake` command still gets the design-return step
+either way, with the flow itself asking the questions.
+
 The roster is not the entry point. Alongside the agents you will create a project `/intake` command
 (Phase 5, step 2) that is the single doorway to the team, so present the roster as the set of lanes
 that intake dispatches to — not as a menu I am expected to pick from by hand.
@@ -116,6 +136,14 @@ anything risky to remove. Prefer reversible disables over deletion.
   them; these are project-agnostic - do not edit them.
 - `templates/settings.hooks.json` → merge its `hooks` block into `<project>/.claude/settings.json`,
   preserving anything already there.
+- `templates/agents/devils-advocate.md` → `<location>/devils-advocate.md`, **only if I selected it in
+  Phase 3**. This is the one agent prompt you do not derive: copy the body verbatim. Drop its leading
+  HTML comment, then append the same three tail sections every other agent in this roster gets from
+  step 1 below — the shared guardrail block, the librarian consultation contract, and the work-log
+  section in its no-`Bash` form, since its tool list has none. Change nothing else in it and do not
+  tailor it to this project. Its `tools:` line names the work-log MCP tool; check that name resolves
+  in this session exactly as step 1 requires of every agent, and if it does not, strip that one name
+  and tell me at hand-over that the lane cannot write the ledger directly.
 - `templates/intake.md` → `<project>/.claude/commands/intake.md`, replacing every `{{PLACEHOLDER}}`
   with what you learned in Phase 1. That tailoring is the real work; the rest is a copy.
 Then pipe-test each hook in the target project before reporting it live - `python3` must exist, and
@@ -224,6 +252,34 @@ the paths must resolve.
      state plainly that it cannot be verified locally and what the real gate is).
    - **Confirm** — use the interactive question tool for genuine forks in scope or approach, not
      for choices with an obvious default. Get approval of the brief before any code is written.
+   - **Design return** — one round between the approved brief and any code. Each lane whose part of
+     the brief leaves real implementation freedom is dispatched for **design only**: it states the
+     approach it chose, what it rejected and why, what it is assuming and what it is uncertain
+     about, and writes no code. The flow then puts those designs to `devils-advocate` in **two
+     separate spawns over the same set of designs**: one per lane, carrying that lane's own role
+     framing — who it is, what it owns, what expertise is being questioned — so the question lands
+     in its domain's own vocabulary; and one holding every design at once with no single-lane
+     framing, for what contradicts, overlaps or is being built twice between them, including two
+     lanes picking different means to the same end where either would have done. Say why they are
+     two: per-lane detail crowds out the cross-cutting view, and cross-lane framing dilutes the
+     domain-specific question. Require both to run over the *same* returned designs and their
+     questions to be **merged before anything is relayed** — never mode-1-then-mode-2 over revised
+     designs, which re-opens the round it just closed — and require a single-lane brief to run the
+     per-lane mode only, since there is nothing for the other to compare. The flow then relays each
+     question to the lane it names and decides itself what to act on — accept the revision, overrule
+     the objection, or hand the fork to me.
+     Carry the template's trigger rule across with **both branches intact**: engage when the brief
+     adds a mechanism that did not exist, touches a design invariant, spans more than one lane, or
+     reverses a decision already made; skip when it is already-specified, single-lane work that
+     introduces no new mechanism and puts no invariant in reach — and require the flow to say in one
+     line which branch it took and why, never to skip silently. Never write that rule as a list of
+     lane names that skip the step: which parts leave design freedom is a property of the contract
+     the brief wrote, not of who owns the lane, and a lane list here would be one more copy of the
+     roster to drift out of date. Require the designs, the questions and the answers to be recorded
+     as work-log notes on the task rather than left in hand-backs — reasoning is not recoverable
+     afterwards, so the note is the only lasting record of why an approach was chosen over the
+     alternative that was raised. If `devils-advocate` was not selected in Phase 3, keep the step and
+     have the flow ask those questions itself.
    - **Dispatch** — hand the approved brief to the orchestrator if one exists, otherwise to each
      owning specialist in dependency order. Never let a dependent lane start first.
    - **Report** — what changed per layer, what the docs now claim, and the honest verification
@@ -307,5 +363,6 @@ Do NOT write outside the current project in this phase.
 Constraints: read-only until Phase 5; choose the minimum agents the project actually needs (no
 filler roles); keep tool lists tight; `/intake` is always created, is always the only sanctioned way
 to request work from the team, always carries a harness-enforced read-only grounding phase that
-fails open, and always triages mid-flight messages itself rather than asking me to; mask any secrets
+fails open, always triages mid-flight messages itself rather than asking me to, and always carries
+the design-return step between the approved brief and the code; mask any secrets
 in output; follow the repo's existing commit/branch rules.

@@ -62,6 +62,18 @@ lock-in asserts `plugins/teamme/commands/*.md` is exactly four files, named by f
 check's own file-discovery glob, since a new command file added without updating this count would
 otherwise be a silent miss the same shape as the two globs above.
 
+Which `*.md` files the manifests check knows how to validate is decided by content, not by directory,
+for the same reason the two globs above walk the whole tree instead of a shallow pattern:
+`is_skeleton()` tests whether a file actually contains a `{{PLACEHOLDER}}`-shaped marker before
+exempting it, rather than exempting everything under `templates/` by path — a directory-wide exemption
+was exactly correct only while `templates/` held nothing but `intake.md`, and stopped being correct,
+silently, the moment `templates/agents/devils-advocate.md` shipped a real prompt into that same
+directory (see `CLAUDE.md`'s T49 entry in Verify). Every `*.md` found by the walk and not a skeleton
+must be accounted for by `commands/`, `agents/` or `templates/agents/` — an `.md` sitting anywhere else
+fails the check by name, with one deliberate exception: any file literally named `README.md` is
+excluded tree-wide, by name rather than content, a narrower assumption than the one this fix just
+replaced (see `CLAUDE.md`'s Known gaps for why that is recorded rather than closed).
+
 ## Keep the docs checked against the code
 
 Two more `validate.sh` sections compare `CHANGELOG.md`, `README.md` and `plugins/teamme/README.md`
@@ -96,8 +108,8 @@ there.
 plugins/teamme/
   .claude-plugin/plugin.json      the plugin manifest
   .mcp.json                       the MCP server this plugin ships
-  agents/history-librarian.md     the plugin's own shipped agent - see Rules for plugin-shipped
-                                   agents below
+  agents/history-librarian.md     the plugin's own shipped agent - always present, never
+                                   roster-selectable - see Rules for plugin-shipped agents below
   commands/init-team.md           the command that installs the team
   commands/team-doctor.md         the command that diagnoses/repairs an existing install; also runs
                                    and reports `preflight.py roster`, a separate verdict from `check`
@@ -125,6 +137,9 @@ plugins/teamme/
     hooks/*.py                    project-agnostic; do not hard-code a project name
     hooks/librarian-gate.py       PreToolUse on `git push` - asks, never denies, when the history
                                    index is behind HEAD; see Rules for the hook scripts below
+    agents/devils-advocate.md     opt-in, roster-selectable - copied verbatim into a project's
+                                   .claude/agents/ only if chosen in init-team.md's Phase 3; see
+                                   Rules for plugin-shipped agents below
     intake.md                     skeleton with {{PLACEHOLDER}}s the command fills in
     settings.hooks.json           the hooks block merged into the project's settings.json
 ```
@@ -191,19 +206,28 @@ wrong project's index.
 
 ## Rules for plugin-shipped agents
 
-`plugins/teamme/agents/` is a new shipped surface — `history-librarian.md` is the first file in it,
-and the librarian tier is meant to grow more. It is not the same thing as the agents a project's own
-`/teamme:init-team` generates into `.claude/agents/`: those are per-project and derived from that
-project's layout; these ship with the plugin itself and are present, unchanged, in every project the
-plugin is installed in. See `CLAUDE.md`'s "Decisions already made" for why the two are separate tiers
-rather than one mechanism.
+There are now three agent tiers, and confusing one for another is the mistake this section exists to
+prevent. `plugins/teamme/agents/` — `history-librarian.md` is the only file in it today — ships with
+the plugin and is present, unchanged, in every project the plugin is installed in, whether or not that
+project has run `/teamme:init-team`; it is never offered in the Phase 3 roster questionnaire and never
+roster-selectable. `plugins/teamme/templates/agents/` — `devils-advocate.md` is the first and only file
+in it today — also ships project-agnostic with the plugin, but is **opt-in**: it is offered in Phase 3
+like any derived lane, and copied verbatim into a project's `.claude/agents/` only if selected, exactly
+the way `templates/hooks/*.py` are copied rather than derived. Generated `.claude/agents/*.md` are the
+third tier: per-project, derived from that project's own layout, never copied from anywhere. See
+`CLAUDE.md`'s "Decisions already made" — the "two tiers" entry and the "third agent tier" entry that
+follows it — for why shipped-and-fixed, shipped-but-optional and generated-per-project are three
+different answers to three different constraints, not one mechanism with variations.
 
-A plugin-shipped agent's frontmatter must never set `permissionMode`, `hooks` or `mcpServers`. The
-CLI drops all three for a plugin agent — `.claude/agents/` is the level that gets that control, not
-the plugin — and while it does print a runtime warning naming the ignored key, nothing here catches
-that at review time, and a `validate.sh` run does not surface it either (see `CLAUDE.md`'s Known gaps
-for what is and is not checked about this file today). Setting one of these keys is a bug that ships
-invisibly unless someone happens to see that warning live.
+A plugin-shipped agent's frontmatter must never set `permissionMode`, `hooks` or `mcpServers` —
+whether it lives in `agents/` or `templates/agents/`. The CLI drops all three for a plugin agent —
+`.claude/agents/` is the level that gets that control, not the plugin — and while it does print a
+runtime warning naming the ignored key, nothing here catches that at review time. `validate.sh`'s
+manifests check does surface it for both tiers: `check_agent_file()` is the one implementation both
+`agents/*.md` and `templates/agents/*.md` are validated through, so a forbidden key set in either
+location fails the same way, at parse time, in CI — not only via a runtime warning someone has to be
+watching for live. What it does not do, for either tier, is test what the prompt *instructs* — see
+`CLAUDE.md`'s Known gaps.
 
 ## Changing the commands
 

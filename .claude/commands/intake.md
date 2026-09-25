@@ -199,7 +199,7 @@ before anything may cite it as settled.
 |---|---|---|
 | Hook scripts — the only real code | `plugins/teamme/templates/hooks/*.py`, `templates/settings.hooks.json` | `teamme-hook-engineer` |
 | The MCP server and the librarian substrate | `plugins/teamme/server/**/*.py`, `plugins/teamme/.mcp.json` | `teamme-hook-engineer` (the only lane permitted to edit `*.py`) |
-| Prompts — the product itself | `plugins/teamme/commands/*.md`, `plugins/teamme/templates/intake.md`, `plugins/teamme/agents/*.md`, `.claude/agents/*.md`, `.claude/commands/intake.md` | `teamme-prompt-author` |
+| Prompts — the product itself | `plugins/teamme/commands/*.md`, `plugins/teamme/templates/intake.md`, `plugins/teamme/templates/agents/*.md`, `plugins/teamme/agents/*.md`, `.claude/agents/*.md`, `.claude/commands/intake.md` | `teamme-prompt-author` |
 | Validation — the only proof | `scripts/validate.sh`, `.github/workflows/validate.yml` | `teamme-validation-engineer` |
 | Human-facing docs | `README.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `plugins/teamme/README.md` | `teamme-docs-writer` |
 | Packaging and release | `.claude-plugin/marketplace.json`, `plugins/teamme/.claude-plugin/plugin.json`, `CHANGELOG.md` | `teamme-release-manager` |
@@ -209,6 +209,10 @@ brief and name the nearest real owner — never invent an agent, and never dispa
 in this table. Changing the roster is a separate request: `/teamme:modify-team` adds, drops, retools
 or renames a lane and migrates the work log's lane fields with it. Do not run it from inside this
 flow.
+
+`devils-advocate` is this repo's seventh lane and is deliberately **not** in that table, and never
+belongs in it: it owns no layer, is never given a part of the brief, and never implements anything.
+Step 5 engages it, and nothing else does.
 
 Note the recursion: this repo has its own `.claude/` scaffolding installed from these same templates.
 `.claude/hooks/*.py` are **copies**. The source of truth is `plugins/teamme/templates/hooks/`. A
@@ -268,6 +272,10 @@ guarantee, and an end-to-end smoke test in a throwaway project (fail-open, deny-
 lift-on-approve, `Stop` firing exactly once). CI runs exactly this. There is no other test suite, no
 linter and no typechecker.
 
+**Write each lane's part as a contract, not an implementation**: what must be true when that lane is
+done, the criteria it is judged against, and the invariants within its reach. Leave the *how* to the
+lane - step 5 is where it states that and has to defend it.
+
 Be honest about what it does **not** prove, and name the specific gap rather than a general
 disclaimer. Two hold for every brief: the prompts — `commands/*.md`, `templates/intake.md` and
 `agents/*.md` — are checked only for a frontmatter block that parses and carries the keys it must
@@ -295,13 +303,97 @@ python3 .claude/hooks/worklog.py start <task-id>
 Writes stay denied until you do. If step 2b ended the flow instead - already satisfied, defer or
 decline - it has already released the phase, and you never reach this step.
 
-## 5. Dispatch
+## 5. Design return and challenge
 
-Hand the approved brief - the spec quotes, file paths, ordered plan - to `teamme-tech-lead` when the
-work spans lanes, or straight to the single owning specialist when it does not. Never start a
-dependent lane before the lane it depends on has landed.
+Between an approved brief and any code there is one more round. The brief told each lane **what must
+be true** - its part of the outcome, its done criteria, the invariants in reach. It did not say
+*how*. This step makes each lane state the how, and puts those statements in front of an adversary -
+one lane at a time, and all of them at once - before anything is built.
 
-## 6. Report and close
+**Apply this rule, then say in one line which branch you took and why. Never skip it silently.**
+
+| Branch | When |
+|---|---|
+| **Engage** | The brief adds a mechanism that did not exist, touches a design invariant, spans more than one lane, or reverses a decision already made. Any one of the four is enough. |
+| **Skip** | The brief is already-specified work, lands in a single lane, introduces no new mechanism, and puts no invariant in reach. All four must hold. |
+
+Skipping goes straight to step 6. A request that took the queue path at 0a, and anything that
+arrived through `/teamme:queue`, never reached step 3 and so never reaches here at all - those stay
+cheap without any guard of their own.
+
+**This step moves no phase transition.** The phase stays `approved` from step 4 until step 7
+releases it, for the whole cycle below.
+
+### The cycle
+
+You run this cycle. If the work spans lanes and you are handing it to `teamme-tech-lead` at step 6,
+you may hand it this cycle to run and report back instead - it is the same cycle either way, and
+whoever runs it is the one who decides what to act on.
+
+1. **Dispatch each lane for design only.** Give it its part of the brief as a *contract* - what must
+   be true when it is done, its done criteria, the invariants in reach - and ask for the design, not
+   the work: the approach it chose, what it rejected and why, what it is assuming, what it is
+   uncertain about. Say explicitly that it writes no code this round.
+   Dispatch only the lanes whose part of the brief **leaves real implementation freedom**. That is a
+   property of the contract, never of which lane it is: a contract that fully determines its own
+   output - bump this version, add this changelog entry, add this exact assertion - leaves no design
+   to state, so that lane says so in one line and waits for step 6. Judge each part against the
+   contract you wrote for it.
+2. **Put the designs to `devils-advocate` in two separate spawns, both over this same set of
+   returned designs.**
+   - **Mode 1 - one spawn per lane.** That lane's design, and its **role framing** mounted with it:
+     who the lane is, what it owns, what expertise is being questioned. Take that framing from the
+     lane's own file in `.claude/agents/` and from the part of the brief you wrote for it - do not
+     paraphrase it from memory. Without it the advocate asks the generic version of every question;
+     with it, it asks in that domain's own vocabulary - a fail-open branch to the hook engineer, an
+     overstated claim to the docs writer.
+   - **Mode 2 - one spawn holding every design at once**, with no single-lane framing at all. Its
+     job is what happens *between* designs: contradiction, overlap, the same thing built twice, and
+     two lanes picking different means to the same end where either would have done - which no
+     single-lane pass can see, because each of those designs is defensible on its own. It asks
+     whether the divergence is load-bearing; it never mandates convergence.
+   Two spawns, never one context doing both: per-lane detail crowds out the cross-cutting view, and
+   cross-lane framing dilutes the domain-specific question. **Do not run them serially** - not mode 1
+   first and then mode 2 over the revised designs, however tidy that reads. A revision made in answer
+   to mode 1 can introduce a fresh collision, which would demand another cross-lane pass, which
+   prompts more revisions: that is the unbounded loop the one-round rule exists to prevent, arriving
+   through the back door of a sensible-looking sequence.
+   **A single-lane brief runs mode 1 only.** There is nothing for mode 2 to compare, and spawning it
+   to say so is waste.
+3. **Merge both modes' questions, then relay each to the lane it names.** Merging before relaying is
+   what keeps this one round: a lane answers mode 1's questions about its own design and mode 2's
+   about its boundary with another lane in a single pass. The advocate never talks to a lane and
+   never dispatches one; every hop is yours. The lane either revises its design or justifies why its
+   approach was best.
+4. **Decide, and decide alone.** Accept a revision, overrule the objection, or hand the fork to the
+   user - your call in every case. The advocate decides nothing and blocks nothing. "No objection" is
+   a real and common result. One round is the default; a second happens only when an *answer* exposed
+   a fork that did not exist before, never to re-press a question already answered. If a lane and the
+   advocate still disagree after that, it is a fork for you to settle or put to the user, not a
+   debate to continue.
+   Putting a fork to the user usually means asking and carrying straight on. If instead you stop
+   there and wait, `worklog.py block <id> "<the fork>"` and **leave the phase at `approved`** - the
+   answer arrives as a mid-flight message and folds in at step 0b, and the lock expires on its own if
+   it never comes. Do not `release`: the brief is still live and step 7 is still its one way out.
+
+**Record the exchange in the work log, not in hand-backs.** Each lane's design, the advocate's
+questions and each answer go in as notes on the task. Reasoning is not recoverable afterwards: an
+approach chosen and an alternative rejected that live only in a hand-back are gone at the next
+compaction, and that note is then the only record of why this path was taken over the one the
+advocate proposed. `teamme-prompt-author`, `teamme-docs-writer` and `devils-advocate` have no `Bash`
+and write theirs with the `teamme_worklog` MCP tool, as they already do.
+
+**None of this goes to the user for approval.** The brief was confirmed once, at step 4. This cycle
+runs inside dispatch and is reported at step 7; the only thing that reaches the user here is a
+genuine fork you chose to hand them.
+
+## 6. Dispatch
+
+Hand the approved brief - the spec quotes, file paths, ordered plan, and whatever step 5 settled -
+to `teamme-tech-lead` when the work spans lanes, or straight to the single owning specialist when it
+does not. Never start a dependent lane before the lane it depends on has landed.
+
+## 7. Report and close
 
 State what changed per layer, what the docs now claim, and the honest verification status.
 
