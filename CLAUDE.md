@@ -885,10 +885,16 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   above for the reasoning in full, since it is load-bearing and worth re-checking if that branch ever
   grows a per-action special case.
 - Version bumps are manual: `plugin.json` `version` plus a `CHANGELOG.md` entry.
-- This repo's own dogfood install is `installed-outdated` by the definition above: `.claude/commands/
-  intake.md` predates the preflight block entirely (no Preflight section, no `state:` handling), so
-  `/intake` in this repo does not halt on an incomplete install the way a freshly-generated one would.
-  Tracked as T24.
+- **Closed: T24, and it was worse than its own headline.** This entry used to say this repo's own
+  `.claude/commands/intake.md` predates the preflight block entirely and so `/intake` here does not
+  halt on an incomplete install the way a freshly-generated one would. Fixed — `.claude/commands/
+  intake.md` now carries the Preflight section and `state:` handling verbatim — but reconciling the
+  two files also turned up a live state-machine bug the headline never named: three of step 2b's six
+  dispositions (already-satisfied, defer, decline) ended the flow with `stop` and no
+  `intake-state.py release` call, so hitting any of the three left this repo write-locked until the
+  one-hour stale timeout — the exact invariant #1 provision that kept it from being worse than a
+  timeout. See the "`.claude/` is a filled copy" entry further down for what T24 says about `.claude/`
+  more generally, alongside two later tasks that found the same shape.
 - **The install record's per-project and multi-entry logic is not directly asserted.**
   `preflight.py` now also resolves the plugin's templates from the harness's own install record
   (`$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json`, falling back to `~/.claude/...`), so an
@@ -1037,6 +1043,31 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   false while the agent's name still appears somewhere in the file. `/teamme:modify-team`'s own Phase 4
   and Phase 5 tell the operator this in the same words, so the limit is stated at the point someone
   would otherwise mistake a `PASS` for more than it is.
+- **`.claude/` is a filled copy of what `plugins/teamme/` generates, and `validate.sh` never opens
+  it — three tasks have now found drift there, with three more queued.** The suite walks `plugins/`
+  for manifests, hook syntax and prompt frontmatter; the one thing under `.claude/` it touches at all
+  is `preflight.py roster` (see above), and that check is narrower than it sounds — it proves the
+  agent files, `.claude/agents/README.md`'s table, `.claude/commands/intake.md`'s lane mentions and
+  the work log's `lane` fields still name the same lanes. It says nothing about whether a `.claude/`
+  copy's *prose* still matches the template or instruction it was filled from; that is a different
+  question with no check of its own, mechanical or otherwise. Three instances, all closed: T24
+  (`.claude/commands/intake.md` missing `intake-state.py release` on three of six step-2b
+  dispositions — see the entry above); T50 (a stale session-librarian claim duplicated in `CLAUDE.md`
+  and both READMEs — not a `.claude/` copy, but the identical shape, caught the same pass); and T51
+  (zero of six `.claude/agents/*.md` files carried the `## Consulting the librarian` contract
+  `init-team.md` has required of every generated roster since 0.6.0, and all six separately stated
+  design invariant #2 backwards — "stamps itself against the task's `updated` time" where it must
+  read `status_changed` — teaching exactly the trap the guardrail exists to prevent). The contract
+  itself now lives in `.claude/agents/README.md`'s "Consulting the librarian" section and identically
+  in all six agent files; it is not restated here, and should not be — a second copy in this file is
+  exactly the class of drift this entry exists to name. Three more instances are queued, open at
+  P2, and named rather than detailed here since they are unbriefed: T56 (`teamme-hook-engineer.md`
+  is two hooks behind `REQUIRED_HOOKS`), T57 (`teamme-tech-lead.md` carries a fifth, unchecked copy
+  of the roster's ownership map, already drifted), T58 (stale coverage claims in
+  `teamme-validation-engineer.md` and `teamme-prompt-author.md`). Nothing here proposes a check for
+  this — a template-vs-copy diff would need to know which parts of a `.claude/` file are supposed to
+  be filled-in and project-specific versus carried verbatim, which is exactly the judgement
+  `init-team.md` itself makes at generation time and no mechanical diff can recover after the fact.
 
 ## Conventions
 

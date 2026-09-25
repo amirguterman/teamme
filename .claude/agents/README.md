@@ -104,6 +104,33 @@ only; hooks fail open; enforcement hooks cannot loop; `templates/hooks/` stays p
 command copies rather than re-authors; commits are one imperative sentence-case line; stay in your
 lane.
 
+### Consulting the librarian
+
+All six agents also carry a second common block, the **librarian consultation contract** —
+`init-team.md` has required it of every generated roster since 0.6.0, and this repo's own copies —
+which are filled copies, not sources — went without it until T51. It routes three kinds of question
+to `history-librarian`, the agent the *plugin* ships rather than one this roster generated:
+
+| Question | Ask for | Carry through |
+|---|---|---|
+| What changed, when, why — a file's history, when a convention appeared, "X was added in commit Y" | the history index | the commit SHAs it cites |
+| What was **said** — decided, proposed, rejected; what a dispatched specialist reported; what fell out of context at a compaction | the session index (`compaction`/`search_turns` to locate, then `window` to read) | the session id and mark point |
+| What was happening **around** a file, commit, task id or stretch of time | the cross-index join (`around_path`, `around_commit`, `around_task`, `timeline`) | "active while" / "around" — never "implements", "caused" or "fixes" |
+
+`history-librarian` is **not** in the roster table above and must never be added to it: the table is
+checked against the files in `.claude/agents/`, and a row naming an agent no file here owns fails
+`preflight.py roster`. The plugin carries that agent; nothing in this repo owns it.
+
+The block ends with an escalation clause, because five of the six lanes cannot actually reach the
+librarian — only `teamme-tech-lead` inherits `Task`, and no lane is granted the librarian MCP tools
+(`init-team.md` forbids it; the librarian is their intended caller). Those five hand a history or
+conversation question **back to whoever dispatched them, marked unanswered**, and never re-derive it
+from `git log` or a transcript. That is the third instance of one shape — a lane names the
+capability it lacks and hands the work back rather than improvising around it: no `Bash` means the
+work-log MCP tool in place of the CLI, and `./scripts/validate.sh` handed back unrun; no `Task`
+means a history question handed back unanswered. Like every other convention here it is stated
+rather than enforced — nothing blocks a lane that skips it.
+
 ## Work log
 
 ```bash

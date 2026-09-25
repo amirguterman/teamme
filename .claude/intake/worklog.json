@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "next_id": 55,
+  "next_id": 59,
   "tasks": [
     {
       "id": "T1",
@@ -960,17 +960,25 @@
     {
       "id": "T51",
       "title": "This repo's own roster carries no librarian guardrail block at all - zero of seven .claude/agents/*.md mention a librarian, while init-team.md has required it of generated rosters since 0.6.0",
-      "status": "open",
+      "status": "done",
       "priority": "P1",
       "lane": "teamme-prompt-author",
       "notes": [
-        "Found by the prompt lane while wiring the cross-index (T50), verified by me: grep -il librarian over .claude/agents/*.md returns ZERO of 7 files. init-team.md instructs every generated roster to carry the librarian consultation contract - history since 0.6.0, sessions since 0.8.0, cross as of T50 - and this repo, which dogfoods its own installer, never received any of it. The purest instance of the shape CLAUDE.md warns about: a fix made only in the template never reaches this repo. Unrecorded in Known gaps."
+        "Found by the prompt lane while wiring the cross-index (T50), verified by me: grep -il librarian over .claude/agents/*.md returns ZERO of 7 files. init-team.md instructs every generated roster to carry the librarian consultation contract - history since 0.6.0, sessions since 0.8.0, cross as of T50 - and this repo, which dogfoods its own installer, never received any of it. The purest instance of the shape CLAUDE.md warns about: a fix made only in the template never reaches this repo. Unrecorded in Known gaps.",
+        "GROUNDED - T51 is not just a missing block, it is a contract that would be unexecutable as specified. init-team.md:157 requires every agent to consult history-librarian; :204 forbids granting team agents the librarian MCP tools; and five of this repo-s six agents have explicit tool lists with no Task/Agent tool, so they cannot invoke ANY agent. Writing the block verbatim would put an instruction into five lanes that none can execute - the documented-thing-nothing-enacts shape 0.7.0 paid for. The rule contains the test that resolves it against itself: init-team.md:206 says the work-log tool is granted directly because it \"has no librarian to consult in its place, which is exactly why it is granted directly\", which is exactly these five lanes position with respect to the librarian.",
+        "DECIDED by the user: honest escalation clause. All six agents get the contract; a lane with no way to invoke an agent hands the history/session question back to its dispatcher marked unanswered rather than re-deriving it from git log or a transcript. Mirrors the two precedents already in the same block (no Bash = no ledger CLI, so the MCP tool is granted; no Bash = no verification, so it is handed back and said so). Rejected: granting teamme_librarian_query to five lanes (needs amending the plugin-s own line 204, not just this repo-s roster) and orchestrator-only (concentrates the contract in teamme-tech-lead, whose viability is open question T12).",
+        "Wrote the librarian consultation contract into this repo's own roster, as a common \"## Consulting the librarian\" H2 block placed identically in all six .claude/agents/*.md files, between shared guardrail 10 and the Work log section. Covers: history questions (consult history-librarian, carry SHAs, never re-derive from git log); conversation questions (second index, session id + mark point, locate-then-read order compaction/search_turns then window, window the only one returning text); around questions (around_path, around_commit, around_task, timeline) with the load-bearing vocabulary rule - \"active while\"/\"around\", never \"implements\"/\"caused\"/\"fixes\", justified by the measured 3-of-18 task-id citation rate; the honest escalation clause (five of six lanes have no Task and no librarian MCP tools, so they hand the question back marked unanswered and never re-derive it, stated as the third instance of the no-Bash shape alongside the work-log MCP tool and validate.sh handed back unrun); the same answer when an index is disabled via teamme_librarian_configure; the three limits (thinking blocks empty, tool output not indexed so \"not found\" means not found in what was said, subagent threads are the bulk of a session) plus that all indexes describe the past; the librarian-gate.py git push ask (approving proceeds, refreshing is the librarian's job, never edit .claude/librarians/ to quiet it); and that it is an instruction, not a gate. Query names verified against the live source rather than memory: store.QUERY_NAMES, sessions.QUERY_NAMES, cross.QUERY_NAMES. No tools: line changed, no frontmatter touched, no placeholder added, nothing under plugins/ touched. Also updated .claude/agents/README.md's Shared guardrails section with a \"Consulting the librarian\" subsection: a three-row question/ask-for/carry-through table, the escalation clause, and an explicit warning that history-librarian must never be added to the roster table because preflight.py roster fails a row naming an agent no file in .claude/agents/ owns - verified by reading _roster_check_readme, which selects the table whose first column names the most agents, so the new table (zero agent names in column 1) cannot displace the roster table. validate.sh NOT run - this lane has no Bash. Stale findings reported separately in the hand-back, not fixed, since they are unbriefed: guardrail item 5 in all six files says the Stop reminder stamps against \"updated\" where CLAUDE.md line 402 and CONTRIBUTING.md line 143 both say status_changed and never updated; hook-engineer says \"These five scripts\" and tables five hooks where REQUIRED_HOOKS now has seven; tech-lead's lane table has drifted from the roster README on two rows; validation-engineer's known-gaps list still claims teamme_intake_phase is not gate-tested and route-to-intake.py is not exercised, both closed by T17/T20; prompt-author claims nothing checks .claude/agents/*.md at all, now false given preflight.py roster.",
+        "FOLD-IN (same six files, factual error, would mean editing them twice): all six .claude/agents/*.md state design invariant #2 BACKWARDS - \"The reminder stamps itself against the task-s updated time\" - where CLAUDE.md and CONTRIBUTING.md both say status_changed, NEVER updated. Verified: 6 of 6 files carry the inverted form. The sentence describes precisely the bug that stamping against updated would cause, so an agent reading it would believe a note re-arms the Stop nag. The text exists only in .claude/agents/ with no counterpart under plugins/, so fixing it here ships nothing and strands nothing. Sent back to the same lane in the same round.",
+        "Folded in the coordinator's approved correction of finding 1, same round, same six files. Shared guardrail item 5 in all six .claude/agents/*.md files stated the anti-loop invariant backwards - \"The reminder stamps itself against the task's updated time\" - which is not merely a wrong field name but a description of exactly the bug that stamping against updated would cause: an agent reading it would conclude that recording a note re-arms the Stop nag, the precise trap design invariant 2 exists to prevent, taught by the guardrail paragraph meant to prevent it. Replaced with the clause CLAUDE.md line 402 and CONTRIBUTING.md line 143 already agree on: stamps against the task's status_changed time, never updated, only a real status transition re-arms it. Kept strictly to that clause; the surrounding item, its number and the rest of the list are unreshaped, verified by reading item 5 in context and confirming items 4, 6 and 7 are intact around it. Confirmed byte-identical across all six the same way the librarian block was confirmed: a multiline grep for the exact two-line replacement including its three-space continuation indent returns exactly 1 per file across 6 files, and a repo-wide grep for the old wording \"task's updated time\" now returns no matches anywhere, so no copy was missed and none survives under plugins/ either. This text existed only in .claude/agents/ - it has no counterpart in the templates - so fixing it here strands nothing and ships nothing. validate.sh still NOT run: this lane has no Bash. Findings 2 through 5 left untouched this round as instructed, queued as T56, T57 and T58.",
+        "docs-writer pass (no Bash, validate.sh NOT run - hand back unrun). Edited CLAUDE.md only (CONTRIBUTING.md and .claude/agents/README.md reviewed, found nothing wrong, left untouched - CONTRIBUTING's preflight-roster paragraph already accurately scopes what roster checks, and README.md's new \"Consulting the librarian\" subsection and the six agent files' blocks are byte-identical and correct). Two edits to CLAUDE.md's Known gaps: (1) the stale T24 bullet (\"predates the preflight block entirely\") replaced with a Closed entry naming what was actually wrong and fixed - the release-call bug across 3 of 6 step-2b dispositions - verified against the current .claude/commands/intake.md and against T24's own worklog note rather than assumed; (2) new bullet \"`.claude/` is a filled copy of what plugins/teamme/ generates, and validate.sh never opens it\" naming preflight.py roster's actual (narrower) scope - roster identity, not copy prose - with T24/T50/T51 as closed instances and T56/T57/T58 named as open/P2/undetailed per brief. Judgement call: did not add the librarian-consultation contract to CLAUDE.md itself. It already discusses history-librarian and the generated-roster instruction path (the \"team agents are generated...\" decision entry, and the intended-caller-convention gap) without ever restating the contract's own wording; the contract's one correct home is .claude/agents/README.md's new \"Consulting the librarian\" section plus the six agent files, and the new Known gaps entry points there by name instead of copying it - same reasoning as T46/T50's declines to duplicate a fact that lives correctly elsewhere. No version bump, no CHANGELOG.md touch, as briefed.",
+        "The docs lane found a SIXTH stale claim while verifying the fifth: CLAUDE.md-s own T24 Known-gaps entry still said this repo-s .claude/commands/intake.md \"predates the preflight block entirely\", which is false - it carries the Preflight section and state: handling verbatim. Rather than delete a false claim it replaced the entry with a Closed: T24 record naming what was ACTUALLY wrong (three of step 2b-s six dispositions ending with no intake-state.py release, write-locking the repo until the one-hour timeout), verified against T24-s own worklog note. My grep then flagged the phrase as surviving; it was matching the correction-s own narration of what the entry used to say. My error, third time today a grep of mine has been the imprecise instrument.",
+        "The docs lane declined to put the librarian contract into CLAUDE.md, applying the T46/T50 reasoning it had used twice before: the contract lives correctly in six agent files and .claude/agents/README.md, so CLAUDE.md gets a pointer by name, never a second copy that would drift. It also left CONTRIBUTING.md alone on the grounds that \"is .claude/ drifting from its template\" is a CLAUDE.md-level layout fact, not a how-to-run-the-checks fact for a human sending a PR - and that adding it there would be a second, weaker copy of the same gap."
       ],
       "blocked_on": "",
       "dispatched_to": "",
       "created": "2026-09-25T12:16:30+00:00",
-      "updated": "2026-09-25T12:16:31+00:00",
-      "status_changed": "2026-09-25T12:16:30+00:00"
+      "updated": "2026-09-25T15:18:01+00:00",
+      "status_changed": "2026-09-25T15:18:01+00:00"
     },
     {
       "id": "T52",
@@ -1014,6 +1022,63 @@
       "created": "2026-09-25T12:22:14+00:00",
       "updated": "2026-09-25T12:22:14+00:00",
       "status_changed": "2026-09-25T12:22:14+00:00"
+    },
+    {
+      "id": "T55",
+      "title": "The intake phase lock expires while intake is blocked on the user's own answer - the one wait step 4 is designed to do - so the grounding guarantee lapses silently mid-flow",
+      "status": "open",
+      "priority": "P2",
+      "lane": "teamme-hook-engineer",
+      "notes": [
+        "Hit live during T51. intake-state.py begin T51 succeeded, then step 4 asked the user a genuine fork through the interactive question tool, and by the time the answer came back intake-state.py approve exited 3 with \"nothing is grounding (phase idle)\" and show reported expired: true. STALE_SECONDS = 3600 at intake-state.py:34.",
+        "Not a fail-open bug - the expiry did exactly what CLAUDE.md invariant #1 says it must, and no repo was left write-locked. The gap is that the TTL cannot distinguish a crashed session from one waiting on the human it just asked. Design question, not a defect to patch blindly: refreshing the clock on a legitimate transition would weaken the crash guarantee the timeout exists for, so the options (touch the lock when intake asks; a longer TTL while a question is outstanding; re-begin transparently on approve-after-expiry) all trade against each other and need deciding, not guessing."
+      ],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-25T15:03:53+00:00",
+      "updated": "2026-09-25T15:03:53+00:00",
+      "status_changed": "2026-09-25T15:03:53+00:00"
+    },
+    {
+      "id": "T56",
+      "title": "teamme-hook-engineer.md is two hooks behind: it says 'these five scripts' and its table omits preflight.py and librarian-gate.py, while REQUIRED_HOOKS has seven - and its ownership line omits plugins/teamme/server/**/*.py",
+      "status": "open",
+      "priority": "P2",
+      "lane": "teamme-prompt-author",
+      "notes": [],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-25T15:10:57+00:00",
+      "updated": "2026-09-25T15:10:57+00:00",
+      "status_changed": "2026-09-25T15:10:57+00:00"
+    },
+    {
+      "id": "T57",
+      "title": "teamme-tech-lead.md carries a FIFTH copy of the roster ownership map that nothing checks, and two of its rows have already drifted",
+      "status": "open",
+      "priority": "P2",
+      "lane": "teamme-prompt-author",
+      "notes": [
+        "CLAUDE.md calls a roster four copies and preflight.py roster checks those four - agent files, the README table, .claude/commands/intake.md, and task lane fields. teamme-tech-lead.md-s own lane table is a fifth nobody checks. Already wrong in two rows: teamme-prompt-author is shown owning only commands/*.md and templates/intake.md, missing plugins/teamme/agents/*.md and this repo-s own .claude/ copies - i.e. missing exactly the files T51 changed; and teamme-hook-engineer is missing plugins/teamme/server/**/*.py. Decide whether to fix the copy or remove it in favour of the four the check already covers."
+      ],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-25T15:10:57+00:00",
+      "updated": "2026-09-25T15:10:57+00:00",
+      "status_changed": "2026-09-25T15:10:57+00:00"
+    },
+    {
+      "id": "T58",
+      "title": "teamme-validation-engineer.md and teamme-prompt-author.md each describe coverage that has since changed: two gaps listed as open were closed by T17/T20, a four-check summary describes a ~96-section suite, and 'nothing checks .claude/agents or .claude/commands/intake.md at all' is now false since preflight.py roster",
+      "status": "open",
+      "priority": "P2",
+      "lane": "teamme-prompt-author",
+      "notes": [],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-25T15:10:57+00:00",
+      "updated": "2026-09-25T15:10:57+00:00",
+      "status_changed": "2026-09-25T15:10:57+00:00"
     }
   ]
 }
