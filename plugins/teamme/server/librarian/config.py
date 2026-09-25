@@ -26,7 +26,9 @@ Two properties matter more than anything this file does:
    not ours to delete.
 
 The `.db` is a separate matter and is not a choice: it is always ignored,
-whatever `commit_record` says, because a binary index cannot be merged.
+whatever `commit_record` says, because a binary index cannot be merged. So is
+`.claude/librarians/sessions/`, for a stronger reason - it indexes conversation
+text, and `commit_record` must not be able to put that in a repository.
 
 Stdlib only.
 """
@@ -39,7 +41,7 @@ from . import store
 
 # Known to THIS release. Callers that have their own list (the MCP server does)
 # pass it in; this default only exists so the module is usable on its own.
-KNOWN_LIBRARIANS = ("history",)
+KNOWN_LIBRARIANS = ("history", "sessions")
 
 DEFAULT_ENABLED = True
 DEFAULT_COMMIT_RECORD = False
@@ -51,12 +53,32 @@ CONFIG_NAME = "config.json"
 GITIGNORE_BEGIN = "# teamme librarians - managed by the teamme_librarian_configure tool"
 GITIGNORE_END = "# end teamme librarians"
 
-# Always ignored, regardless of commit_record: a SQLite file is binary and
-# unmergeable, so two people indexing different commits produce irreconcilable
-# files. Not a fork the user gets to take.
+# Always ignored, regardless of commit_record - two entries, for two different
+# reasons, neither of them a fork the user gets to take:
+#
+#   the .db     a SQLite file is binary and unmergeable, so two people indexing
+#               different commits produce irreconcilable files.
+#   sessions/   the session librarian indexes CONVERSATIONS. A transcript holds
+#               everything anyone typed, including a secret pasted in by
+#               accident, and an index of one is a second copy of that. It is
+#               machine-local by construction and commit_record does not reach
+#               it. The whole directory is ignored rather than a file inside it,
+#               so nothing a later release adds under there can leak by being
+#               forgotten here.
 DB_IGNORE = ".claude/librarians/index.db"
+SESSIONS_IGNORE = ".claude/librarians/sessions/"
+ALWAYS_IGNORED = (DB_IGNORE, SESSIONS_IGNORE)
 # The append-only record. Ignored only when commit_record is false.
 RECORD_IGNORE = ".claude/librarians/*/commits.jsonl"
+
+IGNORE_REASONS = {
+    DB_IGNORE: ("# the SQLite index is derived from the record and rebuildable from it; binary, "
+                "so never committed whatever commit_record says"),
+    SESSIONS_IGNORE: ("# the session index holds conversation text; machine-local always, and "
+                      "commit_record does not apply to it"),
+    RECORD_IGNORE: ("# commit_record is false: the librarian record stays out of git. "
+                    "Flip it with teamme_librarian_configure, not by hand"),
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -299,7 +321,7 @@ def apply_gitignore(project_dir, commit_record: bool) -> dict:
         return result
 
     existing = {ln.strip() for ln in kept}
-    wanted = [DB_IGNORE] if DB_IGNORE not in existing else []
+    wanted = [entry for entry in ALWAYS_IGNORED if entry not in existing]
     if not commit_record and RECORD_IGNORE not in existing:
         wanted.append(RECORD_IGNORE)
 
@@ -307,10 +329,11 @@ def apply_gitignore(project_dir, commit_record: bool) -> dict:
     # Silence here would be the worst outcome of the never-delete-a-line-you-did-
     # not-write rule: commit_record true, the record still ignored, and no reason
     # given anywhere.
-    if DB_IGNORE in existing:
-        result["notes"].append(
-            f"{DB_IGNORE} is already ignored by a line outside teamme's block; left as it is "
-            f"rather than repeated inside it")
+    for entry in ALWAYS_IGNORED:
+        if entry in existing:
+            result["notes"].append(
+                f"{entry} is already ignored by a line outside teamme's block; left as it is "
+                f"rather than repeated inside it")
     if RECORD_IGNORE in existing:
         result["notes"].append(
             (f"the record is STILL IGNORED by `{RECORD_IGNORE}`, a line outside teamme's block. "
@@ -326,12 +349,7 @@ def apply_gitignore(project_dir, commit_record: bool) -> dict:
     if wanted:
         block = [GITIGNORE_BEGIN]
         for entry in wanted:
-            if entry == DB_IGNORE:
-                block.append("# the SQLite index is derived from the record and rebuildable from "
-                             "it; binary, so never committed whatever commit_record says")
-            else:
-                block.append("# commit_record is false: the librarian record stays out of git. "
-                             "Flip it with teamme_librarian_configure, not by hand")
+            block.append(IGNORE_REASONS.get(entry, "# managed by teamme"))
             block.append(entry)
         block.append(GITIGNORE_END)
         new_lines = kept + ([""] if kept else []) + block

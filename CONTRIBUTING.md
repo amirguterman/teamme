@@ -20,7 +20,12 @@ from the plugin's copy alone unless called with `force=true`. It also drives nin
 librarian tools over throwaway git fixtures — rebuild-from-text against ground truth read straight
 from `git`, the unreachable-marker fallback, a corrupt `index.db` being discarded rather than raised,
 concurrent refreshes, and hostile commit content — never against this repo's own
-`.claude/librarians/`. CI runs exactly this. Please make it pass before opening a pull request.
+`.claude/librarians/`. It drives a further six sections against the session librarian, using synthetic
+transcripts under a fixture's own fake `$CLAUDE_CONFIG_DIR/projects/<slug>/` — never this repo's own
+conversations — including a real bug an earlier version of this coverage found: a record longer than
+`MAX_LINE_BYTES` came back from `readline()` without a trailing newline and was mistaken for a live
+tail, permanently parking the byte offset in front of it. CI runs exactly this. Please make it pass
+before opening a pull request.
 
 `server/` is compiled by walking `find -path '*/server/*' -name '*.py'`, not a shallow
 `plugins/*/server/*.py` glob: the glob only ever expanded to the top-level `teamme_mcp.py` and would
@@ -44,6 +49,11 @@ plugins/teamme/
   server/teamme_mcp.py            stdio JSON-RPC MCP server
   server/librarian/*.py           librarian substrate: append-only JSONL + a disposable SQLite index,
                                    an incremental git indexer - not copied into a project
+  server/librarian/transcripts.py the session librarian's harness-layout assumption (where Claude Code
+                                   writes session transcripts, and what a line looks like) - see
+                                   Rules for the hook scripts below, which this module follows too
+  server/librarian/sessions.py    the session librarian: lazy, incremental-by-byte-offset index over
+                                   those transcripts - no hook, no JSONL record, not copied into a project
   server/librarian/config.py      per-project librarian settings (enable/disable, commit_record),
                                    enacted into .gitignore - owned by the MCP server, never hand-edited
   templates/                      scaffolding copied into a target project
@@ -73,12 +83,22 @@ These run on other people's machines, inside their editing loop. They must:
   the difference could be a deliberate local edit; only `force=true` overwrites it. Never call a
   differing hook "outdated" or "wrong" in output or docs — "differs from the plugin's copy" is what
   the check actually knows.
-- **Keep the harness-layout assumption in one fenced place.** `preflight.py` locates the plugin's own
-  templates via `$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json` as a last resort, and that is
-  teamme's one assumption about Claude Code's own on-disk layout — contained between one banner
-  comment and the next so it is obvious where to fix it if the harness changes. Read it live on every
-  check, never capture it at install time (see `CLAUDE.md`'s "Decisions already made" for why), and do
-  not grow a second harness-shaped assumption anywhere else.
+- **Keep every harness-layout assumption in its own fenced place.** teamme makes exactly two
+  assumptions about Claude Code's own on-disk layout, and both are contained the same way. `preflight.py`
+  locates the plugin's own templates via `$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json` as a last
+  resort; `server/librarian/transcripts.py` locates and parses session transcripts under
+  `$CLAUDE_CONFIG_DIR/projects/<slug>/`. Each sits between one banner comment and the next in its own
+  file, so it is obvious where to fix it if the harness changes. Read it live on every check, never
+  capture it at install time (see `CLAUDE.md`'s "Decisions already made" for why) — and if a third one
+  turns out to be needed, give it the same fenced, single-file treatment rather than letting it spread.
+- **A watch-fail against code outside the lane's own file must name the mechanism.** "Break it, watch
+  the assertion fail, revert it" only proves anything if the break happens somewhere safe to mutate. When
+  the code under test lives in a file the lane does not own, or that another lane may be editing
+  concurrently, breaking it in place is not safe — say instead which of a scratch copy, a monkeypatched
+  import path, or an injected fixture the break must happen against. Do not rely on remembering to say
+  this per task; it is a standing rule because a brief that says "watch it fail" and "only touch
+  `scripts/validate.sh`" in the same breath is self-contradicting whenever the assertion targets another
+  lane's file.
 
 ## Rules for the MCP server
 

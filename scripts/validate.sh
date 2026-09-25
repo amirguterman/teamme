@@ -2355,5 +2355,629 @@ print("  ok: unknown path, damped-away path, genuinely-alone path and a young in
       "distinct, non-colliding answers")
 PY
 
+echo "== librarian renderer: changes_with's caveats and evidence base survive into RENDERED text, and a weak row visibly differs from a strong one (over the real pipe) [watch-fail] =="
+# Everything up to here compares store.query()'s row data directly - correct
+# for ground truth, but it never once looks at the prose _render_cochange
+# produces, which is the text a librarian agent actually reads. Reuses the
+# LIB_DAMP fixture (a.py/a_test.py share 19 commits - strong; a.py/junk1.py
+# share exactly 1 once max_files is raised - weak) so no new git history is
+# needed. Caught failing first by commenting out _render_caveats/_render_damping's
+# call sites in _render_cochange and confirming this block reported the exact
+# missing strings, then restoring them.
+python3 - "$LIBPATH" "$LIB_DAMP" <<'PY'
+import json, subprocess, sys
+
+libpath, proj = sys.argv[1], sys.argv[2]
+server = libpath + "/teamme_mcp.py"
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+def call_text(resp):
+    result = resp.get("result") or {}
+    return result, "".join(c.get("text", "") for c in result.get("content") or [])
+
+
+def row_line(text, needle):
+    return next((ln for ln in text.splitlines() if needle in ln), None)
+
+
+proc = subprocess.Popen(
+    ["python3", server],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_librarian_refresh", "arguments": {"project_dir": proj}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"refresh of the shared damping fixture over the pipe reported an error: {text}")
+
+    # the strong row, at the default cap: a.py / a_test.py, 19 shared commits
+    send(proc, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {"name": "teamme_librarian_query",
+                           "arguments": {"project_dir": proj, "query": "changes_with", "path": "a.py"}}})
+    result, text_default = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"changes_with(a.py) over the pipe reported an error: {text_default}")
+
+    # the load-bearing honesty of the feature: a row rendered without its
+    # denominators is exactly the bare ranking this design refuses to produce.
+    must_contain = [
+        "correlation, not a call graph",                  # header caveat, inline
+        "evidence base:",                                  # the damping block
+        "commit(s) considered of",
+        "skipped as too broad",
+        "reading this:",                                   # the caveats block header
+        "CORRELATION, not a call graph",                   # caveat 1, verbatim
+        "a row is marked `weak`",                           # caveat 3, verbatim (partial)
+        "considered commit(s) of its own; overlap",         # per-row evidence, verbatim
+    ]
+    missing = [m for m in must_contain if m not in text_default]
+    if missing:
+        sys.exit(f"changes_with's rendered text is missing load-bearing caveat/evidence text: "
+                  f"{missing}\n--- full text ---\n{text_default}")
+    strong_line = row_line(text_default, "a_test.py")
+    if strong_line is None:
+        sys.exit(f"a_test.py did not appear as a partner at the default cap: {text_default!r}")
+    if "WEAK" in strong_line:
+        sys.exit(f"a_test.py (19 shared commits) was wrongly rendered WEAK: {strong_line!r}")
+
+    # the weak row: raise max_files so junk1.py (1 shared commit) surfaces
+    send(proc, {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                "params": {"name": "teamme_librarian_query",
+                           "arguments": {"project_dir": proj, "query": "changes_with", "path": "a.py",
+                                         "max_files": 40}}})
+    result, text_raised = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"changes_with(a.py, max_files=40) over the pipe reported an error: {text_raised}")
+    weak_line = row_line(text_raised, "junk1.py")
+    if weak_line is None or "WEAK - a single shared commit" not in weak_line:
+        sys.exit(f"junk1.py (1 shared commit) was not rendered WEAK: {weak_line!r}")
+    strong_line_raised = row_line(text_raised, "a_test.py")
+    if strong_line_raised is None or "WEAK" in strong_line_raised:
+        sys.exit(f"a_test.py (19 shared commits) was wrongly rendered WEAK once a weak partner "
+                  f"also appeared: {strong_line_raised!r}")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+print("  ok: changes_with's rendered text carries its caveats and evidence base, and visibly "
+      "marks a 1-shared-commit row WEAK while leaving a 19-shared-commit row unmarked")
+PY
+
+echo "== librarian renderer: hotspots renders over the real pipe (previously unasserted) =="
+python3 - "$LIBPATH" "$LIB_DAMP" <<'PY'
+import json, subprocess, sys
+
+libpath, proj = sys.argv[1], sys.argv[2]
+server = libpath + "/teamme_mcp.py"
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+def call_text(resp):
+    result = resp.get("result") or {}
+    return result, "".join(c.get("text", "") for c in result.get("content") or [])
+
+
+proc = subprocess.Popen(
+    ["python3", server],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_librarian_query",
+                           "arguments": {"project_dir": proj, "query": "hotspots"}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"hotspots over the pipe reported an error: {text}")
+    if "most-changed paths in the repository - how often, not how important" not in text:
+        sys.exit(f"hotspots' header did not render as expected: {text!r}")
+    if "a_test.py" not in text or "19x" not in text:
+        sys.exit(f"hotspots did not render a_test.py with its 19-commit count: {text!r}")
+    if "evidence base:" not in text:
+        sys.exit(f"hotspots did not render its damping evidence base: {text!r}")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+print("  ok: hotspots renders a header, row counts and its evidence base over the real pipe")
+PY
+
+echo "== sessions librarian: fixtures live under a fresh subdirectory of the throwaway project, with their own fake \$CLAUDE_CONFIG_DIR/projects/<slug>/ - never this repo's own transcripts, which are private conversation =="
+sess_slug_fixture() {
+  # Writes a fake transcript directory for project dir $1 under config dir $2,
+  # printing nothing; callers build the .jsonl themselves. Kept as a helper
+  # rather than duplicated python in every block below.
+  mkdir -p "$1"
+}
+
+echo "== sessions: [watch-fail] an oversized record (over MAX_LINE_BYTES) is skipped but COUNTED, offset advances past it - not parked in front of it forever =="
+SESS_OVER="$PWD/sess-oversized"
+SESS_OVER_CFG="$PWD/sess-oversized-cfg"
+sess_slug_fixture "$SESS_OVER" "$SESS_OVER_CFG"
+# The bug this catches: readline(n) caps at n bytes, so a record bigger than
+# MAX_LINE_BYTES comes back without a trailing newline and looks exactly like a
+# live (still-being-written) tail. Mistaking it for one means the byte offset
+# never advances past it - PERMANENTLY - because every future refresh reads the
+# same oversized bytes again and stops in the same place. Watched failing first
+# below by forcing the "still being written" branch to fire unconditionally,
+# instead of only when the read stopped short of the size cap.
+python3 - "$LIBPATH" "$SESS_OVER" "$SESS_OVER_CFG" <<'PY'
+import json, os, pathlib, sys
+
+libpath, proj, cfgdir = sys.argv[1], sys.argv[2], sys.argv[3]
+sys.path.insert(0, libpath)
+from librarian import transcripts, sessions  # noqa
+
+pathlib.Path(proj).mkdir(parents=True, exist_ok=True)
+os.environ["CLAUDE_CONFIG_DIR"] = cfgdir
+slug = transcripts.project_slug(proj)
+sess_dir = pathlib.Path(cfgdir) / "projects" / slug
+sess_dir.mkdir(parents=True, exist_ok=True)
+transcript = sess_dir / "session-oversized.jsonl"
+
+
+def rec_user(text, uuid, ts):
+    return json.dumps({"type": "user", "uuid": uuid, "timestamp": ts,
+                        "sessionId": "session-oversized", "promptSource": "typed",
+                        "message": {"content": text}}, ensure_ascii=False)
+
+
+big_text = "x" * (transcripts.MAX_LINE_BYTES + 1000)
+line1 = rec_user(big_text, "u1", "2026-01-01T00:00:00Z")
+line2 = rec_user("hello after the giant record", "u2", "2026-01-01T00:00:01Z")
+with open(transcript, "wb") as fh:
+    fh.write((line1 + "\n").encode("utf-8"))
+    fh.write((line2 + "\n").encode("utf-8"))
+file_size = transcript.stat().st_size
+
+r = sessions.index(proj, full=True)
+if not r.get("ok"):
+    sys.exit(f"index failed: {r}")
+if r.get("turns_added") != 1:
+    sys.exit(f"expected exactly 1 turn added (oversized record skipped, not indexed): {r}")
+notes_text = " ".join(r.get("notes") or [])
+if "too large" not in notes_text:
+    sys.exit(f"the oversized-record note was not reported: {r}")
+
+conn, _ = sessions.connect_or_reset(proj)
+row = conn.execute("SELECT bytes_indexed FROM sessions WHERE session_id = ?",
+                    ("session-oversized",)).fetchone()
+conn.close()
+if row is None:
+    sys.exit("session was not recorded in the index at all")
+if row["bytes_indexed"] != file_size:
+    sys.exit(f"offset did not advance past the oversized record: bytes_indexed={row['bytes_indexed']}, "
+              f"file size={file_size} - this is the permanent-wedge bug")
+
+r2 = sessions.index(proj)
+if r2.get("turns_added"):
+    sys.exit(f"a second refresh found new turns after the file was fully consumed: {r2}")
+
+print(f"  ok: oversized record ({len(big_text)} bytes) skipped-but-counted, offset advanced past it "
+      f"({row['bytes_indexed']} == {file_size} file bytes), the following turn was indexed, a second "
+      f"refresh found nothing new")
+PY
+
+echo "== sessions: [watch-fail] a partial (no-newline) tail line is left unconsumed, and completed whole on the next refresh =="
+SESS_PARTIAL="$PWD/sess-partial"
+SESS_PARTIAL_CFG="$PWD/sess-partial-cfg"
+sess_slug_fixture "$SESS_PARTIAL" "$SESS_PARTIAL_CFG"
+# Getting this wrong either loses a turn (consuming the incomplete bytes, then
+# skipping past the real content once the write finishes) or double-counts one
+# (re-reading from the wrong offset). Watched failing first below by disabling
+# the "no trailing newline -> do not consume" branch entirely, which produced
+# exactly the premature-consume failure this test exists to catch.
+python3 - "$LIBPATH" "$SESS_PARTIAL" "$SESS_PARTIAL_CFG" <<'PY'
+import json, os, pathlib, sys
+
+libpath, proj, cfgdir = sys.argv[1], sys.argv[2], sys.argv[3]
+sys.path.insert(0, libpath)
+from librarian import transcripts, sessions  # noqa
+
+pathlib.Path(proj).mkdir(parents=True, exist_ok=True)
+os.environ["CLAUDE_CONFIG_DIR"] = cfgdir
+slug = transcripts.project_slug(proj)
+sess_dir = pathlib.Path(cfgdir) / "projects" / slug
+sess_dir.mkdir(parents=True, exist_ok=True)
+transcript = sess_dir / "session-partial.jsonl"
+
+
+def rec_user(text, uuid, ts):
+    return json.dumps({"type": "user", "uuid": uuid, "timestamp": ts,
+                        "sessionId": "session-partial", "promptSource": "typed",
+                        "message": {"content": text}}, ensure_ascii=False)
+
+
+complete1 = rec_user("first complete turn", "u1", "2026-01-01T00:00:00Z")
+complete2 = rec_user("second complete turn", "u2", "2026-01-01T00:00:01Z")
+partial = rec_user("a turn still being typed", "u3", "2026-01-01T00:00:02Z")
+with open(transcript, "wb") as fh:
+    fh.write((complete1 + "\n").encode("utf-8"))
+    fh.write((complete2 + "\n").encode("utf-8"))
+    fh.write(partial.encode("utf-8"))  # deliberately no trailing newline
+
+size_before = transcript.stat().st_size
+expected_offset = len((complete1 + "\n" + complete2 + "\n").encode("utf-8"))
+
+r = sessions.index(proj, full=True)
+if not r.get("ok"):
+    sys.exit(f"index failed: {r}")
+if r.get("turns_added") != 2:
+    sys.exit(f"expected exactly the 2 complete turns, the partial tail must be left unconsumed: {r}")
+if "still being written" not in " ".join(r.get("notes") or []):
+    sys.exit(f"the partial-tail note was not reported: {r}")
+
+conn, _ = sessions.connect_or_reset(proj)
+row = conn.execute("SELECT bytes_indexed FROM sessions WHERE session_id = ?",
+                    ("session-partial",)).fetchone()
+conn.close()
+if row["bytes_indexed"] != expected_offset:
+    sys.exit(f"byte offset moved past the incomplete line: bytes_indexed={row['bytes_indexed']}, "
+              f"expected {expected_offset} (only the two complete lines)")
+if row["bytes_indexed"] >= size_before:
+    sys.exit("offset was not left short of the file - the partial line was wrongly consumed")
+
+r2 = sessions.index(proj)
+if r2.get("turns_added"):
+    sys.exit(f"a second refresh over an unchanged partial tail produced new turns out of nowhere: {r2}")
+
+with open(transcript, "ab") as fh:
+    fh.write(b"\n")
+    fh.write((rec_user("fourth turn, after completion", "u4", "2026-01-01T00:00:03Z") + "\n")
+              .encode("utf-8"))
+
+r3 = sessions.index(proj)
+if not r3.get("ok") or r3.get("turns_added") != 2:
+    sys.exit(f"completing the partial line plus one new turn should add exactly 2 turns: {r3}")
+
+conn, _ = sessions.connect_or_reset(proj)
+final_size = transcript.stat().st_size
+row2 = conn.execute("SELECT bytes_indexed, turns FROM sessions WHERE session_id = ?",
+                     ("session-partial",)).fetchone()
+conn.close()
+if row2["bytes_indexed"] != final_size:
+    sys.exit(f"offset did not reach end of file after completion: {row2['bytes_indexed']} != {final_size}")
+if row2["turns"] != 4:
+    sys.exit(f"expected 4 total turns after completion (no loss, no double-count), got {row2['turns']}")
+
+print(f"  ok: partial (no-newline) tail left unconsumed at offset {expected_offset} (the two complete "
+      f"lines only), and completed on the next refresh with no loss or double-count (4 total turns)")
+PY
+
+echo "== sessions: [watch-fail] a transcript replaced with different content at the SAME SIZE triggers a full reindex, not a stale-offset resume =="
+SESS_FP="$PWD/sess-fingerprint"
+SESS_FP_CFG="$PWD/sess-fingerprint-cfg"
+sess_slug_fixture "$SESS_FP" "$SESS_FP_CFG"
+# Same structural lesson as history's unreachable-marker case: a size check
+# alone cannot see this, because the replacement is deliberately the same
+# size. Watched failing first below by disabling the fingerprint-mismatch
+# branch, which produced the silent, permanent loss this test exists to catch
+# - the replacement was treated as "nothing new" and its content never
+# indexed at all, invisibly.
+python3 - "$LIBPATH" "$SESS_FP" "$SESS_FP_CFG" <<'PY'
+import json, os, pathlib, sys
+
+libpath, proj, cfgdir = sys.argv[1], sys.argv[2], sys.argv[3]
+sys.path.insert(0, libpath)
+from librarian import transcripts, sessions  # noqa
+
+pathlib.Path(proj).mkdir(parents=True, exist_ok=True)
+os.environ["CLAUDE_CONFIG_DIR"] = cfgdir
+slug = transcripts.project_slug(proj)
+sess_dir = pathlib.Path(cfgdir) / "projects" / slug
+sess_dir.mkdir(parents=True, exist_ok=True)
+transcript = sess_dir / "session-replaced.jsonl"
+
+
+def rec_user(text, uuid, ts):
+    return json.dumps({"type": "user", "uuid": uuid, "timestamp": ts,
+                        "sessionId": "session-replaced", "promptSource": "typed",
+                        "message": {"content": text}}, ensure_ascii=False)
+
+
+def rec_assistant(text, uuid, ts):
+    return json.dumps({"type": "assistant", "uuid": uuid, "timestamp": ts,
+                        "sessionId": "session-replaced",
+                        "message": {"content": text, "model": "claude-test"}}, ensure_ascii=False)
+
+
+def build(marker, pad=0):
+    lines = [
+        rec_user(f"prompt about {marker}", f"u-{marker}", "2026-01-01T00:00:00Z"),
+        rec_assistant("answer " + ("z" * pad) + f" mentioning {marker}", f"a-{marker}", "2026-01-01T00:00:01Z"),
+    ]
+    return "\n".join(lines) + "\n"
+
+
+old_text = build("OLDMARKERXYZ")
+new_text = build("NEWMARKERXYZ")
+diff = len(old_text.encode("utf-8")) - len(new_text.encode("utf-8"))
+if diff > 0:
+    new_text = build("NEWMARKERXYZ", pad=diff)
+elif diff < 0:
+    old_text = build("OLDMARKERXYZ", pad=-diff)
+old_bytes, new_bytes = old_text.encode("utf-8"), new_text.encode("utf-8")
+if len(old_bytes) != len(new_bytes):
+    sys.exit(f"fixture bug: could not equalize sizes ({len(old_bytes)} vs {len(new_bytes)})")
+
+transcript.write_bytes(old_bytes)
+r1 = sessions.index(proj, full=True)
+if not r1.get("ok") or r1.get("turns_added") != 2:
+    sys.exit(f"initial index of the old content failed: {r1}")
+
+conn, _ = sessions.connect_or_reset(proj)
+old_row = conn.execute("SELECT fingerprint FROM sessions WHERE session_id = ?",
+                        ("session-replaced",)).fetchone()
+conn.close()
+old_fp = old_row["fingerprint"]
+
+transcript.write_bytes(new_bytes)
+if transcript.stat().st_size != len(old_bytes):
+    sys.exit("fixture bug: replacement file is not the same size as the original")
+
+r2 = sessions.index(proj)
+if not r2.get("ok"):
+    sys.exit(f"index after same-size replacement failed: {r2}")
+if "reindexed in full" not in " ".join(r2.get("notes") or []):
+    sys.exit(f"a same-size content replacement was not reported as a full reindex: {r2}")
+if r2.get("turns_added") != 2:
+    sys.exit(f"expected the full new content (2 turns) after a fingerprint mismatch, got: {r2}")
+
+conn, _ = sessions.connect_or_reset(proj)
+new_row = conn.execute("SELECT bytes_indexed, fingerprint, turns FROM sessions WHERE session_id = ?",
+                        ("session-replaced",)).fetchone()
+q_old = sessions.query(conn, "search_turns", {"text": "OLDMARKERXYZ"}, proj)
+q_new = sessions.query(conn, "search_turns", {"text": "NEWMARKERXYZ"}, proj)
+conn.close()
+
+if new_row["fingerprint"] == old_fp:
+    sys.exit("fingerprint did not change even though the file's first record did")
+if new_row["turns"] != 2:
+    sys.exit(f"turns were not replaced cleanly (expected 2, no doubling), got {new_row['turns']}")
+if q_old["count"] != 0:
+    sys.exit(f"the OLD content is still searchable after the file was replaced: {q_old}")
+if q_new["count"] < 1:
+    sys.exit(f"the NEW content is not searchable after the replacement was indexed: {q_new}")
+
+print(f"  ok: a same-size content replacement was detected by fingerprint (not by size), forced a full "
+      f"reindex ({new_row['bytes_indexed']} bytes, still {new_row['turns']} turns - no doubling), old "
+      f"content unsearchable, new content found")
+PY
+
+echo "== sessions librarian config: privacy is ENACTED not documented - commit_record=true (and false) leave .claude/librarians/sessions/ git-ignored, checked with git check-ignore as ground truth =="
+SESS_PRIV="$PWD/sess-privacy"
+mkdir -p "$SESS_PRIV"
+gitc -C "$SESS_PRIV" init -q
+echo one > "$SESS_PRIV/f.txt"; gitc -C "$SESS_PRIV" add f.txt; gitc -C "$SESS_PRIV" commit -qm "c1"
+python3 - "$ROOT" "$SESS_PRIV" <<'PY'
+import json, pathlib, subprocess, sys
+
+root, proj = pathlib.Path(sys.argv[1]), sys.argv[2]
+server = root / "plugins/teamme/server/teamme_mcp.py"
+SESSIONS_DB = ".claude/librarians/sessions/index.db"
+SESSIONS_DIR = ".claude/librarians/sessions/"
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+def call_text(resp):
+    result = resp.get("result") or {}
+    return result, "".join(c.get("text", "") for c in result.get("content") or [])
+
+
+def ignored(path: str) -> bool:
+    r = subprocess.run(["git", "check-ignore", "-q", path], cwd=proj)
+    if r.returncode not in (0, 1):
+        sys.exit(f"git check-ignore errored (rc={r.returncode}) on {path}")
+    return r.returncode == 0
+
+
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+
+    # commit_record=true matters most: flipping an UNRELATED setting (whether
+    # to commit the git-history record) must never make the session index
+    # committable.
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_librarian_configure",
+                           "arguments": {"project_dir": proj, "commit_record": True}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"commit_record=true reported an error: {text}")
+    if not ignored(SESSIONS_DB):
+        sys.exit("git check-ignore says .claude/librarians/sessions/index.db is NOT ignored with "
+                  "commit_record=true - a conversation index must never become committable")
+    if not ignored(SESSIONS_DIR):
+        sys.exit("git check-ignore says .claude/librarians/sessions/ is NOT ignored with commit_record=true")
+
+    send(proc, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {"name": "teamme_librarian_configure",
+                           "arguments": {"project_dir": proj, "commit_record": False}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"commit_record=false reported an error: {text}")
+    if not ignored(SESSIONS_DB):
+        sys.exit("git check-ignore says the session index is NOT ignored with commit_record=false")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+print("  ok: .claude/librarians/sessions/ stays git-ignored under commit_record=true AND false "
+      "(git check-ignore is ground truth, not the .gitignore text)")
+PY
+
+echo "== sessions: the retrieval contract - a window with a huge before/after truncates with its notice, never dumps unbounded text =="
+SESS_WIN="$PWD/sess-window"
+SESS_WIN_CFG="$PWD/sess-window-cfg"
+sess_slug_fixture "$SESS_WIN" "$SESS_WIN_CFG"
+python3 - "$LIBPATH" "$SESS_WIN" "$SESS_WIN_CFG" <<'PY'
+import json, os, pathlib, sys
+
+libpath, proj, cfgdir = sys.argv[1], sys.argv[2], sys.argv[3]
+sys.path.insert(0, libpath)
+from librarian import transcripts, sessions  # noqa
+
+pathlib.Path(proj).mkdir(parents=True, exist_ok=True)
+os.environ["CLAUDE_CONFIG_DIR"] = cfgdir
+slug = transcripts.project_slug(proj)
+sess_dir = pathlib.Path(cfgdir) / "projects" / slug
+sess_dir.mkdir(parents=True, exist_ok=True)
+transcript = sess_dir / "session-window.jsonl"
+
+
+def rec(kind, text, uuid, ts):
+    if kind == "user":
+        return json.dumps({"type": "user", "uuid": uuid, "timestamp": ts,
+                            "sessionId": "session-window", "promptSource": "typed",
+                            "message": {"content": text}}, ensure_ascii=False)
+    return json.dumps({"type": "assistant", "uuid": uuid, "timestamp": ts,
+                        "sessionId": "session-window",
+                        "message": {"content": text, "model": "claude-test"}}, ensure_ascii=False)
+
+
+N = 60
+lines = []
+for i in range(N):
+    kind = "user" if i % 2 == 0 else "assistant"
+    text = f"turn {i} " + ("y" * 3000)  # over MAX_WINDOW_TURN_CHARS (2000) per turn
+    lines.append(rec(kind, text, f"t{i}", f"2026-01-01T00:{i:02d}:00Z"))
+transcript.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+r = sessions.index(proj, full=True)
+if not r.get("ok") or r.get("turns_added") != N:
+    sys.exit(f"fixture indexing failed: {r}")
+
+conn, _ = sessions.connect_or_reset(proj)
+anchor = N // 2
+q = sessions.query(conn, "window",
+                    {"session": "session-window", "seq": anchor, "before": 999999, "after": 999999}, proj)
+conn.close()
+if not q.get("ok"):
+    sys.exit(f"window query failed: {q}")
+
+MAX_WINDOW, MAX_TOTAL, MAX_TURN = sessions.MAX_WINDOW, sessions.MAX_WINDOW_TOTAL_CHARS, sessions.MAX_WINDOW_TURN_CHARS
+lo, hi = q["asked_range"]
+if hi - lo > 2 * MAX_WINDOW:
+    sys.exit(f"a huge before/after was not clamped to MAX_WINDOW ({MAX_WINDOW}): asked_range={q['asked_range']}")
+if q["count"] > 2 * MAX_WINDOW + 1:
+    sys.exit(f"window returned more rows than MAX_WINDOW allows either side: count={q['count']}")
+if q["chars"] > MAX_TOTAL:
+    sys.exit(f"window returned more characters than MAX_WINDOW_TOTAL_CHARS ({MAX_TOTAL}): chars={q['chars']}")
+if not q["truncated"]:
+    sys.exit(f"a huge before/after against oversized turns did not report truncated=True: {q}")
+for row in q["rows"]:
+    if len(row["text"]) > MAX_TURN:
+        sys.exit(f"a per-turn cap was exceeded: seq={row['seq']} len={len(row['text'])} > {MAX_TURN}")
+if q["count"] >= N:
+    sys.exit(f"window returned (almost) the entire session ({q['count']} of {N} turns) - unbounded, "
+              f"exactly the dump this query exists to prevent")
+
+print(f"  ok: window({{before: 999999, after: 999999}}) truncated to {q['count']} row(s), {q['chars']} "
+      f"chars (caps: {MAX_TOTAL} total / {MAX_TURN} per turn / {MAX_WINDOW} turns either side), "
+      f"truncated=True, out of {N} turns actually on disk")
+PY
+
+echo "== sessions: honest degradation - no \$CLAUDE_CONFIG_DIR and no ~/.claude returns a named error payload, never an exception =="
+SESS_NOHOME="$PWD/sess-nohome"
+SESS_NOHOME_HOME="$PWD/sess-nohome-home"
+mkdir -p "$SESS_NOHOME_HOME"
+# Isolated from whoever's machine this runs on, same reasoning as the preflight
+# isolation above: CLAUDE_CONFIG_DIR truly UNSET (not pointed at an empty dir)
+# and HOME pointed at a directory that genuinely has no .claude under it, so
+# the double-negative in the brief is real rather than accidental.
+nohome_env() { env -u CLAUDE_CONFIG_DIR -u CLAUDE_PLUGIN_ROOT HOME="$SESS_NOHOME_HOME" "$@"; }
+nohome_env python3 - "$LIBPATH" "$SESS_NOHOME" <<'PY'
+import pathlib, sys
+
+libpath, proj = sys.argv[1], sys.argv[2]
+sys.path.insert(0, libpath)
+from librarian import sessions, transcripts  # noqa
+
+pathlib.Path(proj).mkdir(parents=True, exist_ok=True)
+
+r = sessions.index(proj, full=True)
+if r.get("ok"):
+    sys.exit(f"index() with no CLAUDE_CONFIG_DIR and no ~/.claude reported ok=True: {r}")
+if not r.get("error"):
+    sys.exit(f"index() failed silently with no error message: {r}")
+
+st = sessions.status(proj)
+if not st.get("error"):
+    sys.exit(f"status() did not report an error with no config directory reachable: {st}")
+if not st.get("searched"):
+    sys.exit(f"status() did not report what it searched: {st}")
+
+where = transcripts.locate(proj)
+if where.get("ok"):
+    sys.exit(f"locate() claimed success with nowhere to look: {where}")
+if not where.get("problem"):
+    sys.exit(f"locate() gave no reason: {where}")
+if not where.get("searched"):
+    sys.exit(f"locate() did not report the paths it looked in: {where}")
+
+print("  ok: no $CLAUDE_CONFIG_DIR and no ~/.claude degrades to a named error payload in index(), "
+      "status() and locate() - no exception, and every result names what it searched")
+PY
+
+
 cd "$ROOT"
 echo "ALL CHECKS PASSED"

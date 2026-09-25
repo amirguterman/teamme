@@ -114,17 +114,19 @@ Priorities: `P0` now, `P1` normal, `P2` someday.
 
 ## The librarian substrate
 
-Three MCP tools index this project's own git history into a per-project store under
-`.claude/librarians/` — `.claude/librarians/history/commits.jsonl` (the append-only record; commit it
-or gitignore it, per project, your choice) and `.claude/librarians/index.db` (a SQLite index derived
-from the `.jsonl`, always gitignored, and rebuildable from it with no git access at all — never commit
-the `.db`, since a binary file cannot be merged).
+Three MCP tools work against a per-project store under `.claude/librarians/`, shared by two librarians
+that index different sources. `history` indexes this project's own git commits —
+`.claude/librarians/history/commits.jsonl` (the append-only record; commit it or gitignore it, per
+project, your choice) and `.claude/librarians/index.db` (a SQLite index derived from the `.jsonl`,
+always gitignored, and rebuildable from it with no git access at all — never commit the `.db`, since a
+binary file cannot be merged). `sessions` indexes this project's own conversation transcripts instead —
+see The session librarian below, where the storage answer is different and is not a per-project choice.
 
 | Tool | Answers |
 |---|---|
-| `teamme_librarian_status` | What the index holds: row counts, the last indexed commit, how far behind `HEAD` it is |
-| `teamme_librarian_refresh` | Brings the index up to date — incremental by default, `full=true` to reindex from scratch |
-| `teamme_librarian_query` | A bounded, named question — nine in total, never arbitrary SQL: six read commit history (`recent`, `commits_touching`, `files_in_commit`, `commits_between`, `search_subjects`, `commit_detail`); three read co-change coupling out of the same commit stream (`changes_with`, `coupling_between`, `hotspots`) — see The history librarian below |
+| `teamme_librarian_status` | What an index holds: for `history`, row counts, the last indexed commit and how far behind `HEAD` it is; for `sessions`, where this project's transcripts were found and how many bytes are indexed |
+| `teamme_librarian_refresh` | Brings an index up to date — incremental by default, `full=true` to reindex from scratch. `{"librarian": "history"}` (the default) or `{"librarian": "sessions"}` |
+| `teamme_librarian_query` | A bounded, named question, never arbitrary SQL. Nine names ask `history` (`recent`, `commits_touching`, `files_in_commit`, `commits_between`, `search_subjects`, `commit_detail`, `changes_with`, `coupling_between`, `hotspots` — see The history librarian below); four more (`sessions`, `search_turns`, `window`, `compaction`) ask `sessions` and need no `librarian` argument — the query name says which index it belongs to (see The session librarian below) |
 
 These need only a git repository, not teamme's scaffolding, and work whether or not a project has run
 `/teamme:init-team`. Measured on this repository's own history (10 commits, 122 file rows): a first
@@ -177,6 +179,44 @@ directly instead.
 
 Both refusals are the same honest posture as the `teamme_install` gate described below, under
 Install and verify: a tool declining to act, never a harness-enforced block.
+
+## The session librarian
+
+A second librarian, `sessions`, indexes the session transcripts Claude Code already writes to disk —
+one append-only JSONL file per session, including a sidecar file for every subagent it dispatches.
+After a compaction, ask what fell out of context and fetch it back by address — a **mark point** —
+instead of re-reading a multi-megabyte transcript file. Indexing is lazy: nothing is captured as it
+happens, because the harness already captured it; `teamme_librarian_refresh {"librarian": "sessions"}`
+reads only the bytes appended since the last refresh, and no hook exists for this librarian at all.
+
+Four queries: `sessions` (this project's sessions, newest first, with turn counts and date spans, and
+the subagent thread count for each — see the limit below), `search_turns` (a literal substring,
+answered as mark points with a short snippet, never the conversation itself), `window` (a bounded slice
+of one session around one mark point — the only query that returns transcript text, capped per turn and
+in total so a fetch cannot reproduce the problem it exists to solve), and `compaction` (what fell out of
+context at the most recent compaction boundary, read from the transcript's own record — no `PreCompact`
+hook is needed or used).
+
+Two limits worth knowing before relying on it:
+
+- **Reasoning is not recoverable.** Assistant thinking blocks are stored with a signature and an empty
+  body — every one measured so far, across an 8.7 MB transcript. "Why was Y rejected" is answerable
+  only from what was said out loud; nothing here can recover what was only thought through silently.
+- **Subagent transcripts are usually the bulk of a session, not the main thread.** On a team that
+  dispatches specialists, most of the actual work — and most of what a later question asks about —
+  happened in a sidecar file: measured at roughly 3x the main thread's size on one real session here.
+  `search_turns` and `window` reach into them directly; `sessions` reports each session's subagent
+  count and total size rather than listing them by default.
+
+`sessions` is switched on and off with `teamme_librarian_configure` the same way `history` is (see the
+table above), but its storage answer is not a choice: `commit_record` does not reach it.
+`.claude/librarians/sessions/` is always gitignored — a transcript can hold anything anyone typed,
+including a secret pasted in by accident — and keeps no second text copy of a conversation; the SQLite
+index is the only artifact, disposable, and rebuilt by reading the transcripts again.
+
+Unlike `history`, nothing yet tells an agent to consult `sessions`: `history-librarian` and the
+generated `/intake` command's grounding step both name `history-librarian` for history questions, but
+neither mentions the session index. The tools work when called; nothing in the roster calls them yet.
 
 ## Install and verify
 

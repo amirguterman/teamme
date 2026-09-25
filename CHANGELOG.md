@@ -3,6 +3,22 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-09-25
+
+### Added
+- MCP tools `teamme_librarian_status`, `teamme_librarian_query`, and `teamme_librarian_refresh` now also cover session transcripts in addition to git history. Four queries on sessions: `sessions` (list sessions with turn counts), `search_turns` (search turn text across sessions and subagent threads), `window` (fetch a bounded slice of turns around a mark point), and `compaction` (list compaction boundaries and report what was dropped to compaction). Incremental indexing of append-only `.jsonl` transcript files costs zero per-turn latency; cold indexing 35.6 MB across 47 transcripts takes 0.51 s.
+- Session mark points: turns are tracked by sequence number per session, indexed for later retrieval after compaction. Each mark records the turn number, its content type (prompt / message / tool / file / compaction), and character bounds in the session transcript.
+- Subagent transcript indexing: transcripts live in a parallel sidecar tree (`<session>/subagents/agent-*.jsonl`); the indexer treats each as a child session with its parent tracked, so a question about what happened in a specialist's thread can be answered without re-reading the multi-megabyte transcript.
+
+### Changed
+- `teamme_librarian_configure` now accepts `{"librarian":"sessions","enabled":true/false}` in addition to history librarian settings. The sessions librarian is **enabled by default** — use `{"librarian":"sessions","enabled":false}` to disable it per project. No data is indexed until the first `teamme_librarian_refresh {"librarian":"sessions"}`; `teamme_librarian_status` reports `data: no` for it until then.
+- Session index storage (`.claude/librarians/sessions/`) joins `.claude/librarians/index.db` in being written to the shared `.gitignore` block and is never a choice point — it is always gitignored regardless of `commit_record`, since a transcript holds everything typed in the session including secrets pasted by accident. The append-only record (`.claude/librarians/history/commits.jsonl`) respects `commit_record`, but transcripts never do.
+
+### Known limitations
+- **Reasoning is not recoverable.** Assistant thinking is stored with an empty body in the transcript — every one of 257 blocks in one measured session. Only what was said out loud can be searched.
+- **Tool output is not indexed.** Command output and file contents are most of the bytes and would drown search; indexing a truncated prefix would give a confidently wrong "not found" verdict, so neither is indexed.
+- **The index is never committed**, whatever `commit_record` says. A transcript holds everything anyone typed, including secrets pasted by accident, so the session store is machine-local and disposable by design.
+
 ## [0.5.0] - 2026-09-24
 
 ### Added

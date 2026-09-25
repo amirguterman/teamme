@@ -130,10 +130,35 @@ the paths must resolve.
    is about to be made or repeated, **consult `history-librarian` and cite its answer** instead of
    re-deriving it from `git log`. Its answers carry commit SHAs; carry them through. State two
    things honestly in the same block: this is an instruction, not a gate — nothing blocks an agent
-   that skips it — and the librarian answers from an index of commit history, so a question about
-   the code's *current* state is not its to answer. Do not give team agents the librarian MCP tools;
-   the librarian is the intended caller of those, and consulting the agent keeps every other tool
-   list tight.
+   that skips it — and the librarian answers from indexes of the past, so a question about the
+   code's *current* state is not its to answer, whichever index it asks.
+   The same block must route **conversation** questions to that same agent. Despite its name it
+   reads a second index: this project's own session transcripts, which the harness already writes,
+   one file per session plus one per dispatched subagent. Write into the block, again in the team's
+   own words: when the question is about what was **said** rather than what was committed — what was
+   decided, proposed or rejected in conversation, what a specialist dispatched earlier actually
+   reported, and above all **what fell out of context at a compaction** and can no longer be seen —
+   consult `history-librarian` for that too, and carry through the session id and mark point it
+   cites rather than a SHA. Name its four queries so the team knows what exists: `sessions` (this
+   project's sessions, newest first, with turn counts and how many subagent threads each
+   dispatched), `search_turns` (a literal substring of what was typed or said, answered as
+   *positions* with a snippet), `window` (a bounded slice of one session around one position — the
+   only one that returns conversation text), and `compaction` (what fell out of context at the most
+   recent boundary, with a position for each piece of it). Say that the working order is locate,
+   then read: `compaction` or `search_turns` to find where, then `window` to fetch that region and
+   nothing else.
+   Three limits go in the block too, because an agent that does not know them will read a miss as a
+   fact: **reasoning is not recoverable** — thinking blocks are stored with an empty body, so "why
+   was Y rejected" is answerable only from what was said out loud; **tool output is not indexed** —
+   file contents that were read and command output are not searchable, so "not found" means not
+   found in what was *said*, never that it was never on screen; and **subagent threads are usually
+   the bulk of a session** on a team that dispatches specialists, so most of what a later question
+   asks about happened in a child thread, not the main one. Note that each index is enabled per
+   project and can be switched off with `teamme_librarian_configure`, and that the honest response
+   to a disabled librarian is to say so and name that call — never to go and read `git log` or a
+   transcript some other way. Same register as everything above: an instruction, not a gate.
+   Do not give team agents the librarian MCP tools; the librarian is the intended caller of those,
+   and consulting the agent keeps every other tool list tight.
 2. Create the project intake command at `<project>/.claude/commands/intake.md`. This is NOT
    optional and is created in every project. It is the **single entry point** for the team: all work
    requests go through `/intake <request>`. Tailor it to THIS project, and give it at minimum:

@@ -71,6 +71,13 @@ def commits_jsonl(project_dir=None) -> pathlib.Path:
     return history_dir(project_dir) / "commits.jsonl"
 
 
+def sessions_dir(project_dir=None) -> pathlib.Path:
+    """The session librarian's whole footprint. Never committed - see
+    librarian/config.py: it indexes a conversation, and a conversation contains
+    everything anyone typed."""
+    return librarians_dir(project_dir) / "sessions"
+
+
 # --------------------------------------------------------------------------- #
 # the lock (worklog.py's pattern, generalized to a path)
 # --------------------------------------------------------------------------- #
@@ -180,10 +187,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_parents_unique ON commit_parents(hash, par
 """
 
 
-def connect(project_dir=None, create: bool = True) -> sqlite3.Connection:
-    """An open connection with the schema present. Raises only if SQLite itself
-    cannot open the file; callers wrap it."""
-    p = db_path(project_dir)
+CORRUPT_MARKERS = ("not a database", "malformed", "encrypted", "unsupported file format")
+
+
+def connect_file(path, schema: str = None, create: bool = True) -> sqlite3.Connection:
+    """An open connection to one SQLite file, with `schema` applied.
+
+    Generic on purpose: every librarian's index is derived and disposable in the
+    same way, so the pragmas and the discard-a-corrupt-file rule below exist
+    once rather than once per librarian.
+    """
+    p = pathlib.Path(path)
     if create:
         p.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(p), timeout=BUSY_TIMEOUT_MS / 1000.0)
@@ -198,23 +212,48 @@ def connect(project_dir=None, create: bool = True) -> sqlite3.Connection:
         conn.execute("PRAGMA journal_mode=WAL")
     except Exception:
         pass
+    if schema:
+        conn.executescript(schema)
+        conn.commit()
+    return conn
+
+
+def connect_or_reset_file(path, schema: str = None):
+    """`connect_file`, but a corrupt database is thrown away instead of raising.
+
+    Every librarian index is derived and disposable by design, so a file SQLite
+    cannot read is not an error to report - it is a file to delete and rebuild.
+    Returns (connection, note): `note` is set when the file had to be discarded,
+    so the caller can say so out loud rather than silently losing rows. A merely
+    LOCKED database is not corrupt and is never deleted.
+    """
+    try:
+        return connect_file(path, schema), None
+    except sqlite3.OperationalError:
+        raise
+    except sqlite3.DatabaseError as exc:
+        if not any(m in str(exc).lower() for m in CORRUPT_MARKERS):
+            raise
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            pathlib.Path(str(path) + suffix).unlink()
+        except Exception:
+            pass
+    return connect_file(path, schema), (
+        f"{path} could not be read as a database and was discarded - it is derived and "
+        f"disposable, and the next refresh rebuilds it")
+
+
+def connect(project_dir=None, create: bool = True) -> sqlite3.Connection:
+    """An open connection with the schema present. Raises only if SQLite itself
+    cannot open the file; callers wrap it."""
+    conn = connect_file(db_path(project_dir), None, create)
     ensure_schema(conn)
     return conn
 
 
-CORRUPT_MARKERS = ("not a database", "malformed", "encrypted", "unsupported file format")
-
-
 def connect_or_reset(project_dir=None):
-    """`connect`, but a corrupt index.db is thrown away instead of raising.
-
-    The database is derived and disposable by design, so a file that SQLite
-    cannot read is not an error condition to report - it is a file to delete and
-    rebuild from commits.jsonl. Returns (connection, note): `note` is set when
-    the file had to be discarded, so the caller can say so out loud rather than
-    silently losing rows. A merely LOCKED database is not corrupt and is never
-    deleted.
-    """
+    """`connect`, but a corrupt index.db is thrown away instead of raising."""
     try:
         return connect(project_dir), None
     except sqlite3.OperationalError:

@@ -23,8 +23,18 @@ librarian data (commit the JSONL) or keep it alongside the code uncommitted
 cannot be merged, and two teammates indexing different commits produce
 irreconcilable files.
 
+A second librarian, `sessions`, indexes this project's CONVERSATIONS rather than
+its code, from the transcripts the harness already writes. It diverges on one
+point deliberately: it keeps no JSONL record, because the transcript is the
+record and a second text copy of a conversation would double a private surface
+for nothing. `.claude/librarians/sessions/` is therefore one disposable SQLite
+index, always gitignored, never a choice.
+
+  .claude/librarians/sessions/index.db       derived; a full reindex rebuilds it
+                                             from the transcripts
+
 Stdlib only: sqlite3, subprocess, json, os. Same bare-machine assumption as the
 hooks and the MCP server.
 """
 
-__all__ = ["store", "history", "config"]
+__all__ = ["store", "history", "config", "sessions", "transcripts"]

@@ -215,11 +215,11 @@ def text_result(text: str, is_error: bool = False) -> dict:
 _LIBRARIAN = None
 _LIBRARIAN_ERROR = None
 
-LIBRARIANS = ("history",)
+LIBRARIANS = ("history", "sessions")
 
 
 def librarian():
-    """(store, history, config) from the plugin's own server/librarian/, or None.
+    """(store, history, config, sessions) from the plugin's own server/librarian/, or None.
 
     The substrate lives in the PLUGIN and is never copied into a project: it is
     invoked here, so it can never join the list of hook scripts an install is
@@ -238,6 +238,7 @@ def librarian():
             importlib.import_module("librarian.store"),
             importlib.import_module("librarian.history"),
             importlib.import_module("librarian.config"),
+            importlib.import_module("librarian.sessions"),
         )
     except Exception as exc:
         _LIBRARIAN_ERROR = str(exc)
@@ -595,9 +596,11 @@ TOOLS = [
         "name": "teamme_librarian_status",
         "description": (
             "Report what the project's librarian indexes hold: which have data, the last indexed "
-            "commit, how many commits have landed since, and the row counts. Always available and "
-            "read-only - it does not require teamme's scaffolding, only a git repository, and it "
-            "reports the absence of either rather than failing. INTENDED CALLER: a librarian "
+            "commit, how many commits have landed since, and the row counts - and for the session "
+            "index, where this project's transcripts were found, how many bytes of them are "
+            "indexed and how many are not. Always available and read-only - it does not require "
+            "teamme's scaffolding, and it reports the absence of a git repository or a transcript "
+            "directory rather than failing. INTENDED CALLER: a librarian "
             "agent. Other agents should ask the librarian rather than the index; phase 1 cannot "
             "enforce that, so it is a convention, not a guarantee."
         ),
@@ -616,8 +619,12 @@ TOOLS = [
             "project - .claude/librarians/history/commits.jsonl (the record: text, mergeable, the "
             "only part worth committing) and .claude/librarians/index.db (derived and disposable; "
             "gitignore it - a binary file cannot be merged). If the marker is unreachable after a "
-            "rebase or force-push it falls back to a full reindex and says so. INTENDED CALLER: a "
-            "librarian agent."
+            "rebase or force-push it falls back to a full reindex and says so. The `sessions` "
+            "librarian works the same way over a different source: the session transcripts the "
+            "harness already writes, read incrementally BY BYTE OFFSET, so nothing is captured in "
+            "flight and no hook exists for it. Its index lives in .claude/librarians/sessions/ "
+            "and is ALWAYS gitignored - it holds conversation text, so commit_record does not "
+            "apply to it. INTENDED CALLER: a librarian agent."
         ),
         "inputSchema": {
             "type": "object",
@@ -627,6 +634,9 @@ TOOLS = [
                            "description": "Which index to refresh. Defaults to history."},
                 full={"type": "boolean",
                       "description": "Reindex everything instead of only what is new. Off by default."},
+                session={"type": "string",
+                         "description": "sessions only: refresh just this session id. Omit to "
+                                        "refresh every transcript for this project."},
             ),
             "additionalProperties": False,
         },
@@ -654,7 +664,21 @@ TOOLS = [
             "arbitrary SQL, and an answer that would be an unbounded dump is truncated with a "
             "notice instead. INTENDED CALLER: a librarian agent, which reads these rows and "
             "answers in prose; other agents should consult the librarian rather than this tool. "
-            "Phase 1 does not enforce that."
+            "Phase 1 does not enforce that.\n\n"
+            "FOUR MORE queries ask the SESSION index - this project's own conversations, indexed "
+            "from the transcripts the harness writes - and exist to recover what a compaction "
+            "dropped out of context WITHOUT re-reading a multi-megabyte file: sessions (this "
+            "project's sessions, newest first, with turn counts and date spans), search_turns (a "
+            "literal substring of what was typed or said, answered as MARK POINTS - where it was "
+            "discussed, with a short snippet, never the conversation), window (a bounded slice of "
+            "one session around one mark point - the only query that returns conversation text, "
+            "capped per turn and in total), and compaction (what fell out of context at the most "
+            "recent compaction boundary, with the spine of the dropped region and a seq for each "
+            "point so any of it can be fetched). The working order is search_turns or compaction "
+            "to LOCATE, then window to READ. Tool output - file contents that were read, command "
+            "output - is not indexed, and reasoning is not in the transcript at all; every result "
+            "says so. The query name alone says which index it belongs to, so `librarian` does "
+            "not need to be passed."
         ),
         "inputSchema": {
             "type": "object",
@@ -665,7 +689,8 @@ TOOLS = [
                 query={"type": "string",
                        "enum": ["recent", "commits_touching", "files_in_commit",
                                 "commits_between", "search_subjects", "commit_detail",
-                                "changes_with", "coupling_between", "hotspots"]},
+                                "changes_with", "coupling_between", "hotspots",
+                                "sessions", "search_turns", "window", "compaction"]},
                 path={"type": "string",
                       "description": "For commits_touching, changes_with and coupling_between: a "
                                      "repo-relative file or directory. For hotspots: an optional "
@@ -684,8 +709,35 @@ TOOLS = [
                                                        "than one commit is reported, never silently resolved."},
                 since={"type": "string", "description": "For commits_between: YYYY-MM-DD or an ISO timestamp."},
                 until={"type": "string", "description": "For commits_between: YYYY-MM-DD or an ISO timestamp."},
-                text={"type": "string", "description": "For search_subjects: a literal substring; wildcards are not special."},
-                limit={"type": "integer", "description": "Row cap. Defaults to 30, hard maximum 200."},
+                text={"type": "string", "description": "For search_subjects and search_turns: a literal "
+                                                       "substring; wildcards are not special."},
+                session={"type": "string",
+                         "description": "For window (required), and to scope search_turns or "
+                                        "compaction to one session. A session id from the "
+                                        "`sessions` query."},
+                parent={"type": "string",
+                        "description": "For sessions: list the subagent threads dispatched by "
+                                       "this session id, instead of the main threads."},
+                include_subagents={"type": "boolean",
+                                   "description": "For sessions: list subagent threads alongside "
+                                                  "main threads. Off by default - the parent row "
+                                                  "reports how many it has."},
+                seq={"type": "integer",
+                     "description": "For window: the mark point to centre on, as returned by "
+                                    "search_turns or compaction."},
+                before={"type": "integer",
+                        "description": "For window: turns before the mark. Defaults to 4, max 25."},
+                after={"type": "integer",
+                       "description": "For window: turns after the mark. Defaults to 4, max 25."},
+                kind={"type": "string",
+                      "enum": ["prompt", "message", "recap", "answer", "tool", "file",
+                               "compaction"],
+                      "description": "For search_turns: restrict to one kind of mark point."},
+                main_thread_only={"type": "boolean",
+                                  "description": "For search_turns: exclude subagent turns."},
+                limit={"type": "integer", "description": "Row cap. Defaults to 30 for history "
+                                                         "queries and 20 for session ones; hard "
+                                                         "maximum 200 and 100."},
             ),
             "required": ["query"],
             "additionalProperties": False,
@@ -846,16 +898,66 @@ def _ago(epoch) -> str:
         return "?"
 
 
+def _render_sessions_status(st: dict) -> list:
+    """The session index's own status lines.
+
+    Deliberately says where the transcripts were found and HOW - by the encoded
+    directory name, or by reading the working directory recorded inside the
+    files. The second means teamme's assumption about the harness's layout has
+    drifted, and that is worth seeing rather than silently working.
+    """
+    out = []
+    if st.get("transcript_dir"):
+        out.append(f"  transcripts:     {st['transcript_dir']}"
+                   + ("  (found by scanning: the expected directory name did not resolve)"
+                      if st.get("transcript_dir_source") == "scan" else ""))
+        out.append(f"  on disk:         {st.get('transcripts_on_disk', 0)} session file(s), "
+                   f"{st.get('bytes_on_disk', 0)} byte(s)")
+    else:
+        out.append("  transcripts:     NOT FOUND - nothing can be indexed")
+        for where in st.get("searched") or []:
+            out.append(f"    looked in:     {where}")
+    if st.get("has_data"):
+        out.append("  data:            yes")
+        out.append(f"  rows:            {st.get('sessions')} session(s), {st.get('turns')} turn(s), "
+                   f"{st.get('marks')} mark point(s), {st.get('compactions')} compaction(s)")
+        if st.get("oldest_epoch"):
+            out.append(f"  covers:          {_ago(st['oldest_epoch'])} .. {_ago(st['newest_epoch'])}")
+        out.append(f"  indexed:         {st.get('bytes_indexed', 0)} byte(s)")
+        behind = st.get("bytes_behind")
+        if behind is not None:
+            out.append(f"  behind:          {behind} byte(s)"
+                       + (" - up to date" if behind == 0
+                          else ' - run teamme_librarian_refresh {"librarian": "sessions"}'))
+        if st.get("sessions_not_indexed"):
+            out.append(f"  not indexed:     {st['sessions_not_indexed']} session file(s)")
+        if st.get("last_refresh_at"):
+            out.append(f"  last refresh:    {st['last_refresh_at']}")
+    elif st.get("transcript_dir"):
+        out.append('  data:            no - run teamme_librarian_refresh {"librarian": "sessions"}')
+    if st.get("error"):
+        out.append(f"  problem:         {st['error']}")
+    if st.get("note"):
+        out.append(f"  note:            {st['note']}")
+    out.append(f"  index:           {st.get('db')} (derived, disposable)")
+    out.append("  record:          the transcripts themselves - this librarian keeps no second "
+               "copy of them")
+    out.append("  privacy:         .claude/librarians/sessions/ is ALWAYS gitignored; "
+               "commit_record does not apply to it")
+    return out
+
+
 def tool_librarian_status(root: pathlib.Path, args: dict) -> dict:
     lib = librarian()
     if lib is None:
         return librarian_missing()
-    _store, _history, _config = lib
+    _store, _history, _config, _sessions = lib
     cfg = _config.load(root, LIBRARIANS)
     lines = [f"librarian indexes in {root}", ""]
     for name in LIBRARIANS:
         try:
-            st = _history.status(root) if name == "history" else {}
+            st = (_history.status(root) if name == "history"
+                  else _sessions.status(root) if name == "sessions" else {})
         except Exception as exc:  # a status call must never be the thing that breaks
             lines += [f"{name}: could not be read ({exc})", ""]
             continue
@@ -866,6 +968,10 @@ def tool_librarian_status(root: pathlib.Path, args: dict) -> dict:
                'NO - refresh and query refuse for it. Re-enable with teamme_librarian_configure '
                '{"librarian": "' + name + '", "enabled": true}')
         )
+        if name == "sessions":
+            lines += _render_sessions_status(st)
+            lines.append("")
+            continue
         if st.get("has_data"):
             lines.append("  data:            yes")
         elif st.get("is_git_repo") is False:
@@ -928,7 +1034,7 @@ def tool_librarian_refresh(root: pathlib.Path, args: dict) -> dict:
     lib = librarian()
     if lib is None:
         return librarian_missing()
-    _store, _history, _config = lib
+    _store, _history, _config, _sessions = lib
     name, refusal = _pick_librarian(args)
     if refusal:
         return refusal
@@ -937,7 +1043,10 @@ def tool_librarian_refresh(root: pathlib.Path, args: dict) -> dict:
         return off
     full = bool(args.get("full"))
     try:
-        r = _history.index(root, full=full)
+        if name == "sessions":
+            r = _sessions.index(root, full=full, session=args.get("session"))
+        else:
+            r = _history.index(root, full=full)
     except Exception as exc:  # belt and braces: index() already returns its errors
         return text_result(f"teamme_librarian_refresh failed: {exc}", True)
     if not r.get("ok"):
@@ -946,6 +1055,25 @@ def tool_librarian_refresh(root: pathlib.Path, args: dict) -> dict:
             f"project_dir: {root}",
             True,
         )
+    if name == "sessions":
+        lines = [
+            f"teamme_librarian_refresh (sessions): {r['mode']} index in "
+            f"{r.get('elapsed_seconds')}s",
+            f"  transcripts:  {r.get('transcript_dir')}"
+            + ("  (found by scanning, not by name)"
+               if r.get("transcript_dir_source") == "scan" else ""),
+            f"  read:         {r.get('bytes_read', 0)} new byte(s) from "
+            f"{r.get('sessions_touched', 0)} of {r.get('sessions_seen', 0)} session file(s)",
+            f"  added:        {r.get('turns_added', 0)} turn(s), "
+            f"{r.get('marks_added', 0)} mark point(s)",
+            f"  now holds:    {r.get('sessions')} session(s), {r.get('turns')} turn(s), "
+            f"{r.get('marks')} mark point(s), {r.get('compactions')} compaction(s)",
+        ]
+        for note in r.get("notes") or []:
+            lines.append(f"  note:         {note}")
+        lines.append("  the index is machine-local and always gitignored - it holds conversation "
+                     "text, so commit_record does not apply to it")
+        return text_result("\n".join(lines))
     lines = [
         f"teamme_librarian_refresh ({name}): {r['mode']} index in {r.get('elapsed_seconds')}s",
         f"  added:        {r.get('commits_added', 0)} commit(s), {r.get('files_added', 0)} file change(s)",
@@ -1121,22 +1249,182 @@ def _repo_signal_notes(history, root) -> list:
     return []
 
 
+def _route_query(args: dict, which: str, _store, _sessions):
+    """(librarian, refusal) for a query name.
+
+    Query names are unique across librarians, so `librarian` does not have to be
+    passed - but if it IS passed and disagrees with the query, that is refused
+    rather than silently overridden: a caller who asked for the wrong index
+    should be told, not quietly given the right one.
+    """
+    if which in _sessions.QUERY_NAMES:
+        owner = "sessions"
+    elif which in _store.QUERY_NAMES:
+        owner = "history"
+    else:
+        return None, text_result(
+            f"unknown query '{which}'.\n"
+            f"  history:  {', '.join(_store.QUERY_NAMES)}\n"
+            f"  sessions: {', '.join(_sessions.QUERY_NAMES)}", True)
+    asked = args.get("librarian")
+    if asked is not None:
+        asked = str(asked).strip().lower()
+        if asked not in LIBRARIANS:
+            return None, text_result(
+                f"unknown librarian '{asked}'. Available: {', '.join(LIBRARIANS)}", True)
+        if asked != owner:
+            return None, text_result(
+                f"'{which}' is a {owner} query, but librarian was given as '{asked}'. Nothing was "
+                f"read. Pass librarian '{owner}', or drop the argument - the query name already "
+                f"says which index it belongs to.", True)
+    return owner, None
+
+
+def _render_session_rows(which: str, q: dict, _sessions) -> str:
+    """The four session answers. Every one of them returns POSITIONS by default;
+    `window` is the only one that returns conversation text, and it is capped
+    twice - per turn and in total."""
+    out = []
+    rows = q.get("rows") or []
+
+    if which == "sessions":
+        out.append("  this project's sessions, newest first")
+        for r in rows:
+            out.append(f"    {r.get('session_id')}  {r.get('title') or '(untitled)'}"
+                       + (f"  [subagent: {r.get('agent') or '?'}]" if r.get("parent_session") else ""))
+            out.append(f"         {(r.get('first_ts') or '?')[:19]} .. {(r.get('last_ts') or '?')[:19]}"
+                       + (f"  ({r['span_days']} day(s))" if r.get("span_days") else "")
+                       + f"  on {r.get('git_branch') or '?'}")
+            out.append(f"         {r.get('turns')} turn(s), {r.get('prompts')} prompt(s), "
+                       f"{r.get('marks')} mark point(s), {r.get('compactions')} compaction(s)")
+            if r.get("subagent_threads"):
+                out.append(f"         plus {r['subagent_threads']} subagent thread(s), "
+                           f"{r['subagent_turns']} turn(s) - indexed and searchable, listed with "
+                           f'{{"query": "sessions", "parent": "{r.get("session_id")}"}}')
+            if not r.get("fully_indexed"):
+                out.append(f"         {r.get('bytes_behind')} byte(s) not yet indexed"
+                           + (" - the session is still being written"
+                              if r.get("still_being_written") else " - refresh to catch up"))
+
+    elif which == "search_turns":
+        out.append(f"  mark points whose text contains '{q.get('text')}'"
+                   + (f" ({q.get('turns_matching')} turn(s) match in all)"
+                      if q.get("turns_matching") is not None else ""))
+        for r in rows:
+            out.append(f"    [{r.get('kind')}] {(r.get('ts') or '')[:19]}  "
+                       f"{r.get('session_id')} seq {r.get('seq')}"
+                       + ("  (subagent)" if r.get("sidechain") else ""))
+            if r.get("agent"):
+                out.append(f"         (subagent thread: {r['agent']})")
+            out.append(f"         {r.get('label') or ''}")
+            out.append("         " + ("..." if r.get("before") else "")
+                       + str(r.get("snippet") or "") + ("..." if r.get("after") else ""))
+            out.append(f"         fetch: {{\"query\": \"window\", \"session\": "
+                       f"\"{r.get('session_id')}\", \"seq\": {r.get('seq')}}}")
+
+    elif which == "window":
+        out.append(f"  {q.get('session')} {q.get('session_title') or ''} - turns "
+                   f"{q.get('range', [0, 0])[0]}..{q.get('range', [0, 0])[1]} "
+                   f"around seq {q.get('seq')} ({q.get('chars')} characters)")
+        for r in rows:
+            head = f"    {'>>' if r.get('is_anchor') else '  '} seq {r.get('seq')} {r.get('role')} " \
+                   f"{(r.get('ts') or '')[:19]}" + ("  (subagent)" if r.get("sidechain") else "")
+            out.append(head)
+            for m in r.get("marks") or []:
+                out.append(f"         [{m.get('kind')}] {m.get('label') or ''}")
+            body = (r.get("text") or "").splitlines()
+            for line in body:
+                out.append("         " + line)
+            if r.get("turn_truncated"):
+                out.append(f"         ... TURN TRUNCATED at "
+                           f"{q.get('caps', {}).get('per_turn_chars')} of {r.get('text_chars')} "
+                           f"characters")
+        if q.get("stopped_at_seq") is not None:
+            out.append(f"    ... WINDOW TRUNCATED at seq {q['stopped_at_seq']}: the "
+                       f"{q.get('caps', {}).get('total_chars')}-character cap was reached. Ask for "
+                       f"a narrower window, or move the anchor.")
+
+    else:  # compaction
+        if not q.get("found"):
+            out.append("  no compaction found")
+        else:
+            out.append(f"  most recent compaction: {q.get('session')} seq {q.get('seq')} at "
+                       f"{(q.get('ts') or '')[:19]} (trigger: {q.get('trigger')})")
+            out.append(f"  context: {q.get('tokens_before')} tokens before -> "
+                       f"{q.get('tokens_after')} after; {q.get('tokens_dropped')} dropped")
+            out.append(f"  what fell out of context: {q.get('turns_before')} turn(s) from "
+                       f"{(q.get('first_ts') or '?')[:19]} to {(q.get('last_ts') or '?')[:19]}; "
+                       f"{q.get('turns_after')} turn(s) came after it")
+            kinds = q.get("marks_before_by_kind") or {}
+            if kinds:
+                out.append("  mark points in that region: "
+                           + ", ".join(f"{v} {k}" for k, v in sorted(kinds.items())))
+            out.append(f"  the spine of it ({len(rows)} prompt/recap mark(s), oldest first):")
+            for r in rows:
+                out.append(f"    [{r.get('kind')}] seq {r.get('seq')}  "
+                           f"{(r.get('ts') or '')[:19]}  {r.get('label') or ''}")
+            if q.get("truncated"):
+                out.append(f"    ... TRUNCATED at {q.get('limit')} mark(s). Raise `limit` "
+                           f"(max {_sessions.MAX_LOST_MARKS}), or search within the region.")
+            out.append('  fetch any of it: {"query": "window", "session": "'
+                       + str(q.get("session")) + '", "seq": <seq>}')
+
+    if not rows and which != "window":
+        out.append(f"  no rows. {q.get('empty_reason') or ''}".rstrip())
+    if q.get("truncated") and which in ("sessions", "search_turns"):
+        out.append(f"  ... TRUNCATED at {q.get('limit')} rows. Narrow the question or raise "
+                   f"`limit` (max {_sessions.MAX_LIMIT}); this tool never returns an unbounded "
+                   f"dump.")
+    for caveat in q.get("caveats") or []:
+        out.append(f"  - {caveat}")
+    return "\n".join(out)
+
+
+def _session_query(root: pathlib.Path, args: dict, which: str, _sessions) -> dict:
+    """Ask the session index. Every failure is a result, never an exception."""
+    if not _sessions.db_path(root).exists():
+        return text_result(
+            f"the session index does not exist yet in {root}. Run teamme_librarian_refresh "
+            f'{{"librarian": "sessions"}} first - it reads the transcripts the harness already '
+            f"wrote, incrementally, and writes {_sessions.db_path(root)}.",
+            True,
+        )
+    conn = None
+    try:
+        conn, reset_note = _sessions.connect_or_reset(root)
+        if reset_note:
+            return text_result(
+                f"{reset_note}. Nothing was queried. Run teamme_librarian_refresh "
+                f'{{"librarian": "sessions"}} and ask again.', True)
+        q = _sessions.query(conn, which, args, root)
+    except Exception as exc:
+        return text_result(f"teamme_librarian_query failed: {exc}", True)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    if not q.get("ok"):
+        return text_result(f"teamme_librarian_query: {q.get('error')}", True)
+    return text_result(f"sessions / {which}: {q.get('count')} row(s)\n"
+                       + _render_session_rows(which, q, _sessions))
+
+
 def tool_librarian_query(root: pathlib.Path, args: dict) -> dict:
     lib = librarian()
     if lib is None:
         return librarian_missing()
-    _store, _history, _config = lib
-    name, refusal = _pick_librarian(args)
+    _store, _history, _config, _sessions = lib
+    which = str(args.get("query") or "").strip()
+    name, refusal = _route_query(args, which, _store, _sessions)
     if refusal:
         return refusal
     off = librarian_disabled(root, name, _config)
     if off:
         return off
-    which = str(args.get("query") or "").strip()
-    if which not in _store.QUERY_NAMES:
-        return text_result(
-            f"unknown query '{which}'. One of: {', '.join(_store.QUERY_NAMES)}", True
-        )
+    if name == "sessions":
+        return _session_query(root, args, which, _sessions)
     if not _store.db_path(root).exists():
         return text_result(
             f"the {name} index does not exist yet in {root}. Run teamme_librarian_refresh first "
@@ -1192,7 +1480,7 @@ def tool_librarian_configure(root: pathlib.Path, args: dict) -> dict:
     lib = librarian()
     if lib is None:
         return librarian_missing()
-    _store, _history, _config = lib
+    _store, _history, _config, _sessions = lib
     enable = args.get("enabled")
     commit = args.get("commit_record")
     # A boolean sent as "true" or 1 is dropped rather than guessed at - and said

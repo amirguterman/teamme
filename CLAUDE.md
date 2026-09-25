@@ -27,6 +27,13 @@ plugins/teamme/
                                    (changes_with/coupling_between/hotspots) built on the same
                                    files_changed rows - no new table, no new index pass. NOT copied
                                    into a project, NOT in REQUIRED_HOOKS - invoked only by teamme_mcp.py
+  server/librarian/transcripts.py the second harness-layout assumption teamme makes (after the install
+                                   record in preflight.py) - where Claude Code writes session
+                                   transcripts and what a line in one looks like, fenced between one
+                                   banner comment and the next, read live rather than cached
+  server/librarian/sessions.py    the session librarian: a lazy, incremental-by-byte-offset index over
+                                   those transcripts. No hook, nothing copied into a project, and no
+                                   JSONL record - the transcript itself is the record
   server/librarian/config.py      per-project librarian settings (.claude/librarians/config.json):
                                    which librarians are enabled, and whether the append-only record
                                    is committed - owned by the MCP server, enacted into .gitignore,
@@ -138,6 +145,27 @@ damped away, a path that genuinely changed alone, and too little history to rank
 distinguishable from one another rather than collapsing into one generic "no results". `hotspots` has
 no section of its own yet, and the renderer a librarian agent actually reads (`_render_cochange` in
 `teamme_mcp.py`) is exercised only by hand, not by `validate.sh` — both tracked as T35.
+
+The session librarian (`server/librarian/transcripts.py` and `sessions.py`) has six sections of its
+own, run against synthetic transcripts under a fixture project's own fake
+`$CLAUDE_CONFIG_DIR/projects/<slug>/` — never this repo's real conversations. Three are watch-fails: an
+**oversized-record wedge**, a real bug found while building this coverage — a record longer than
+`MAX_LINE_BYTES` came back from `readline()` with no trailing newline and was mistaken for a live,
+still-being-written tail, which permanently parked the byte offset in front of it and reported "nothing
+new to index" on every later refresh, forever (watched failing first by forcing the size-cap branch to
+always read as a partial tail); a **partial no-newline tail**, proving the opposite direction — a
+genuinely incomplete final line is left unconsumed rather than parsed, and picked up whole on the next
+refresh (watched failing by disabling that branch, which consumed the incomplete line early); and a
+**same-size content replacement**, proving a transcript replaced with different content at an identical
+byte length is caught by its first record's `uuid` changing, not by size, and forces a full reindex
+instead of silently trusting the old offset (watched failing by disabling the fingerprint-mismatch
+check, which left the old content searchable and the new content never indexed). Three more are not
+watch-fails: privacy is checked with `git check-ignore` as ground truth, not by reading `.gitignore`
+text, confirming `.claude/librarians/sessions/` stays ignored under `commit_record` both `true` and
+`false`; the `window` query's retrieval bound is proven by asking for a huge `before`/`after` span and
+confirming it still stops at `MAX_WINDOW`/`MAX_WINDOW_TOTAL_CHARS` with `truncated: true`, never
+dumping the session; and degradation is checked with no `$CLAUDE_CONFIG_DIR` and no `~/.claude` at all,
+returning a named error payload rather than raising.
 
 ## Design invariants
 
@@ -333,6 +361,43 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   built. Tests get no separate agent either: a test file that keeps changing alongside a source file
   *is* the test-to-code edge on the same signal, reported as "these tests change with this code", never
   "these tests cover this code" — coverage is a claim about execution, and the index has none.
+- **Lazy indexing over the harness's own transcripts, not a `PreCompact`/per-turn hook — and the
+  original premise was wrong.** The session librarian was first specified as continuous, in-flight
+  capture, so recovery would never depend on a hook firing at exactly the right moment. That premise
+  turned out unnecessary: the harness already writes the whole conversation, append-only, to
+  `$CLAUDE_CONFIG_DIR/projects/<slug>/<session>.jsonl`, and the file survives compaction regardless,
+  because it is a file rather than context. So `sessions.py` indexes exactly like `history.py` —
+  incrementally, by byte offset, on demand — adding zero new hooks, nothing joining `REQUIRED_HOOKS`,
+  and no per-turn latency. The rejected design is worth recording here rather than only in the task
+  notes: "index it live" is the obvious answer, and the reason it is unnecessary is not obvious until
+  the transcript itself is inspected.
+- **Compaction needs no `PreCompact` hook, verified rather than assumed.** A transcript records its own
+  compaction boundary — a `system` record with `subtype: compact_boundary` carrying pre/post token
+  counts, followed by the harness's own summary written into the conversation. The `compaction` query
+  reads that record directly; nothing needs to observe the event as it happens.
+- **The session index is never committable, regardless of `commit_record`, for a different reason than
+  the `.db` is.** `.claude/librarians/sessions/` sits in the same always-ignored `.gitignore` block as
+  `index.db`, so `commit_record` cannot reach it — but the reasoning differs. The `.db` is excluded
+  because a binary index cannot be merged; the session store is excluded because a transcript holds
+  everything anyone typed, including a secret pasted in by accident, and indexing it makes a second copy
+  of a private surface. `history` keeps a committable text record (`commits.jsonl`) precisely because it
+  is mergeable and worth sharing; the session librarian keeps no equivalent record at all (next entry) —
+  there is nothing there to offer the same choice about.
+- **No JSONL record for the session librarian.** `history` keeps an append-only text record because it
+  is mergeable and worth committing. Here the transcript already *is* that record — the harness's own
+  append-only file — so a second text copy would double a private surface for nothing.
+  `.claude/librarians/sessions/index.db` is disposable and rebuilt by reading the transcripts again,
+  the same relationship `history`'s `.db` has to `commits.jsonl`, except here the rebuild reads the
+  harness's own files directly rather than a teamme-owned record.
+- **`transcripts.py` is teamme's second assumption about Claude Code's own on-disk layout.**
+  `preflight.py`'s install-record lookup was the first; this is the second, contained the same way —
+  every function that touches the harness's transcript-file convention (where the files live, what a
+  line in one looks like) sits between one banner comment and the next in `transcripts.py`, and is read
+  live on every call rather than cached, so an upgrade that moves the layout is self-correcting instead
+  of silently wrong. If the slug-encoded directory name does not resolve, `locate()` falls back to
+  scanning `projects/` for a directory whose transcripts declare this project as their own `cwd` —
+  ground truth from the files themselves, not a second encoding guess — and only after that returns a
+  named "nothing found" rather than ever guessing.
 
 ## Known gaps
 
@@ -425,6 +490,20 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
 - `rewrite_records()`'s preservation of non-commit records (`kind != "commit"`, meant for phase 2's
   reasoned entries) through a full reindex has no test coverage, since no phase-2 code writes such a
   record yet.
+- **The session librarian's tools exist; nothing consults them.** `teamme_librarian_query`'s
+  `sessions`/`search_turns`/`window`/`compaction` queries are live on the MCP server, but
+  `agents/history-librarian.md`, `commands/init-team.md`'s shared guardrail block and
+  `templates/intake.md` step 1 mention only `history-librarian` and git history — none of them
+  instructs any agent to ask the session index about lost context. Until an agent (or an instruction
+  telling `history-librarian` to reach for it) is added, the session librarian is reachable only by an
+  agent that happens to know the tool exists and calls it directly.
+- The following are unasserted by `validate.sh` for the session librarian: the subagent-sidecar
+  indexing path (a session's `subagents/agent-*.jsonl` children are indexed and reported by
+  `sessions`/`search_turns` in code, but no fixture builds one to prove it); `locate()`'s cwd-based
+  fallback scan, used when the slug-encoded directory name does not resolve; the `compaction` query and
+  its `MAX_LOST_MARKS` cap on the spine it lists; a concurrent-refresh test for `sessions` (the
+  ten-concurrent-refresh assertion exists for `history`, not for `sessions`); and the per-turn
+  `MAX_TURN_CHARS` index-time cap.
 
 ## Conventions
 

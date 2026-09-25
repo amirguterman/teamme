@@ -160,6 +160,27 @@ Skip it when the request has no history question in it, and skip it when the lib
 unavailable or disabled in this project - note that in the brief instead of re-deriving the answer
 by hand. Reading history changes no phase: you are still in `grounding`.
 
+**Questions about what was *said* go to the same librarian.** Despite its name it reads a second
+index: this project's own session transcripts, one per session plus one per dispatched subagent. So
+when grounding turns on something agreed in conversation rather than written down - a decision from
+an earlier session, what a specialist reported back, or above all **something that fell out of
+context at a compaction** and can no longer be seen - consult `history-librarian` for that too, and
+cite the session id and mark point it returns. Its four session queries are `sessions`,
+`search_turns`, `window` and `compaction`, and the order that keeps the answer cheap is **locate,
+then read**: `compaction` or `search_turns` to find where it was discussed, then `window` to fetch
+that region and nothing else. Carry three limits into the brief whenever the answer leans on them -
+reasoning is **not recoverable** (thinking blocks are stored with an empty body, so "why was Y
+rejected" is answerable only from what was said out loud), **tool output is not indexed** (so a miss
+means not found in what was *said*, never that it was never on screen), and **subagent threads are
+usually the bulk of a session** on a team that dispatches, so most of what the question asks about
+happened in a child thread. Same rules as above: an instruction, not a gate; if that index is
+disabled for this project, say so and name `teamme_librarian_configure` rather than going and
+reading a transcript by hand; and it changes no phase either.
+
+**A decision recovered from a transcript is not spec.** It is evidence the decision was *made*, not
+that it was written down or implemented. Treat it as **unspecified** above until the brief's spec
+delta writes it down, and check the code or the history index before claiming it landed.
+
 ## 2. Classify it against the layer boundaries
 
 {{LANE_TABLE}}
