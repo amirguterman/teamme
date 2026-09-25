@@ -487,7 +487,7 @@
     {
       "id": "T30",
       "title": "Session librarian: index every session turn as it happens, so context lost to compaction can be fetched back by mark point instead of re-reading the transcript",
-      "status": "dispatched",
+      "status": "done",
       "priority": "P0",
       "lane": "teamme-prompt-author",
       "notes": [
@@ -509,10 +509,10 @@
         "THIRD correction to the same changelog bullet, and I made this one myself rather than spend another round-trip: the entry told users teamme_librarian_status reports 'has_data: false'. That is an internal dict key in teamme_mcp.py (line 920) and is NEVER printed - the user-visible line is 'data: no - run teamme_librarian_refresh {\"librarian\": \"sessions\"}'. Verified by driving the real status tool over a pipe and reading its output, not by reading the source. Fixed in place, validate.sh still green. The sequence on this one bullet is the point: wrong query names (caught), a backwards default that came from MY brief (caught), and an invented status field (caught) - three separate false claims in one paragraph, all of which passed a 54-section suite, because nothing in CI compares a sentence about behaviour to the behaviour."
       ],
       "blocked_on": "",
-      "dispatched_to": "teamme-hook-engineer",
+      "dispatched_to": "",
       "created": "2026-09-24T14:36:35+00:00",
-      "updated": "2026-09-25T02:04:31+00:00",
-      "status_changed": "2026-09-25T01:19:44+00:00"
+      "updated": "2026-09-25T02:37:28+00:00",
+      "status_changed": "2026-09-25T02:37:28+00:00"
     },
     {
       "id": "T31",
