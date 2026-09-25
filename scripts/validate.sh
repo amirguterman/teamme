@@ -60,6 +60,28 @@ def parse_frontmatter(text: str):
     return out, None
 
 
+def check_scalar_shapes(fm, rel_path):
+    """No frontmatter scalar may begin with an unquoted '[' or '{'.
+
+    parse_frontmatter() above is a lenient reader for this repo's flat
+    'key: scalar' shape, not a real YAML parser - there is no YAML library
+    here by design. A value like `[what to change...]` reads as a plain
+    string to that lenient reader, but a real YAML parser treats an unquoted
+    leading '[' or '{' as the start of a flow sequence/mapping, so a
+    genuinely different (and possibly broken) value would ship read here as
+    green. This happened once already, in a draft of modify-team.md's own
+    argument-hint (`[` and a `"` together) - caught by inspection here, not
+    by this check, which is exactly why the check exists now.
+    """
+    for key, val in (fm or {}).items():
+        if isinstance(val, str) and val[:1] in ("[", "{"):
+            sys.exit(
+                f"{rel_path}: frontmatter key '{key}' starts with an unquoted '{val[:1]}' - "
+                "this parses as plain text here but as a YAML flow sequence/mapping to a real "
+                "YAML parser; quote the value if a literal bracket/brace is intended"
+            )
+
+
 m = json.loads((root / ".claude-plugin/marketplace.json").read_text())
 entries = m.get("plugins") or []
 if not entries:
@@ -88,6 +110,7 @@ for e in entries:
             sys.exit(f"{c.relative_to(root)}: {err}")
         if not fm.get("description"):
             sys.exit(f"{c.relative_to(root)}: frontmatter has no 'description'")
+        check_scalar_shapes(fm, c.relative_to(root))
 
     agent_dir = pdir / "agents"
     agents = sorted(agent_dir.glob("*.md")) if agent_dir.is_dir() else []
@@ -121,6 +144,7 @@ for e in entries:
         for req in ("name", "description"):
             if not fm.get(req):
                 sys.exit(f"{a.relative_to(root)}: frontmatter is missing '{req}'")
+        check_scalar_shapes(fm, a.relative_to(root))
         present = [k for k in FORBIDDEN_AGENT_KEYS if k in fm]
         if present:
             sys.exit(
@@ -130,6 +154,16 @@ for e in entries:
 
     print(f"  ok: {p['name']} v{p.get('version','?')} - {len(cmds)} command(s), {len(agents)} agent(s)")
 PY
+
+# Locks in that the count above actually reflects the files on disk - modify-team.md
+# is new and untracked at T3's time, and a manifests check that only ever globbed
+# commands/*.md silently but happened to still find it would prove nothing about
+# whether the count is being read correctly. Bump this when a command is
+# deliberately added or removed; that is the point of naming the number here rather
+# than only printing it above.
+CMD_COUNT=$(ls plugins/teamme/commands/*.md | wc -l)
+[ "$CMD_COUNT" = "4" ] || fail "expected 4 command files in plugins/teamme/commands/ (init-team, modify-team, queue, team-doctor), found $CMD_COUNT"
+echo "  ok: plugins/teamme/commands/ has exactly 4 command files, including modify-team.md"
 
 echo "== hook syntax =="
 python3 -m py_compile plugins/*/templates/hooks/*.py
@@ -1589,6 +1623,457 @@ if data.get("state") != "not-installed":
     )
 print("  ok: an unrelated SessionStart hook does not count as teamme install evidence")
 PY
+
+echo "== preflight roster: helpers, and a clean fixture where all three checks PASS =="
+# Everything below lives under this throwaway project ($T, mktemp -d, trap-cleaned)
+# or a fresh copy of pf-full built above - never this repo's own .claude/, and no
+# real transcripts or history index are ever touched by any of it.
+
+roster_write_agent() {  # dir filename declared-name
+  local dir="$1" fname="$2" name="$3"
+  mkdir -p "$dir/.claude/agents"
+  cat > "$dir/.claude/agents/$fname" <<AGENTEOF
+---
+name: $name
+description: the $name agent, for roster-consistency testing only.
+---
+Body for $name.
+AGENTEOF
+}
+
+roster_write_readme() {  # dir  row-names...
+  local dir="$1"; shift
+  mkdir -p "$dir/.claude/agents"
+  {
+    echo "# Agents"
+    echo
+    echo "| Agent | Role |"
+    echo "| --- | --- |"
+    for n in "$@"; do
+      echo "| $n | does $n things |"
+    done
+  } > "$dir/.claude/agents/README.md"
+}
+
+roster_write_intake() {  # dir  body-text
+  local dir="$1" body="$2"
+  mkdir -p "$dir/.claude/commands"
+  cat > "$dir/.claude/commands/intake.md" <<INTAKEEOF
+---
+description: roster-fixture intake
+---
+$body
+INTAKEEOF
+}
+
+roster_get() {  # json-file check-id -> "state|ok|detail" on stdout
+  python3 -c "
+import json, sys
+d = json.load(open('$1'))
+c = next((x for x in d['checks'] if x['id'] == '$2'), None)
+if c is None:
+    sys.exit('no check with id ' + repr('$2') + ' in ' + repr(d))
+print(c['state'] + '|' + str(c['ok']) + '|' + c['detail'])
+"
+}
+
+CLEAN="$PWD/roster-clean"
+roster_write_agent "$CLEAN" "agent-a.md" "agent-a"
+roster_write_agent "$CLEAN" "agent-b.md" "agent-b"
+roster_write_readme "$CLEAN" "agent-a" "agent-b"
+roster_write_intake "$CLEAN" "Dispatch history questions to agent-a, and API questions to agent-b."
+CLEAN_TA=$(CLAUDE_PROJECT_DIR="$CLEAN" python3 "$H/worklog.py" add "laned to a" --priority P1 --lane agent-a | grep -oE 'T[0-9]+' | head -1)
+CLEAN_TB=$(CLAUDE_PROJECT_DIR="$CLEAN" python3 "$H/worklog.py" add "laned to b" --priority P1 --lane agent-b | grep -oE 'T[0-9]+' | head -1)
+CLAUDE_PROJECT_DIR="$CLEAN" python3 "$H/worklog.py" add "no lane yet" --priority P2 >/dev/null
+CLEAN_TC=$(CLAUDE_PROJECT_DIR="$CLEAN" python3 "$H/worklog.py" add "closed with a dead lane" --priority P2 --lane extinct-agent | grep -oE 'T[0-9]+' | head -1)
+CLAUDE_PROJECT_DIR="$CLEAN" python3 "$H/worklog.py" done "$CLEAN_TC" >/dev/null
+[ -n "$CLEAN_TA" ] && [ -n "$CLEAN_TB" ] && [ -n "$CLEAN_TC" ] || fail "could not build the clean roster fixture's worklog tasks"
+
+CLEAN_JSON="$PWD/roster-clean.json"
+set +e
+python3 "$PF" roster --json --project-dir "$CLEAN" > "$CLEAN_JSON"
+CLEAN_RC=$?
+set -e
+[ "$CLEAN_RC" -eq 0 ] || fail "roster exited $CLEAN_RC on a deliberately consistent fixture: $(cat "$CLEAN_JSON")"
+python3 -c "
+import json
+d = json.load(open('$CLEAN_JSON'))
+ids = [c['id'] for c in d['checks']]
+if ids != ['roster_readme', 'roster_command', 'roster_tasks']:
+    raise SystemExit(f'unexpected check id set/order: {ids}')
+if not d.get('ok') or any(not c['ok'] for c in d['checks']):
+    raise SystemExit(f'a consistent fixture did not PASS all three checks: {d}')
+"
+READ_DETAIL=$(roster_get "$CLEAN_JSON" roster_readme | cut -d'|' -f3)
+echo "$READ_DETAIL" | grep -q '2 agents, 2 README rows' || fail "roster_readme detail unexpected: $READ_DETAIL"
+CMD_DETAIL=$(roster_get "$CLEAN_JSON" roster_command | cut -d'|' -f3)
+echo "$CMD_DETAIL" | grep -q 'intake.md names all 2 agents' || fail "roster_command detail unexpected: $CMD_DETAIL"
+TASK_DETAIL=$(roster_get "$CLEAN_JSON" roster_tasks | cut -d'|' -f3)
+echo "$TASK_DETAIL" | grep -q '2/2 name a live lane, 1 with no lane' || fail "roster_tasks detail unexpected (expected 2/2 laned, 1 laneless, closed dead-lane task invisible): $TASK_DETAIL"
+echo "  ok: a genuinely consistent fixture PASSes all three checks (exact ids, exact detail text), and a closed task with a dead lane does not even show up in the ratio"
+
+echo "== preflight roster: check 1 (README rows) fails in BOTH directions on one line - a missing row and an unmatched extra row =="
+BOTHDIR="$PWD/roster-readme-both"
+roster_write_agent "$BOTHDIR" "agent-a.md" "agent-a"
+roster_write_agent "$BOTHDIR" "agent-b.md" "agent-b"
+roster_write_readme "$BOTHDIR" "agent-a" "agent-ghost"   # agent-b has no row; agent-ghost names no file
+BOTHDIR_JSON="$PWD/roster-readme-both.json"
+python3 "$PF" roster --json --project-dir "$BOTHDIR" > "$BOTHDIR_JSON" || true
+BOTHDIR_DETAIL=$(roster_get "$BOTHDIR_JSON" roster_readme | cut -d'|' -f3)
+BOTHDIR_STATE=$(roster_get "$BOTHDIR_JSON" roster_readme | cut -d'|' -f1)
+[ "$BOTHDIR_STATE" = "fail" ] || fail "roster_readme was '$BOTHDIR_STATE', expected fail, for a fixture missing a row AND carrying an extra one: $BOTHDIR_DETAIL"
+echo "$BOTHDIR_DETAIL" | grep -q 'no row for .agent-b' || fail "missing-row direction not reported: $BOTHDIR_DETAIL"
+echo "$BOTHDIR_DETAIL" | grep -q 'rows naming no agent file: .agent-ghost' || fail "extra-row direction not reported: $BOTHDIR_DETAIL"
+echo "$BOTHDIR_DETAIL" | grep -q '; ' || fail "both directions were not reported together on one line: $BOTHDIR_DETAIL"
+echo "  ok: a missing row and an unmatched extra row are both named, on the same line"
+
+echo "== preflight roster: check 2's narrow whole-word claim - app-api != app-api-tests, and prose-only mentions PASS =="
+NARROW="$PWD/roster-command-narrow"
+roster_write_agent "$NARROW" "app-api.md" "app-api"
+roster_write_readme "$NARROW" "app-api"
+roster_write_intake "$NARROW" "Route infrastructure questions to app-api-tests for now."
+CLAUDE_PROJECT_DIR="$NARROW" python3 "$H/worklog.py" add "narrow-match task" --priority P1 --lane app-api >/dev/null
+NARROW_JSON1="$PWD/roster-command-narrow-1.json"
+python3 "$PF" roster --json --project-dir "$NARROW" > "$NARROW_JSON1" || true
+N1_STATE=$(roster_get "$NARROW_JSON1" roster_command | cut -d'|' -f1)
+N1_DETAIL=$(roster_get "$NARROW_JSON1" roster_command | cut -d'|' -f3)
+[ "$N1_STATE" = "fail" ] || fail "'app-api-tests' alone wrongly satisfied a whole-word match for 'app-api': $N1_DETAIL"
+echo "$N1_DETAIL" | grep -q 'no row for .app-api' || fail "narrow-match failure did not name app-api: $N1_DETAIL"
+echo "$N1_DETAIL" | grep -q 'appears nowhere' || fail "narrow-match failure detail changed shape: $N1_DETAIL"
+roster_write_intake "$NARROW" "Route infra questions to app-api-tests, and everything else to app-api directly."
+NARROW_JSON2="$PWD/roster-command-narrow-2.json"
+set +e
+python3 "$PF" roster --json --project-dir "$NARROW" > "$NARROW_JSON2"
+NARROW_RC2=$?
+set -e
+[ "$NARROW_RC2" -eq 0 ] || fail "roster did not exit 0 once app-api is named in prose (with a matching README row and a laned task already in place): $(cat "$NARROW_JSON2")"
+N2_STATE=$(roster_get "$NARROW_JSON2" roster_command | cut -d'|' -f1)
+[ "$N2_STATE" = "pass" ] || fail "a bare, prose-only mention of app-api (no table) did not PASS: $(roster_get "$NARROW_JSON2" roster_command)"
+echo "  ok: app-api-tests alone does not satisfy app-api (whole-word), and a bare prose mention (no table at all) PASSes"
+
+echo "== preflight roster: closed tasks are exempt even with a dead lane, and it has its own watch-fail (scratch copy of preflight.py, never the file in place) =="
+CLOSEDFX="$PWD/roster-closed"
+roster_write_agent "$CLOSEDFX" "agent-a.md" "agent-a"
+roster_write_readme "$CLOSEDFX" "agent-a"
+roster_write_intake "$CLOSEDFX" "agent-a handles everything here."
+CLOSED_OPEN=$(CLAUDE_PROJECT_DIR="$CLOSEDFX" python3 "$H/worklog.py" add "the one live task" --priority P1 --lane agent-a | grep -oE 'T[0-9]+' | head -1)
+CLOSED_DONE=$(CLAUDE_PROJECT_DIR="$CLOSEDFX" python3 "$H/worklog.py" add "done, dead lane" --priority P2 --lane extinct-agent | grep -oE 'T[0-9]+' | head -1)
+CLOSED_DECLINED=$(CLAUDE_PROJECT_DIR="$CLOSEDFX" python3 "$H/worklog.py" add "declined, dead lane" --priority P2 --lane extinct-agent | grep -oE 'T[0-9]+' | head -1)
+CLOSED_DROPPED=$(CLAUDE_PROJECT_DIR="$CLOSEDFX" python3 "$H/worklog.py" add "dropped, dead lane" --priority P2 --lane extinct-agent | grep -oE 'T[0-9]+' | head -1)
+CLAUDE_PROJECT_DIR="$CLOSEDFX" python3 "$H/worklog.py" done "$CLOSED_DONE" >/dev/null
+CLAUDE_PROJECT_DIR="$CLOSEDFX" python3 "$H/worklog.py" decline "$CLOSED_DECLINED" "no longer relevant" >/dev/null
+CLAUDE_PROJECT_DIR="$CLOSEDFX" python3 "$H/worklog.py" drop "$CLOSED_DROPPED" "abandoned" >/dev/null
+
+CLOSED_JSON="$PWD/roster-closed.json"
+python3 "$PF" roster --json --project-dir "$CLOSEDFX" > "$CLOSED_JSON"
+CLOSED_STATE=$(roster_get "$CLOSED_JSON" roster_tasks | cut -d'|' -f1)
+CLOSED_DETAIL=$(roster_get "$CLOSED_JSON" roster_tasks | cut -d'|' -f3)
+[ "$CLOSED_STATE" = "pass" ] || fail "3 closed tasks (done/declined/dropped) all naming a dead lane wrongly failed roster_tasks: $CLOSED_DETAIL"
+echo "$CLOSED_DETAIL" | grep -q '1/1 name a live lane' || fail "roster_tasks detail unexpected once closed tasks are excluded: $CLOSED_DETAIL"
+echo "  ok: done/declined/dropped tasks naming a dead lane are exempt - roster_tasks PASSes on the one open, correctly-laned task alone"
+
+# [watch-fail] a scratch copy only - preflight.py belongs to teamme-hook-engineer and
+# may still be under edit; CONTRIBUTING.md's standing rule is to break a copy, never
+# the file in place. Mechanism: read the real source text, delete the closed-status
+# "continue" (the exemption itself) from _roster_check_tasks, write the mutated copy
+# to a scratch file, and run THAT against the exact same closed-dead-lane fixture
+# proven PASS above.
+python3 - "$PF" "$PWD/pf-roster-broken-exempt.py" <<'PY'
+import pathlib, sys
+
+src_path, dst_path = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+text = src_path.read_text()
+needle = (
+    '        if str(t.get("status") or "") in closed:\n'
+    '            continue  # history, and exempt on purpose\n'
+)
+if needle not in text:
+    sys.exit("could not find the closed-status exemption to remove - preflight.py's "
+              "_roster_check_tasks shape has changed; update this watch-fail")
+dst_path.write_text(text.replace(needle, "", 1))
+PY
+BROKEN_EXEMPT_JSON="$PWD/roster-closed-broken.json"
+set +e
+python3 "$PWD/pf-roster-broken-exempt.py" roster --json --project-dir "$CLOSEDFX" > "$BROKEN_EXEMPT_JSON"
+BROKEN_EXEMPT_RC=$?
+set -e
+[ "$BROKEN_EXEMPT_RC" -ne 0 ] || fail "[watch-fail] removing the closed-status exemption did not change the outcome - the PASS proven above is vacuous"
+BROKEN_EXEMPT_STATE=$(roster_get "$BROKEN_EXEMPT_JSON" roster_tasks | cut -d'|' -f1)
+[ "$BROKEN_EXEMPT_STATE" = "fail" ] || fail "[watch-fail] expected roster_tasks to fail once the closed-status skip is removed, got $BROKEN_EXEMPT_STATE"
+echo "  ok: [watch-fail] with the closed-status exemption removed from a scratch copy, the identical fixture now FAILs - the PASS above is not vacuous"
+
+echo "== preflight roster: CLOSED_STATUSES is read from worklog.py's own source text, proven by differential (not a scratch copy - the real, unmodified preflight.py) =="
+SRCFX="$PWD/roster-closed-src"
+roster_write_agent "$SRCFX" "agent-a.md" "agent-a"
+roster_write_readme "$SRCFX" "agent-a"
+roster_write_intake "$SRCFX" "agent-a handles everything here."
+mkdir -p "$SRCFX/.claude/hooks"
+python3 -c "
+import pathlib
+src = pathlib.Path('$H/worklog.py').read_text()
+needle = 'CLOSED_STATUSES = (\"done\", \"declined\", \"dropped\")'
+assert needle in src, 'worklog.py CLOSED_STATUSES literal has changed shape - update this fixture'
+pathlib.Path('$SRCFX/.claude/hooks/worklog.py').write_text(
+    src.replace(needle, 'CLOSED_STATUSES = (\"done\", \"declined\", \"dropped\", \"superseded\")', 1)
+)
+"
+SRC_OPEN=$(CLAUDE_PROJECT_DIR="$SRCFX" python3 "$H/worklog.py" add "the one live task" --priority P1 --lane agent-a | grep -oE 'T[0-9]+' | head -1)
+SRC_SUPERSEDED=$(CLAUDE_PROJECT_DIR="$SRCFX" python3 "$H/worklog.py" add "superseded, dead lane" --priority P2 --lane extinct-agent | grep -oE 'T[0-9]+' | head -1)
+# worklog.py itself has no `supersede` verb; write the status directly, the same
+# way the building lane's own note said it proved this (worklog.json is a plain
+# JSON file, and this is the ONE section in this brief that touches it directly
+# rather than through the CLI, precisely because "superseded" is a status this
+# fixture invents to exercise the parser, not a real worklog.py action).
+python3 -c "
+import json
+p = '$SRCFX/.claude/intake/worklog.json'
+d = json.load(open(p))
+for t in d['tasks']:
+    if t['id'] == '$SRC_SUPERSEDED':
+        t['status'] = 'superseded'
+json.dump(d, open(p, 'w'), indent=2)
+"
+SRC_JSON1="$PWD/roster-closed-src-1.json"
+python3 "$PF" roster --json --project-dir "$SRCFX" > "$SRC_JSON1"
+SRC1_STATE=$(roster_get "$SRC_JSON1" roster_tasks | cut -d'|' -f1)
+SRC1_DETAIL=$(roster_get "$SRC_JSON1" roster_tasks | cut -d'|' -f3)
+[ "$SRC1_STATE" = "pass" ] || fail "with the fixture's own worklog.py declaring 'superseded' as closed, the superseded/dead-lane task was not exempt: $SRC1_DETAIL"
+echo "$SRC1_DETAIL" | grep -q 'built-in default was used' && fail "detail claims the fallback was used even though the fixture's own worklog.py was read: $SRC1_DETAIL"
+echo "  ok: with the fixture's own worklog.py declaring an extra 'superseded' closed status, a superseded task with a dead lane is exempt"
+
+rm "$SRCFX/.claude/hooks/worklog.py"
+SRC_JSON2="$PWD/roster-closed-src-2.json"
+python3 "$PF" roster --json --project-dir "$SRCFX" > "$SRC_JSON2" || true
+SRC2_STATE=$(roster_get "$SRC_JSON2" roster_tasks | cut -d'|' -f1)
+SRC2_DETAIL=$(roster_get "$SRC_JSON2" roster_tasks | cut -d'|' -f3)
+[ "$SRC2_STATE" = "fail" ] || fail "removing the fixture's own worklog.py (falling back to the plugin's real one, which has no 'superseded') did not flip the same task to non-closed: $SRC2_DETAIL"
+echo "$SRC2_DETAIL" | grep -q "$SRC_SUPERSEDED" || fail "the now-non-closed task was not named in the failure: $SRC2_DETAIL"
+echo "  ok: removing that file falls back and the identical task becomes non-closed and FAILs - CLOSED_STATUSES is genuinely read live from the sibling script's source, not cached or hardcoded"
+
+echo "== preflight roster: SKIP never degrades into PASS - missing/unreadable roster docs each say what they could not read =="
+python3 - "$PF" "$CLEAN" "$PWD" <<'PY'
+import json, pathlib, shutil, subprocess, sys
+
+pf, clean_dir, work = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
+
+
+def run_roster(project_dir):
+    proc = subprocess.run(
+        ["python3", str(pf), "roster", "--json", "--project-dir", str(project_dir)],
+        capture_output=True, text=True, timeout=10,
+    )
+    try:
+        data = json.loads(proc.stdout)
+    except Exception as exc:
+        sys.exit(f"roster --json produced unparseable output for {project_dir}: {exc}\n{proc.stdout}")
+    return proc.returncode, data
+
+
+def fresh(name):
+    dst = work / f"roster-skip-{name}"
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(clean_dir, dst)
+    return dst
+
+
+def by_id(data, cid):
+    for c in data.get("checks") or []:
+        if c.get("id") == cid:
+            return c
+    sys.exit(f"no check {cid!r} in {data}")
+
+
+def assert_skip(name, target_ids, mutate, reason_substr):
+    dst = fresh(name)
+    mutate(dst)
+    rc, data = run_roster(dst)
+    if rc == 0:
+        sys.exit(f"[{name}] roster exited 0 with {target_ids} unreadable/missing - a SKIP must never look like success")
+    for cid in target_ids:
+        c = by_id(data, cid)
+        if c.get("state") == "pass":
+            sys.exit(f"[{name}] check {cid!r} reported PASS from a file it could not read: {c}")
+        if c.get("ok"):
+            sys.exit(f"[{name}] check {cid!r} reported ok=true while state={c.get('state')!r}: {c}")
+        if reason_substr not in c.get("detail", ""):
+            sys.exit(f"[{name}] check {cid!r} did not name what it could not read (expected {reason_substr!r}): {c}")
+    print(f"  ok: [{name}] never PASSes; names what it could not read")
+
+
+assert_skip(
+    "no-agents-dir", ("roster_readme", "roster_command", "roster_tasks"),
+    lambda d: shutil.rmtree(d / ".claude" / "agents"),
+    "no .claude/agents/ directory",
+)
+assert_skip(
+    "no-readme", ("roster_readme",),
+    lambda d: (d / ".claude" / "agents" / "README.md").unlink(),
+    "README.md is missing",
+)
+
+
+def make_unreadable(d):
+    p = d / ".claude" / "agents" / "README.md"
+    p.chmod(0o000)
+
+
+assert_skip("unreadable-readme", ("roster_readme",), make_unreadable, "could not read")
+# permissions do not block rm of the parent's entry, but leave nothing chmod-locked
+# behind for the trap cleanup to trip over
+(work / "roster-skip-unreadable-readme" / ".claude" / "agents" / "README.md").chmod(0o644)
+
+assert_skip(
+    "no-intake", ("roster_command",),
+    lambda d: (d / ".claude" / "commands" / "intake.md").unlink(),
+    "intake.md is missing",
+)
+assert_skip(
+    "no-worklog", ("roster_tasks",),
+    lambda d: (d / ".claude" / "intake" / "worklog.json").unlink(),
+    "worklog.json is missing",
+)
+assert_skip(
+    "corrupt-worklog", ("roster_tasks",),
+    lambda d: (d / ".claude" / "intake" / "worklog.json").write_text("not json at all"),
+    "could not read",
+)
+assert_skip(
+    "worklog-no-tasks-key", ("roster_tasks",),
+    lambda d: (d / ".claude" / "intake" / "worklog.json").write_text("{}"),
+    "no `tasks` list",
+)
+PY
+
+echo "== preflight roster: an agent's identity is its frontmatter name, not the filename stem, and <name>.md.disabled is genuinely out of the roster =="
+IDFX="$PWD/roster-identity"
+roster_write_agent "$IDFX" "weird-filename-does-not-matter.md" "app-api"
+mkdir -p "$IDFX/.claude/agents"
+cat > "$IDFX/.claude/agents/zombie-agent.md.disabled" <<'ZOMBIEEOF'
+---
+name: zombie-agent
+description: a disabled agent - the drop path in /teamme:modify-team depends on this suffix meaning "not in the roster".
+---
+Body for a disabled agent.
+ZOMBIEEOF
+# A row naming zombie-agent is deliberate: if the .md.disabled suffix were ever
+# NOT excluded, "zombie-agent" would be a live agent name and this row would
+# match it (a false PASS that would prove nothing). Because it genuinely is
+# excluded, this row names no agent file, and roster_readme must FAIL and say so.
+roster_write_readme "$IDFX" "app-api" "zombie-agent"
+IDFX_JSON="$PWD/roster-identity.json"
+python3 "$PF" roster --json --project-dir "$IDFX" > "$IDFX_JSON" || true
+ID_STATE=$(roster_get "$IDFX_JSON" roster_readme | cut -d'|' -f1)
+ID_DETAIL=$(roster_get "$IDFX_JSON" roster_readme | cut -d'|' -f3)
+[ "$ID_STATE" = "fail" ] || fail "a row for zombie-agent (a *.md.disabled file) did not fail roster_readme - the disabled file was wrongly treated as a live agent: $ID_DETAIL"
+echo "$ID_DETAIL" | grep -q 'rows naming no agent file: .zombie-agent' || fail "the disabled file's name was not reported as an unmatched row: $ID_DETAIL"
+echo "$ID_DETAIL" | grep -q 'no row for' && fail "app-api (declared in frontmatter, filename is weird-filename-does-not-matter.md) was not recognised as a live agent by its filename stem: $ID_DETAIL"
+echo "  ok: identity is the frontmatter name (a file named weird-filename-*.md is found as app-api), and a *.md.disabled file is excluded outright - a row for it fails as unmatched, not ignored"
+
+echo "== preflight: [watch-fail] a drifted roster never moves check's exit code, its state, or its check set - both directions, plus a scratch copy that breaks the separation =="
+# Direction 1: a fully scaffolded, HEARTBEATED (live) project whose roster is
+# deliberately drifted. check must not even notice.
+# Deliberately NOT named anything containing "roster": the project_dir field in
+# check's own JSON output would then trivially contain that substring, and the
+# "the string 'roster' appears nowhere" assertion below would be a false
+# positive against the fixture's own path rather than a real property.
+DRIFT="$PWD/pf-team-drift"
+cp -r pf-full "$DRIFT"
+roster_write_agent "$DRIFT" "agent-a.md" "agent-a"
+roster_write_readme "$DRIFT" "agent-a" "agent-ghost"   # agent-ghost names no file: a deliberate FAIL
+cat > "$DRIFT/.claude/commands/intake.md" <<'DRIFTEOF'
+---
+description: x
+---
+Dispatch to agent-a.
+DRIFTEOF
+
+DRIFT_CHECK_OUT="$PWD/pf-roster-drift-check.json"
+set +e
+python3 "$PF" check --json --project-dir "$DRIFT" > "$DRIFT_CHECK_OUT"
+DRIFT_CHECK_RC=$?
+set -e
+[ "$DRIFT_CHECK_RC" -eq 0 ] || fail "a drifted roster changed check's exit code to $DRIFT_CHECK_RC on an otherwise-live install"
+python3 -c "
+import json
+d = json.load(open('$DRIFT_CHECK_OUT'))
+if d.get('state') != 'live':
+    raise SystemExit(f\"a drifted roster changed check's state to {d.get('state')!r} (expected live)\")
+ids = sorted(c['id'] for c in d['checks'])
+expected = sorted(['python3', 'hooks', 'command', 'settings', 'intake_dir', 'liveness'])
+if ids != expected:
+    raise SystemExit(f'check --json ids were {ids}, expected exactly {expected} - a drifted roster must not add or remove a check')
+"
+grep -q 'roster' "$DRIFT_CHECK_OUT" && fail "the string 'roster' appeared in check --json's own output - the two verdicts must never bleed into one another: $(cat "$DRIFT_CHECK_OUT")"
+
+DRIFT_ROSTER_OUT="$PWD/pf-roster-drift-roster.json"
+set +e
+python3 "$PF" roster --json --project-dir "$DRIFT" > "$DRIFT_ROSTER_OUT"
+DRIFT_ROSTER_RC=$?
+set -e
+[ "$DRIFT_ROSTER_RC" -ne 0 ] || fail "roster exited 0 on the deliberately drifted fixture (agent-ghost names no file): $(cat "$DRIFT_ROSTER_OUT")"
+echo "  ok: direction 1 - a live, fully-heartbeated install with a drifted roster: check stays exit 0 / state live / exact 6 ids, and never mentions 'roster'; roster itself exits 1"
+
+# Direction 2: the reverse - a project whose roster genuinely agrees but that was
+# never installed at all. roster must not be dragged down by check's own failure.
+CLEAN_CHECK_OUT="$PWD/roster-clean-check.json"
+set +e
+python3 "$PF" check --json --project-dir "$CLEAN" > "$CLEAN_CHECK_OUT"
+CLEAN_CHECK_RC=$?
+set -e
+[ "$CLEAN_CHECK_RC" -ne 0 ] || fail "check exited 0 for roster-clean, which was never scaffolded (no .claude/hooks, no settings.json)"
+CLEAN_CHECK_STATE=$(python3 -c "import json; print(json.load(open('$CLEAN_CHECK_OUT'))['state'])")
+# roster-clean has a real .claude/commands/intake.md (roster_command needs one to
+# check), and a bare intake.md's mere existence is itself install evidence (see
+# _install_evidence()) - so this fixture lands on installed-outdated, not
+# not-installed, with none of .claude/hooks/settings.json/.claude/intake present.
+# Either way it is a non-zero check() exit, which is the property under test; the
+# exact state string is not.
+case "$CLEAN_CHECK_STATE" in
+  not-installed|installed-outdated) : ;;
+  *) fail "expected not-installed or installed-outdated for the unscaffolded clean-roster project, got $CLEAN_CHECK_STATE" ;;
+esac
+[ "$CLEAN_RC" -eq 0 ] || fail "roster's own exit code for roster-clean regressed to $CLEAN_RC (was asserted 0 above)"
+echo "  ok: direction 2 - a genuinely agreeing roster in a project that was never scaffolded: check is non-zero ($CLEAN_CHECK_STATE), roster is still exit 0"
+
+# [watch-fail] scratch copy ONLY - preflight.py is teamme-hook-engineer's file and
+# may still be under edit; per CONTRIBUTING.md, break a copy, never the file in
+# place. Mechanism: fold roster()'s own checks into diagnose()'s check list (the
+# exact shape of mistake this design was approved specifically to rule out), run
+# it against the SAME drifted-but-live fixture proven clean above, and confirm the
+# separation, once actually broken, is something these assertions would catch.
+python3 - "$PF" "$PWD/pf-roster-broken-separation.py" <<'PY'
+import pathlib, sys
+
+src_path, dst_path = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+text = src_path.read_text()
+needle = "    checks.append(live)\n"
+if text.count(needle) != 1:
+    sys.exit("could not find the single 'checks.append(live)' line in diagnose() - "
+              "preflight.py's shape has changed; update this watch-fail")
+patched = text.replace(
+    needle,
+    needle + '    checks += roster(root).get("checks", [])  # [watch-fail injection]\n',
+    1,
+)
+dst_path.write_text(patched)
+PY
+BROKEN_SEP_OUT="$PWD/pf-roster-broken-separation-check.json"
+set +e
+python3 "$PWD/pf-roster-broken-separation.py" check --json --project-dir "$DRIFT" > "$BROKEN_SEP_OUT"
+BROKEN_SEP_RC=$?
+set -e
+python3 -c "
+import json, sys
+rc = $BROKEN_SEP_RC
+d = json.load(open('$BROKEN_SEP_OUT'))
+ids = sorted(c['id'] for c in d['checks'])
+expected = sorted(['python3', 'hooks', 'command', 'settings', 'intake_dir', 'liveness'])
+violated = (rc != 0) or (d.get('state') != 'live') or (ids != expected)
+if not violated:
+    sys.exit('[watch-fail] folding roster() into diagnose() did not visibly break the property on the drifted-but-live fixture - the assertions above would not have caught this')
+"
+echo "  ok: [watch-fail] with a scratch copy that folds roster() into diagnose(), the SAME fixture now flips check's exit code/state/id set - confirming the property proven above is not vacuous"
 
 echo "== mcp server: teamme_install repairs an installed-outdated project without touching intake.md =="
 make_outdated_fixture "$PWD/repair-proj"

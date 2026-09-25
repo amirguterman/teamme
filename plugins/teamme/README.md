@@ -40,6 +40,24 @@ It then installs:
 - **`.claude/commands/intake.md`** — the only sanctioned way to request work.
 - **`.claude/hooks/`** plus the matching `settings.json` hooks.
 
+## Changing an existing team: `/teamme:modify-team`
+
+`/teamme:init-team` is the installer and should not be re-run over a team that already works — it
+re-runs the questionnaire and regenerates the roster from scratch. `/teamme:team-doctor` repairs
+scaffolding — hooks, the settings block, `.claude/intake/` — and never touches `.claude/agents/`. To
+add a lane, drop one, retool one (its tools, model, description or guardrails), or rename one, use
+`/teamme:modify-team` instead. It migrates every affected open task's `lane` field with it, moves a
+dropped or renamed agent's file aside to `<name>.md.disabled` rather than deleting it, and never
+re-lanes a closed task — that agent really did do that work, and the record does not get rewritten.
+
+A roster is one fact written down in four places: the agent files, the roster README's table, the
+generated `/intake` command's lane mentions, and every task's `lane` field in the work log. Changing
+one without the others is a bug worth catching, so `/teamme:modify-team` proves its own work with a
+second, separate check: `preflight.py roster`, reported by `/teamme:team-doctor` too. It marks each of
+three checks `PASS`, `FAIL`, or `SKIP` (could not be read, so unproven either way) and never touches
+`preflight.py check`'s own exit code — a roster gone stale costs a reader a wrong document, not a
+broken team, so it never halts `/intake` the way an incomplete install does.
+
 ## The `/intake` flow
 
 `/intake <anything you want>` is the front door. It does not just accept the request — it decides
@@ -309,7 +327,7 @@ A project's teamme install is always in one of four states:
 | State | Meaning | Remediation |
 |---|---|---|
 | `not-installed` | no evidence teamme was ever set up here | `/teamme:init-team` — the only state where the installer is the right advice |
-| `installed-outdated` | teamme **is** installed here, but part of the scaffolding is missing, or a hook script is present but differs from the plugin's copy — typically an install from an earlier release | repair only — `/teamme:team-doctor` or the `teamme_install` MCP tool. Never the installer: it would re-run the questionnaire and regenerate the roster over a team that already works. A hook that differs is left alone by a plain repair, since the difference could be a deliberate local edit — add `force=true` (or let `/teamme:team-doctor` ask) to replace it with the plugin's copy |
+| `installed-outdated` | teamme **is** installed here, but part of the scaffolding is missing, or a hook script is present but differs from the plugin's copy — typically an install from an earlier release | repair only — `/teamme:team-doctor` or the `teamme_install` MCP tool. Never the installer: it would re-run the questionnaire and regenerate the roster over a team that already works — if it's the roster itself you want to change, that's `/teamme:modify-team` (see above), not a reinstall. A hook that differs is left alone by a plain repair, since the difference could be a deliberate local edit — add `force=true` (or let `/teamme:team-doctor` ask) to replace it with the plugin's copy |
 | `installed-not-live` | the hook scripts and `.claude/settings.json` hooks block both exist, but no `SessionStart` has fired them yet — usually because `.claude/` held no settings file when the session started | `/hooks` or restart |
 | `live` | a `SessionStart` heartbeat proves the hooks are actually running | none |
 

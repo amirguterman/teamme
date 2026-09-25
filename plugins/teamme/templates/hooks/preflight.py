@@ -37,10 +37,18 @@ Used two ways, with one implementation so the two can never disagree:
                                             heartbeat, prints nothing, always
                                             exits 0 - it can never block a
                                             session from starting
+          python3 preflight.py roster       a SEPARATE verdict: does the team
+                                            roster still agree with itself in
+                                            all four places it is written down?
+                                            Never part of `check` - see the
+                                            banner above roster() for why
 
   import  diagnose(project_dir=None) -> dict with keys ok, state, installed,
           project_dir, checks (a list of {id,label,ok,detail,fix}), summary.
           render(result) -> list[str] for display.
+          roster(project_dir=None) -> dict with keys ok, project_dir, checks
+          (a list of {id,state,ok,detail,fix}), summary.
+          render_roster(result) -> list[str] for display.
 
 Nothing here writes anything except the heartbeat, and nothing here can deny a
 tool call or block a prompt.
@@ -49,6 +57,7 @@ tool call or block a prompt.
 import json
 import os
 import pathlib
+import re
 import select
 import sys
 import time
@@ -783,6 +792,418 @@ def render(result: dict) -> list:
     return lines
 
 
+# --------------------------------------------------------------------------- #
+# ROSTER CONSISTENCY - a separate verdict, deliberately NOT part of check().
+#
+# A team's roster is one fact written down in four places: the agent files in
+# .claude/agents/, the roster table in .claude/agents/README.md, the lane table
+# in the generated .claude/commands/intake.md, and the `lane` field on every
+# task in .claude/intake/worklog.json. A second copy of a fact drifting from its
+# source is this project's most expensive recurring bug, so something has to
+# compare the four.
+#
+# WHY IT IS NOT A check() ITEM, AND MUST NOT BECOME ONE: check()'s exit code is
+# what halts /intake in a generated install - templates/intake.md reads it and
+# stops on a failure. A README row that no longer matches the agent files costs
+# a reader a stale document; it does not stop one agent from working. Halting
+# somebody's /intake over a drifted doc would be the same over-reach that
+# deriving `installed` from a growing hook list already cost a P0 to unlearn.
+# So the two are kept visibly apart: different functions, different result
+# shapes, different renderers, different subcommands. Nothing below is called
+# from diagnose(), nothing below appears in its `checks` list, and nothing below
+# can move its exit code or its `state:` line.
+#
+# Every item here degrades to "not verified" (SKIP) rather than guessing. The
+# one answer that must never be produced from a file this could not read is
+# "consistent".
+# --------------------------------------------------------------------------- #
+
+ROSTER_FIX = "/teamme:modify-team"
+
+# Concluded statuses. THE list lives in worklog.py; this reads it out of the
+# sibling script's source rather than keeping a second copy, because a second
+# copy is precisely the drift this subcommand exists to catch. Parsed, never
+# imported - a health check must not execute a script it found on disk. The
+# literal below is reached only when the sibling cannot be read, and the check
+# that falls back says so in its own detail line rather than staying quiet.
+CLOSED_STATUSES_FALLBACK = ("done", "declined", "dropped")
+
+
+def _roster_item(cid, state, detail, fix="") -> dict:
+    """One roster finding. `state` is 'pass', 'fail' or 'skip'; only 'pass'
+    counts towards exit 0, so a 'not verified' is never read as agreement."""
+    state = state if state in ("pass", "fail", "skip") else "skip"
+    return {
+        "id": cid,
+        "state": state,
+        "ok": state == "pass",
+        "detail": detail,
+        "fix": fix if state == "fail" else "",
+    }
+
+
+def _q(items) -> str:
+    return ", ".join("`%s`" % i for i in items)
+
+
+def _frontmatter_name(path) -> str:
+    """The `name:` an agent file declares, or "" for anything else. Never raises.
+
+    This is what makes "which files in .claude/agents/ are agents" a property of
+    the files themselves rather than a filename convention: README.md and any
+    other prose dropped in that directory simply have no frontmatter name.
+    """
+    try:
+        lines = pathlib.Path(path).read_text(errors="replace").splitlines()
+    except Exception:
+        return ""
+    if not lines or lines[0].strip() != "---":
+        return ""
+    for line in lines[1:]:
+        if line.strip() in ("---", "..."):
+            break
+        m = re.match(r"\s*name\s*:\s*(.+?)\s*$", line)
+        if m:
+            return m.group(1).strip().strip("'\"").strip()
+    return ""
+
+
+def _agent_roster(root: pathlib.Path):
+    """(names, ignored_files, problem). `problem` non-empty means the roster
+    could not be established at all, and every check degrades to not-verified.
+
+    No assumption about how the agents are named: they are whatever the files in
+    this project's .claude/agents/ declare themselves to be.
+    """
+    d = root / ".claude" / "agents"
+    try:
+        if not d.is_dir():
+            return [], [], "there is no .claude/agents/ directory in this project"
+        files = sorted(p for p in d.iterdir() if p.is_file() and p.suffix.lower() == ".md")
+    except Exception as exc:
+        return [], [], f"could not read .claude/agents/ ({exc})"
+    names, ignored = [], []
+    for p in files:
+        if p.name.lower() == "readme.md":
+            continue  # the roster document, not a roster member
+        n = _frontmatter_name(p)
+        if not n:
+            ignored.append(p.name)  # no frontmatter name: not an agent this can name
+        elif n not in names:
+            names.append(n)
+    if not names:
+        return [], ignored, "no agent files were found in .claude/agents/"
+    return sorted(names), ignored, ""
+
+
+# --- the smallest markdown table reader that can answer "which rows" ---------
+
+def _md_cells(line) -> list:
+    s = str(line).strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return [c.strip() for c in s.split("|")]
+
+
+def _is_delimiter_row(line) -> bool:
+    s = str(line).strip()
+    if not s.startswith("|"):
+        return False
+    cells = _md_cells(line)
+    return bool(cells) and all(re.fullmatch(r":?-+:?", c or "") for c in cells)
+
+
+def _md_tables(text) -> list:
+    """Every pipe table's body rows, as lists of cells. Header and delimiter
+    rows are dropped, so a header cell can never be mistaken for a roster row."""
+    lines = str(text).splitlines()
+    out, i = [], 0
+    while i < len(lines):
+        if _is_delimiter_row(lines[i]) and i > 0 and lines[i - 1].strip().startswith("|"):
+            body, j = [], i + 1
+            while j < len(lines) and lines[j].strip().startswith("|"):
+                if not _is_delimiter_row(lines[j]):
+                    body.append(_md_cells(lines[j]))
+                j += 1
+            out.append(body)
+            i = j
+        else:
+            i += 1
+    return out
+
+
+def _plain(cell) -> str:
+    """A cell as bare text: `x`, **x** and [x](y) all reduce to x."""
+    s = str(cell or "").strip()
+    m = re.match(r"^\[(.+?)\]\([^)]*\)$", s)
+    if m:
+        s = m.group(1)
+    for _ in range(3):
+        s = s.strip().strip("`").strip("*")
+    return s.strip()
+
+
+def _names_in_text(text, name) -> bool:
+    """Is this agent named in this text, as a whole word? Substring matching
+    would let `foo` be satisfied by a mention of `foo-bar`, so the match is
+    fenced by characters that can appear in an agent name."""
+    try:
+        return bool(re.search(r"(?<![A-Za-z0-9_-])" + re.escape(name) + r"(?![A-Za-z0-9_-])", text))
+    except Exception:
+        return False
+
+
+# --- the three checks -------------------------------------------------------
+
+def _roster_check_readme(root, names, ignored) -> dict:
+    """agent files <-> the roster table, BOTH directions."""
+    path = root / ".claude" / "agents" / "README.md"
+    try:
+        if not path.is_file():
+            return _roster_item(
+                "roster_readme", "skip",
+                "not verified: .claude/agents/README.md is missing, so there is no roster table "
+                "to compare the agent files against",
+            )
+        text = path.read_text(errors="replace")
+    except Exception as exc:
+        return _roster_item(
+            "roster_readme", "skip",
+            f"not verified: could not read .claude/agents/README.md ({exc})",
+        )
+
+    known = set(names)
+    # The roster table is the one whose first column names the most agents. A
+    # README may hold several tables, and guessing by position would be a
+    # confident wrong answer the first time somebody adds one above it.
+    best, hits = None, 0
+    for body in _md_tables(text):
+        firsts = [_plain(r[0]) for r in body if r]
+        n = sum(1 for f in firsts if f in known)
+        if n > hits:
+            best, hits = firsts, n
+    if not best:
+        return _roster_item(
+            "roster_readme", "skip",
+            f"not verified: no table in .claude/agents/README.md names any of the {len(names)} "
+            "agent files, so its roster rows could not be identified",
+        )
+
+    rows, seen = [], set()
+    for f in best:
+        if f and f not in seen:
+            seen.add(f)
+            rows.append(f)
+    missing = [n for n in names if n not in seen]
+    extra = [f for f in rows if f not in known]
+
+    note = f" (ignored: {_q(ignored)} - no `name:` in the frontmatter)" if ignored else ""
+    if missing or extra:
+        parts = []
+        if missing:
+            parts.append("no row for " + _q(missing))
+        if extra:
+            parts.append("rows naming no agent file: " + _q(extra))
+        return _roster_item(
+            "roster_readme", "fail",
+            ".claude/agents/README.md roster table: " + "; ".join(parts) + note,
+            f"{ROSTER_FIX}, or bring the table in .claude/agents/README.md back in line by hand",
+        )
+    return _roster_item("roster_readme", "pass",
+                        f"{len(names)} agents, {len(rows)} README rows" + note)
+
+
+def _roster_check_command(root, names, ignored) -> dict:
+    """agent files -> the generated intake command.
+
+    Deliberately loose, and said out loud rather than dressed up: intake.md is
+    prose written for one project, so the only claim worth making about it is
+    whether the agent is named in the file AT ALL. A name that appears nowhere
+    cannot be being dispatched by it; a name that appears somewhere is only
+    evidence that it has not been forgotten, not proof the lane table is right.
+    """
+    path = root / ".claude" / "commands" / "intake.md"
+    try:
+        if not path.is_file():
+            return _roster_item(
+                "roster_command", "skip",
+                "not verified: .claude/commands/intake.md is missing, so there is no lane table "
+                "to compare the agent files against",
+            )
+        text = path.read_text(errors="replace")
+    except Exception as exc:
+        return _roster_item(
+            "roster_command", "skip",
+            f"not verified: could not read .claude/commands/intake.md ({exc})",
+        )
+    missing = [n for n in names if not _names_in_text(text, n)]
+    if missing:
+        return _roster_item(
+            "roster_command", "fail",
+            "intake.md lane table: no row for " + _q(missing)
+            + " (the name appears nowhere in .claude/commands/intake.md)",
+            f"{ROSTER_FIX}, or add the row by hand",
+        )
+    return _roster_item("roster_command", "pass", f"intake.md names all {len(names)} agents")
+
+
+def _closed_statuses(root):
+    """(statuses, source) from worklog.py's own source. source "" = fell back."""
+    for p in (
+        root / ".claude" / "hooks" / "worklog.py",
+        pathlib.Path(__file__).resolve().parent / "worklog.py",
+    ):
+        try:
+            if not p.is_file():
+                continue
+            m = re.search(r"^CLOSED_STATUSES\s*=\s*\(([^)]*)\)",
+                          p.read_text(errors="replace"), re.M)
+            if not m:
+                continue
+            found = [s.strip().strip("'\"").strip() for s in m.group(1).split(",")]
+            found = [s for s in found if s]
+            if found:
+                return tuple(found), str(p)
+        except Exception:
+            continue
+    return CLOSED_STATUSES_FALLBACK, ""
+
+
+def _roster_check_tasks(root, names, ignored) -> dict:
+    """open tasks -> live agents.
+
+    A CLOSED task is history and is never a failure here: `teamme-foo` really
+    did do that work, and an append-only ledger is editable about current scope,
+    not about what happened. A task with no lane is a PASS too - `lane` is
+    optional, and an unassigned task is not a drifted one.
+    """
+    path = root / ".claude" / "intake" / "worklog.json"
+    try:
+        if not path.is_file():
+            return _roster_item(
+                "roster_tasks", "skip",
+                "not verified: .claude/intake/worklog.json is missing, so no task lanes could "
+                "be read",
+            )
+        data = json.loads(path.read_text(errors="replace"))
+    except Exception as exc:
+        return _roster_item(
+            "roster_tasks", "skip",
+            f"not verified: could not read .claude/intake/worklog.json ({exc}) - its lanes were "
+            "not compared against the agent files",
+        )
+    tasks = data.get("tasks") if isinstance(data, dict) else None
+    if not isinstance(tasks, list):
+        return _roster_item(
+            "roster_tasks", "skip",
+            "not verified: .claude/intake/worklog.json has no `tasks` list, so no task lanes "
+            "could be read",
+        )
+
+    closed, source = _closed_statuses(root)
+    fallback_note = "" if source else (
+        " (worklog.py's own closed-status list was not readable from here, so the built-in "
+        f"default was used: {', '.join(CLOSED_STATUSES_FALLBACK)})"
+    )
+
+    open_laned, laneless, bad = [], 0, []
+    for t in tasks:
+        if not isinstance(t, dict):
+            continue
+        if str(t.get("status") or "") in closed:
+            continue  # history, and exempt on purpose
+        lane = str(t.get("lane") or "").strip()
+        if not lane:
+            laneless += 1
+            continue
+        open_laned.append(t)
+        if lane not in names:
+            bad.append(f"{t.get('id') or '?'} `{lane}`")
+
+    total = len(open_laned)
+    tail = f", {laneless} with no lane" if laneless else ""
+    if bad:
+        return _roster_item(
+            "roster_tasks", "fail",
+            f"open tasks: {total - len(bad)}/{total} name a live lane{tail} - no agent file for "
+            + ", ".join(bad) + fallback_note,
+            f"{ROSTER_FIX}, or `python3 .claude/hooks/worklog.py lane <id> <agent>` to repoint "
+            "each one - closed tasks are history and are left alone",
+        )
+    return _roster_item("roster_tasks", "pass",
+                        f"open tasks: {total}/{total} name a live lane{tail}" + fallback_note)
+
+
+def roster(project_dir=None) -> dict:
+    """The roster verdict as plain data. Never raises, and never reports
+    agreement it did not actually observe."""
+    try:
+        root = project_root(project_dir)
+    except Exception as exc:  # pragma: no cover - only a pathological cwd
+        return {
+            "ok": False,
+            "project_dir": str(project_dir or ""),
+            "checks": [_roster_item("roster", "skip",
+                                    f"not verified: cannot resolve the project directory ({exc})")],
+            "summary": "could not resolve the project directory",
+        }
+    try:
+        names, ignored, problem = _agent_roster(root)
+    except Exception as exc:
+        names, ignored, problem = [], [], f"could not read .claude/agents/ ({exc})"
+
+    checks = []
+    for cid, fn in (
+        ("roster_readme", _roster_check_readme),
+        ("roster_command", _roster_check_command),
+        ("roster_tasks", _roster_check_tasks),
+    ):
+        if problem:
+            checks.append(_roster_item(cid, "skip", f"not verified: {problem}"))
+            continue
+        try:
+            checks.append(fn(root, names, ignored))
+        except Exception as exc:
+            checks.append(_roster_item(cid, "skip", f"not verified: the check itself failed ({exc})"))
+
+    failed = [c for c in checks if c["state"] == "fail"]
+    skipped = [c for c in checks if c["state"] == "skip"]
+    if failed:
+        summary = f"the roster has drifted - {len(failed)} of {len(checks)} checks failed"
+    elif skipped:
+        summary = f"the roster could not be fully verified - {len(skipped)} of {len(checks)} checks were not run"
+    else:
+        summary = "the agent files, the roster README, the intake command and the work log agree"
+    return {
+        "ok": not failed and not skipped,
+        "project_dir": str(root),
+        "checks": checks,
+        "summary": summary,
+    }
+
+
+def render_roster(result: dict) -> list:
+    """Human-readable lines for a roster verdict. Deliberately not render():
+    the two verdicts must never be mistaken for one another on screen."""
+    lines = ["roster consistency"]
+    for c in result.get("checks") or []:
+        mark = {"pass": "PASS", "fail": "FAIL"}.get(c.get("state"), "SKIP")
+        lines.append(f"  {mark}  {c.get('detail', '')}")
+        if c.get("fix"):
+            lines.append(f"        fix: {c['fix']}")
+    return lines
+
+
+def _arg_value(argv, flag):
+    if flag in argv:
+        i = argv.index(flag)
+        if i + 1 < len(argv):
+            return argv[i + 1]
+    return None
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     mode = argv[0] if argv and not argv[0].startswith("-") else "check"
@@ -794,20 +1215,27 @@ def main(argv=None) -> int:
 
     if mode in ("check", "status"):
         want_json = "--json" in argv
-        project_dir = None
-        if "--project-dir" in argv:
-            i = argv.index("--project-dir")
-            if i + 1 < len(argv):
-                project_dir = argv[i + 1]
-        result = diagnose(project_dir)
+        result = diagnose(_arg_value(argv, "--project-dir"))
         if want_json:
             print(json.dumps(result, indent=2))
         else:
             print("\n".join(render(result)))
         return 0 if result.get("ok") else 1
 
-    print(f"usage: {pathlib.Path(__file__).name} check [--json] [--project-dir DIR] | heartbeat",
-          file=sys.stderr)
+    if mode == "roster":
+        # A SEPARATE code path on purpose: this never touches diagnose(), its
+        # exit code or its `state:` line. A drifted roster is a stale document,
+        # not a broken install, and must not halt anybody's /intake.
+        want_json = "--json" in argv
+        result = roster(_arg_value(argv, "--project-dir"))
+        if want_json:
+            print(json.dumps(result, indent=2))
+        else:
+            print("\n".join(render_roster(result)))
+        return 0 if result.get("ok") else 1
+
+    print(f"usage: {pathlib.Path(__file__).name} check [--json] [--project-dir DIR] | "
+          f"roster [--json] [--project-dir DIR] | heartbeat", file=sys.stderr)
     return 2
 
 

@@ -29,8 +29,18 @@ tail, permanently parking the byte offset in front of it. It also drives `librar
 refresh-clears-the-gate proof, an ask/never-denies contract checked structurally against every
 `permissionDecision` literal the source can emit, a pinned push/non-push classification boundary, and
 seven fail-open branches, plus a `preflight.py` section proving a missing `librarian-gate.py` drives
-`installed-outdated` rather than a false "not-installed". CI runs exactly this. Please make it pass
-before opening a pull request.
+`installed-outdated` rather than a false "not-installed". It also drives `preflight.py roster` — a
+third `preflight.py` subcommand, a *separate* verdict from `check` that answers whether the team
+roster still agrees with itself across the agent files, the roster README's table, the generated
+`intake.md`'s lane mentions and the work log's `lane` fields, marking each of its three checks `PASS`,
+`FAIL`, or `SKIP` (could not be read, so unproven) — through eight sections: a clean fixture, both
+check-1 failure directions on one line, check-2's narrow whole-word matching at its own edge, the
+closed-task exemption (with a watch-fail), the closed-status list read by differential from
+`worklog.py`'s own source, all seven missing/unreadable/corrupt inputs degrading to `SKIP` and never a
+false `PASS`, frontmatter-name identity (`<name>.md.disabled` genuinely out of the roster), and the
+central watch-failed property, in both directions, that a drifted roster never moves `check`'s exit
+code, `state:` line or check set. CI runs exactly this. Please make it pass before opening a pull
+request.
 
 `server/` is compiled by walking `find -path '*/server/*' -name '*.py'`, not a shallow
 `plugins/*/server/*.py` glob: the glob only ever expanded to the top-level `teamme_mcp.py` and would
@@ -38,6 +48,14 @@ silently never have reached `server/librarian/*.py`, or any later subdirectory u
 same failure shape as a `REQUIRED_HOOKS` list that quietly covers less than its author assumed (see
 `CLAUDE.md`'s T23 entry). A new subdirectory under `server/` is picked up automatically; the check
 fails loudly if the walk ever turns up nothing.
+
+The manifests check also flags a command or agent frontmatter scalar that starts with an unquoted `[`
+or `{`: this repo's own frontmatter reader treats it as plain text, but a real YAML parser reads it as
+a flow sequence or mapping, so a value shaped that way would pass here and parse differently
+elsewhere — found once by inspection, in a draft `argument-hint`, before the check existed. And a
+lock-in asserts `plugins/teamme/commands/*.md` is exactly four files, named by file — a guard on the
+check's own file-discovery glob, since a new command file added without updating this count would
+otherwise be a silent miss the same shape as the two globs above.
 
 ## Keep the docs checked against the code
 
@@ -76,7 +94,11 @@ plugins/teamme/
   agents/history-librarian.md     the plugin's own shipped agent - see Rules for plugin-shipped
                                    agents below
   commands/init-team.md           the command that installs the team
-  commands/team-doctor.md         the command that diagnoses/repairs an existing install
+  commands/team-doctor.md         the command that diagnoses/repairs an existing install; also runs
+                                   and reports `preflight.py roster`, a separate verdict from `check`
+  commands/modify-team.md         changes an EXISTING team (add/drop/retool/rename a lane) without
+                                   re-running init-team - see Changing the commands below and
+                                   `CLAUDE.md`'s "A roster is four copies" entry
   commands/queue.md               parks a request in the work log; no grounding, no phase interaction
   server/teamme_mcp.py            stdio JSON-RPC MCP server
   server/librarian/*.py           librarian substrate: append-only JSONL + a disposable SQLite index,
@@ -180,9 +202,21 @@ invisibly unless someone happens to see that warning live.
 
 ## Changing the commands
 
-`commands/init-team.md`, `commands/team-doctor.md` and `commands/queue.md` are prompts, not code.
-Keep `init-team.md` explicit about what must be *copied* from `templates/` versus what must be
-*derived* from the project being analyzed — re-authoring scaffolding from memory is how installs end
-up subtly broken. Keep `queue.md`'s one-line output contract intact when editing it: it exists so
-parking a request costs the user nothing (see `CLAUDE.md`'s "Decisions already made"), and anything
-that adds a second line of preamble, analysis or a follow-up question defeats that.
+`commands/init-team.md`, `commands/team-doctor.md`, `commands/modify-team.md` and `commands/queue.md`
+are prompts, not code. Keep `init-team.md` explicit about what must be *copied* from `templates/`
+versus what must be *derived* from the project being analyzed — re-authoring scaffolding from memory
+is how installs end up subtly broken. Keep `queue.md`'s one-line output contract intact when editing
+it: it exists so parking a request costs the user nothing (see `CLAUDE.md`'s "Decisions already
+made"), and anything that adds a second line of preamble, analysis or a follow-up question defeats
+that.
+
+`modify-team.md` changes an *existing* team — it is not a second installer, and it must keep saying so
+in its own text (`init-team.md` and `team-doctor.md` both point users away from re-running the
+installer over a working roster; `modify-team.md` is the alternative those two refusals name). Its
+phase order — preflight, read the inherited roster state, report all four copies, ask what changes,
+migrate the affected tasks' lanes, confirm and execute, re-run `preflight.py roster` as proof, hand
+over — exists so nothing is written before the user approves it and nothing is claimed fixed without
+being checked afterwards; do not collapse phases to save turns. Never let it re-derive
+`preflight.py roster`'s output shape from memory: the `PASS`/`FAIL`/`SKIP` marks and the `not
+verified: <reason>` wording are owned by `preflight.py`, and a prompt that drifts from them is exactly
+the copied-fact bug this check exists to catch elsewhere.

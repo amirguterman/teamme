@@ -54,6 +54,22 @@ sanctioned way in, and the observed result was a lane editing `.claude/intake/wo
 path. The half this does **not** fix: neither lane can run `./scripts/validate.sh`, so both hand it
 back to `teamme-tech-lead` unrun, and both say so rather than implying otherwise.
 
+## Changing the roster
+
+Never hand-edit `.claude/agents/*.md`, this README's table, `.claude/commands/intake.md`'s lane rows,
+or a task's `lane` field to change who owns what — those are four copies of one fact, and drifting one
+without the others is a bug. Use `/teamme:modify-team` to add, drop, retool or rename a lane; it
+writes all four and migrates the affected open tasks' `lane` fields through `worklog.py lane`. Check
+the four still agree at any time with:
+
+```bash
+python3 .claude/hooks/preflight.py roster
+```
+
+A separate verdict from `preflight.py check` above — three marks (`PASS`, `FAIL`, `SKIP` for "could not
+be read, so not verified"), never folded into `check`'s exit code, so a stale roster README never halts
+`/intake`. See `CLAUDE.md`'s "A roster is four copies" entry for why.
+
 ## Dependency order
 
 Behaviour → proof → description → version.

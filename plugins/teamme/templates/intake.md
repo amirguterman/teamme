@@ -185,6 +185,12 @@ delta writes it down, and check the code or the history index before claiming it
 
 {{LANE_TABLE}}
 
+If the request needs a layer no lane owns, or names a lane that no longer exists, say so in the
+brief and name the nearest real owner - never invent an agent, and never dispatch to one that is not
+in this table. Changing the roster is a separate request: `/teamme:modify-team` adds, drops, retools
+or renames a lane and migrates the work log's lane fields with it. Do not run it from inside this
+flow.
+
 Enforce the project's hard rules here, before any plan exists:
 
 {{HARD_RULES}}

@@ -3,6 +3,16 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-09-25
+
+### Added
+- `/teamme:modify-team` command: change an **existing** team — add a lane, drop one, retool or rename one — without re-running the installer. It migrates open tasks' `lane` fields in the work log when a lane is dropped or renamed, checks all four copies of the roster (agent files, README table, intake.md lane table, and task lane fields) before and after each change, and moves a dropped agent's file to `<name>.md.disabled` rather than deleting it. Two commands (`init-team.md`'s Phase 0 and `team-doctor.md`'s state table) and two READMEs told users never to re-run the installer over a working team; this is the missing alternative they all pointed at.
+- `preflight.py roster` subcommand: a separate diagnosis that does not change `preflight.py check`'s exit code or state, and never halts `/intake`. It compares the roster in four places and marks three items `PASS`, `FAIL`, or `SKIP` (meaning "not verified, naming what it could not read"). Exit 0 iff all three PASS, so a `SKIP` exits non-zero exactly like a `FAIL` — but they mean different things: `FAIL` says the roster has drifted, `SKIP` names what it could not read. Closed tasks naming a dead lane are exempt. The check stays deliberately loose: it only verifies each agent name appears as a whole word somewhere in `intake.md`, not that a lane table was parsed, because hunting for a particular table shape inside project-specific prose would be a check that passes for the wrong reason. **Nothing surfaces roster drift on its own — you see it only when you run `/teamme:team-doctor` or the `preflight.py roster` subcommand.**
+- `/teamme:team-doctor` now runs the roster check after the install check and reports both verdicts, under separate headings.
+
+### Known limitations
+- The roster check is deliberately coarse: it never catches a leftover `intake.md` row for a just-dropped lane, a row whose description has drifted, or stale prose in the roster README's tool rationale or dependency-order section. It checks whether agents and rows exist in both places (both directions, including extra rows) and whether open tasks name a live lane — the most obvious kinds of drift, not an exhaustive inventory.
+
 ## [0.9.0] - 2026-09-25
 
 ### Added

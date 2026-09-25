@@ -18,7 +18,12 @@ plugins/teamme/
                                    /teamme:init-team's roster and not roster-selectable (see
                                    Decisions already made)
   commands/init-team.md           installs the team; a prompt, not code
-  commands/team-doctor.md         diagnoses/repairs an existing install on demand; a prompt, not code
+  commands/team-doctor.md         diagnoses/repairs an existing install on demand; a prompt, not code -
+                                   also runs and reports `preflight.py roster`, a separate verdict
+  commands/modify-team.md         changes an EXISTING team - add/drop/retool/rename a lane - without
+                                   re-running init-team; migrates the work log's `lane` fields and
+                                   never touches a closed task; a prompt, not code (see Decisions
+                                   already made: "A roster is four copies")
   commands/queue.md               parks a request in the work log; no grounding, no phase interaction
   server/teamme_mcp.py            stdio JSON-RPC MCP server: status/install/worklog/intake-phase/
                                    librarian tools
@@ -44,7 +49,11 @@ plugins/teamme/
                                    work log (read live, never indexed) together - served through the
                                    existing teamme_librarian_query tool, not a new one
   templates/                      scaffolding the commands COPY into a target project
-    hooks/*.py                    project-agnostic hook scripts, including preflight.py
+    hooks/*.py                    project-agnostic hook scripts, including preflight.py, whose
+                                   `roster` subcommand is a SEPARATE verdict from `check` - does the
+                                   team roster still agree with itself in the four places it is
+                                   written down? - never folded into `check`'s exit code (see
+                                   Decisions already made)
     hooks/librarian-gate.py       PreToolUse on `git push`: ASKS (never denies) when the history
                                    index is behind HEAD, reading a one-line marker rather than the
                                    database - see Design invariants #1 and Decisions already made
@@ -283,6 +292,46 @@ a real internal dict key the renderer never actually prints by that name (it pri
 `data: yes`/`data: no`). **Neither check catches a bare value claim** — 0.6.0 also documented "defaults
 to disabled" against `DEFAULT_ENABLED = True`, invisible to identifier extraction; see Known gaps and
 `CONTRIBUTING.md` for how that class of mistake is handled without a check.
+
+`preflight.py roster` — a third subcommand beside `check` and `heartbeat`, taking the same
+`--project-dir`, checking whether the agent files, `.claude/agents/README.md`'s roster table,
+`.claude/commands/intake.md`'s lane mentions, and every open task's `lane` in the work log still agree
+— gets eight sections of its own, two of them watch-fails, all against throwaway fixtures rather than
+this repo's own `.claude/agents/`. A clean fixture PASSes all three checks (`roster_readme`,
+`roster_command`, `roster_tasks`) and is used to pin the exact detail-line wording. `roster_readme`
+fails in both directions on one line — a missing row and a row naming no agent file — from a single
+fixture. `roster_command`'s narrow, whole-word claim is pinned at its edge: `app-api-tests` does not
+satisfy `app-api`, and a bare prose mention with no table at all PASSes, which is the check's own
+documented limit, not a bug. Closed tasks naming a dead lane are proven exempt — `done`/`declined`/
+`dropped` — with a watch-fail (a scratch copy of `preflight.py`, never the file in place, per
+`CONTRIBUTING.md`'s rule on watch-failing code another lane owns) that removes the closed-status skip
+and confirms `roster_tasks` then fails on the identical fixture. The closed-status list itself is read
+out of `worklog.py`'s own source text rather than copied a second time, proven by a differential (the
+real, unmodified `preflight.py`) rather than a break. Seven distinct missing/unreadable/corrupt
+inputs — no `.claude/agents/`, no roster README, an unreadable roster README, no `intake.md`, no
+`worklog.json`, a corrupt one, one with no `tasks` key — are each proven to degrade to `SKIP`
+("not verified: ...", naming what could not be read), never to a false `PASS`. An agent's identity is
+proven to be its frontmatter `name:`, not the filename stem, and a `<name>.md.disabled` file is proven
+genuinely out of the roster (a README row still naming it fails). The load-bearing property gets its
+own watch-fail in both directions: a fully scaffolded, heartbeated (`live`) fixture with a deliberately
+drifted roster leaves `check`'s exit code, `state:` line and exact six-item check set untouched, and
+the string `roster` never appears in `check --json`'s own output — while `roster` itself, run against
+the same fixture, exits non-zero; and, in reverse, a project whose roster genuinely agrees but was
+never scaffolded at all gets a non-zero `check` and a zero-exit `roster`, so neither verdict can drag
+the other down. A scratch copy that folds `roster()`'s checks into `diagnose()` confirms the property
+is not vacuous: the same drifted-but-live fixture immediately flips `check`'s exit code, state and id
+set once the separation is removed.
+
+The manifests check gained two things alongside `roster`. `check_scalar_shapes()` flags a command or
+agent frontmatter scalar that starts with an unquoted `[` or `{` — this repo's lenient frontmatter
+reader treats `[what to change...]` as plain text, but a real YAML parser reads an unquoted leading
+bracket or brace as a flow sequence or mapping, so a value shaped that way would read green here and
+parse differently elsewhere. Found by inspection, in a draft of `modify-team.md`'s own
+`argument-hint`, not by this check — which is exactly why it exists now; it was verified by hand, in
+both directions, against that near-miss, not by a `scripts/validate.sh` watch-fail. A command-count
+lock-in (`plugins/teamme/commands/*.md` must be exactly four, named by file) guards the manifests
+check's own file-discovery glob: `modify-team.md` was new and untracked when this landed, so a glob
+that silently missed it would have proven nothing.
 
 ## Design invariants
 
@@ -653,6 +702,34 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   `DEFAULT_PAD_MINUTES`, `enabled`/`DEFAULT_ENABLED`, `commit_record`/`DEFAULT_COMMIT_RECORD`) at the
   time this rule was adopted, and all four matched; the rule's value is in catching the *next* drift,
   not this one.
+- **A roster is four copies, and a wizard that writes them without proof would be the fifth instance
+  of the same bug class — so `/teamme:modify-team` ships with `preflight.py roster` as a separate
+  verdict, deliberately not folded into `check`.** Three shipped places told a user never to re-run
+  `/teamme:init-team` over a working team, and `/teamme:team-doctor` repairs scaffolding only, never
+  `.claude/agents/` — a documented refusal with no enacted alternative. A grep of both READMEs, all
+  three existing commands, `CLAUDE.md`, `CONTRIBUTING.md` and the roster README for any sanctioned way
+  to change a roster returned zero hits. Measured, not assumed: a roster is one fact stored in four
+  places — the agent files, `.claude/agents/README.md`'s table (plus its tool rationale and dependency
+  order, neither of which is checked — see Known gaps), `.claude/commands/intake.md`'s lane mentions,
+  and every task's `lane` field in the work log (40 of 45 tasks in this repo's own ledger carry one; 5
+  open, 35 closed) — and changing one without the others is exactly T22/T23/T26/T40's shape, a fifth
+  time. Two things were rejected: a wizard alone, with no proof it left the four copies agreeing (the
+  exact shape that has bitten four times already); and deriving the README table and the lane mentions
+  from agent frontmatter at read time, which is the structurally cleaner answer but would change the
+  generated-prompt contract for every existing install — the same upgrade pain `installed` derivation
+  paid a P0 to avoid. What shipped instead: `/teamme:modify-team` (add, drop, retool or rename a lane)
+  writes all four copies and migrates the affected tasks' `lane` fields through `worklog.py lane`,
+  never by hand; a dropped or renamed agent's file is moved aside to `<name>.md.disabled`, never
+  deleted, the same reversible-disable preference `init-team.md` already states for skills and MCP
+  servers; and a closed task is never re-laned — that agent really did do that work, and the ledger is
+  append-only about what happened, the same reasoning `retitle` already established for titles.
+  `preflight.py roster` is the proof: three checks (`roster_readme`, `roster_command`, `roster_tasks`),
+  three marks (`PASS`, `FAIL`, and `SKIP` for "could not be read, so not verified" — never silently
+  read as agreement), exit 0 iff all three `PASS`. It is kept out of `check`'s exit code on purpose: a
+  stale roster README costs a reader a wrong document, not a broken team, and letting it halt `/intake`
+  would repeat the exact over-reach deriving `installed` from a growing hook list already paid a P0 to
+  unlearn (see the `installed` entry above). The separation is proven both directions with its own
+  watch-fail — see Verify above.
 
 ## Known gaps
 
@@ -815,6 +892,17 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   on `HEAD`, not commits the push is actually about to transfer. Left unpinned deliberately: pinning
   it against a real remote would mean building a fake upstream in `validate.sh` for a property the
   code already makes structurally true by never calling one.
+- **`preflight.py roster` proves the roster table agrees; it cannot tell whether the surrounding prose
+  is true.** `roster_command` (agent files vs. `.claude/commands/intake.md`) is a whole-word name
+  search over the whole file, not a table parse: an `intake.md` that names every agent only in prose,
+  with no lane table at all, PASSes. That is a stated limit of the check, not a bug — hunting for "the
+  lane table" inside a per-project, prose-tailored prompt would be a check that passes for the wrong
+  reason. `roster_readme` checks the roster table's rows in both directions, but nothing checks the
+  README's model/tool rationale or its dependency order, and `roster_command` cannot catch a lane-table
+  row left behind for a lane `/teamme:modify-team` just dropped, or a row whose description drifted
+  false while the agent's name still appears somewhere in the file. `/teamme:modify-team`'s own Phase 4
+  and Phase 5 tell the operator this in the same words, so the limit is stated at the point someone
+  would otherwise mistake a `PASS` for more than it is.
 
 ## Conventions
 

@@ -192,6 +192,12 @@ before anything may cite it as settled.
 | Human-facing docs | `README.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `plugins/teamme/README.md` | `teamme-docs-writer` |
 | Packaging and release | `.claude-plugin/marketplace.json`, `plugins/teamme/.claude-plugin/plugin.json`, `CHANGELOG.md` | `teamme-release-manager` |
 
+If the request needs a layer no lane owns, or names a lane that no longer exists, say so in the
+brief and name the nearest real owner — never invent an agent, and never dispatch to one that is not
+in this table. Changing the roster is a separate request: `/teamme:modify-team` adds, drops, retools
+or renames a lane and migrates the work log's lane fields with it. Do not run it from inside this
+flow.
+
 Note the recursion: this repo has its own `.claude/` scaffolding installed from these same templates.
 `.claude/hooks/*.py` are **copies**. The source of truth is `plugins/teamme/templates/hooks/`. A
 change made only to the copy will be silently lost; a change made only to the template will not take
