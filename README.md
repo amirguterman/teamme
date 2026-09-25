@@ -272,9 +272,12 @@ transcript can hold anything anyone typed, including a secret pasted in by accid
 second text copy of a conversation, and the SQLite index is the only artifact, disposable, and rebuilt
 by reading the transcripts again.
 
-Unlike `history`, nothing yet tells an agent to consult `sessions`: `history-librarian` and the
-generated `/intake` command's grounding step both name `history-librarian` for history questions, but
-neither mentions the session index. The tools work when called; nothing in the roster calls them yet.
+`history-librarian` is instructed to consult `sessions` too, not only `history`: its own working order
+reaches for `compaction`/`search_turns` to locate lost context and `window` to read it back, and
+`/teamme:init-team`'s shared guardrail block and the generated `/intake` command's grounding step name
+the librarian for both. As with the history queries, this is an instruction, not a gate — nothing stops
+another agent with MCP access from calling `sessions`, `search_turns`, `window` or `compaction`
+directly instead.
 
 ## The cross-index queries
 

@@ -175,6 +175,18 @@ happened in a child thread. Same rules as above: an instruction, not a gate; if 
 disabled for this project, say so and name `teamme_librarian_configure` rather than going and
 reading a transcript by hand; and it changes no phase either.
 
+**Questions about what was happening *around* something go to the same librarian too.** A third
+group of queries joins those two indexes with this project's own work log - `around_path`,
+`around_commit`, `around_task` and `timeline` - and answers what else was moving at the time: what
+landed while a task was open, what was being discussed when a commit landed, what happened in a
+given stretch of time. When grounding turns on one of those rather than on a file's own history,
+consult `history-librarian` and carry its answer into the brief. One rule comes with it, because it
+is the one an answer loses by accident: every association there is **time overlap**, not a recorded
+link, so write it as "active while" or "around" and never as "implements", "caused" or "fixes" - and
+if the brief needs the stronger claim, it has to be established some other way and said out loud.
+Same rules again: an instruction, not a gate; a disabled or missing index narrows the answer and the
+librarian says which store went quiet; and it changes no phase.
+
 **A decision recovered from a transcript is not spec.** It is evidence the decision was *made*, not
 that it was written down or implemented. Treat it as **unspecified** above until the brief's spec
 delta writes it down, and check the code or the history index before claiming it landed. In this

@@ -42,6 +42,11 @@ central watch-failed property, in both directions, that a drifted roster never m
 code, `state:` line or check set. CI runs exactly this. Please make it pass before opening a pull
 request.
 
+If a section fails unexpectedly, `validate.sh` traps its own `ERR` and names the failing line and the
+command that ran, using `${BASH_LINENO[0]}` rather than `$LINENO` — a plain `$LINENO` read inside the
+trap reports the trap's own line, not the command that failed. Read that line before re-running the
+whole script.
+
 `server/` is compiled by walking `find -path '*/server/*' -name '*.py'`, not a shallow
 `plugins/*/server/*.py` glob: the glob only ever expanded to the top-level `teamme_mcp.py` and would
 silently never have reached `server/librarian/*.py`, or any later subdirectory under `server/` — the

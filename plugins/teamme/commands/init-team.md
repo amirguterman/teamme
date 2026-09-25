@@ -184,6 +184,17 @@ the paths must resolve.
    project and can be switched off with `teamme_librarian_configure`, and that the honest response
    to a disabled librarian is to say so and name that call — never to go and read `git log` or a
    transcript some other way. Same register as everything above: an instruction, not a gate.
+   A third category goes in the block, shorter than the other two because the detail belongs to the
+   librarian rather than to every agent: questions about **what was happening around** something — a
+   file, a commit, a task id, or a stretch of time. The same agent answers those by joining both
+   indexes with this project's own work log (`around_path`, `around_commit`, `around_task`,
+   `timeline`), so "what landed while that task was open", "what was being discussed when this
+   commit landed" and "what happened yesterday" go to `history-librarian` too. Write one rule into
+   the block with it, because it is the one an agent breaks by accident: every association in those
+   answers is **time overlap**, not a recorded link — carry it through as "active while" or "around",
+   never as "implements", "caused" or "fixes", the same way co-change is carried through as "changes
+   with" and never "depends on". A team agent that needs the stronger claim establishes it some other
+   way and says so.
    One line in the block is not an instruction but something the team will simply meet: on a `git
    push`, `librarian-gate.py` asks for confirmation when the history index is behind `HEAD`. Say what
    to do with it — approving proceeds with the push exactly as if the hook were not there, and the

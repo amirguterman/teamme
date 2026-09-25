@@ -3,6 +3,20 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-09-25
+
+### Added
+- Four cross-index queries (`around_path`, `around_commit`, `around_task`, `timeline`) are now **instructed** in `history-librarian.md` with worked compositions and their three-store model (history index, session index, work log). The queries shipped in 0.7.0, are served through `teamme_librarian_query`, and are documented in `README.md` and `plugins/teamme/README.md`, but had **zero prompt callers** — reachable only by an agent that guessed the names existed. Instruction now covers step 2c (the query surface), their vocabulary rule (step 3b), state handling (per-store blocks naming `ok`/`disabled`/`absent`/`empty`/`error`), and assertions to carry into prose about time overlap never causal links. Mirrored into `init-team.md`'s shared guardrail block and `templates/intake.md` step 1, and this repo's own `.claude/commands/intake.md`.
+- **Vocabulary rule for cross-index answers is now strict:** "active while" and "around" only, never "implements", "caused", "because of", "in response to", "fixes" or "closes". Every link the cross-index reports is time overlap and file path overlap — measured before this feature shipped: commit messages cite a task id in only 3 of 18 commits, work-log notes cite a short SHA in 4 places, both incidentally — so a citation-keyed join would have returned almost nothing while looking like "nothing happened". What is reliable is time (every store stamps it) and file paths (from git's own `--numstat` and observed tool calls), same discipline as co-change's "changes with" rule.
+- Four query names (`commits_touching`, `commits_between`, `search_subjects`, `hotspots`, closing T35) now check against ground truth read straight from `git log`, with the module (`store.py`) out of the comparison loop. `_render_rows`, the prose renderer behind five list queries, now has its row content checked over the real JSON-RPC pipe — subjects, paths, dates — rather than only the outer `"N row(s)"` wrapper. `validate.sh` gained an `ERR` trap that names the failing line and command on unexpected exit, defence-in-depth for the next unwrapped failure.
+
+### Fixed
+- **Documentation drift corrected:** three files (`README.md`, `plugins/teamme/README.md`, and `CLAUDE.md`) carried a stale sentence — "nothing yet tells an agent to consult `sessions`… nothing in the roster calls them yet" — stating that a working feature does not work. The sentence went false in 0.8.0 when the session wiring shipped. Users have been reading, for two releases, that session queries are unreachable. Removed.
+
+### Known limitations
+- Session librarian queries are still never driven over the real MCP pipe — `_render_sessions_status`, `_render_sessions_privacy`, and `_render_session_rows` remain unrendered in practice; every assertion calls the module directly, so the renderers carry no pipe coverage today.
+- The four query ground-truth checks were performed by hand against real breaks at `store.py:1208`, `1231`, `1111`, and `1247`, each watched failing and then restored. They are not vacuous today, but unlike encoded watch-fails they do not re-run on subsequent CI runs, so nothing re-proves that property on the next release.
+
 ## [0.10.1] - 2026-09-25
 
 ### Fixed

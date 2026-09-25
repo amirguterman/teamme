@@ -347,6 +347,43 @@ lock-in (`plugins/teamme/commands/*.md` must be exactly four, named by file) gua
 check's own file-discovery glob: `modify-team.md` was new and untracked when this landed, so a glob
 that silently missed it would have proven nothing.
 
+Four more sections (T50) close holes the register in Known gaps had already named. `commits_touching`,
+`commits_between` and `search_subjects` each get their own ground truth read straight from `git log` —
+filtered to a path, a since/until boundary deliberately set to land exactly on two commits' own epochs
+(proving the bounds are inclusive, not off-by-one), and an independent substring scan of subjects — with
+the librarian module out of the loop, the same doctrine `changes_with`'s ground-truth section already
+used. None of these carries an **encoded** watch-fail — no break-and-restore lives inside `validate.sh`
+for them, unlike the nineteen `[watch-fail]`-tagged sections that do (`grep -c 'echo "== .*\[watch-fail\]'`
+against the real file is how to count them). The breaks were **performed and reverted**, not never
+attempted: the lane read and broke three exact lines on scratch copies of `store.py` and watched each
+assertion above fail before reverting — the `ORDER BY` behind `commits_touching`
+(`store.py:1208`, `ORDER BY c.epoch DESC, c.hash LIMIT ?`), the `commits_between` boundary
+(`store.py:1231`, `where.append("epoch >= ?")`, narrowed to `>` to confirm the inclusive-bounds fixture
+would catch it), and the `ORDER BY` behind `hotspots`' ranking (`store.py:1111`,
+`ORDER BY commits DESC, last_epoch DESC, f.path LIMIT ?`), plus `search_subjects`' `LIKE` pattern
+(`store.py:1247`, the leading `%` in `"%" + _like(text) + "%"`). Say this plainly rather than either
+overclaiming a watch-fail that is not in the suite or underclaiming a break that genuinely happened:
+the assertion is not vacuous *today*, proven once, by hand, on the day this landed — but nothing
+re-proves that on the next run, and a later refactor could make one of these four checks vacuous with
+nothing here to say so (see Known gaps). `hotspots` gets the same ground-truth treatment, counted
+straight from `git log --name-only`, covered by the same performed-not-encoded break above. Two renderer
+sections
+follow: `_render_rows` — behind `recent`, `commits_touching`, `commits_between`, `search_subjects` and
+`files_in_commit` — had only ever had its outer `"N row(s)"` wrapper checked; it is now driven over the
+real pipe with row content asserted for both its bracketed shape (`commits_touching`, which carries a
+`[path ...]`) and its unbracketed one (`commits_between`, `search_subjects`), and `hotspots` is rendered
+and checked the same way `changes_with` already was. `_render_cross`'s `around_task` branch, previously
+unasserted beyond surviving the call, is driven over the real pipe and checked to name the task, its
+padded window and the commit that closed it. `around_path`, `around_commit`, `coupling_between`'s own
+rendering, and all four session queries remain unexercised through the real pipe — see Known gaps' T35
+and T54 entries.
+
+T48 adds an `ERR` trap to `validate.sh` itself: on an unexpected non-zero exit anywhere in the script it
+names the failing line and the command that ran, using `${BASH_LINENO[0]}` rather than `$LINENO` —
+verified empirically, since a plain `$LINENO` read inside the trap reports the trap's own line, not the
+line of the command that actually failed. The lane found no live unwrapped failure while building this;
+it is defence-in-depth for the next one, not a fix for a current gap.
+
 ## Design invariants
 
 These are not style preferences. Breaking one ships a trap to someone else's machine.
@@ -767,6 +804,17 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   would repeat the exact over-reach deriving `installed` from a growing hook list already paid a P0 to
   unlearn (see the `installed` entry above). The separation is proven both directions with its own
   watch-fail — see Verify above.
+- **A minimum `ok:` count for `validate.sh` was proposed (T50) and rejected.** The idea: assert the
+  script prints at least N `ok:` lines, so a run that silently does less than it should is visible.
+  Rejected for two reasons, not one. First, a hardcoded floor needs bumping on every brief that adds a
+  section, which is exactly the class of stale, unenforced claim this repo keeps paying to correct —
+  see the `REQUIRED_HOOKS` entry and the `commits.jsonl`-gitignore comment entry above, both the same
+  shape: a number or a condition written once and never revisited as the world moved past it. Second,
+  and more load-bearing, it would not even catch the failure it is aimed at: a loop that should iterate
+  N times and silently iterates zero still prints exactly one `ok:` line for the section around it — a
+  count checks how many `ok:` lines appeared, not which assertions actually ran inside them. The
+  unbuilt counter-proposal, if this is ever revisited, is a per-section marker checked against a static
+  list of section names rather than a bare count — recorded here so it is not re-proposed from scratch.
 
 ## Known gaps
 
@@ -860,19 +908,36 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   `os.replace()`. The entry above this one used to claim the whole tool was uncovered; that went
   stale when phase 2's assertions landed and was corrected in 0.7.0, which is the same
   documented-claim-outlives-the-code shape that `commit_record`'s unenacted default had.
-- The `commits_touching`, `commits_between`, `search_subjects` and `hotspots` query variants are
-  exercised while building fixtures and ground truth for other assertions, but none has a
-  `validate.sh` section asserting its own result directly — only `recent`, `files_in_commit`,
-  `changes_with`, `coupling_between`, and the unknown-query/bad-hash error paths are. `hotspots` is
-  the one phase-3 co-change query with no assertion of its own at all (tracked as T35, alongside the
-  renderer gap below).
-- **The MCP renderers are untested (tracked as T35).** `validate.sh`'s co-change assertions call
-  `store.query()` directly — correctly, since the module must not be allowed to agree with itself —
-  but that means `_render_cochange` in `teamme_mcp.py`, the prose text a librarian agent actually
-  reads back over the MCP pipe, has no `validate.sh` coverage, and neither does `commit_detail`'s
-  renderer. The co-change renderer was checked by hand over a real pipe (the header reads "correlation,
-  not a call graph", the evidence base and overlap are present, damping is explained) — unasserted, not
-  unknown.
+- **T35 is now mostly closed (T50); this entry used to make four claims, and all four were stale or
+  wrong by the time this pass reread them.** It used to say `commits_touching`, `commits_between`,
+  `search_subjects` and `hotspots` had no `validate.sh` section asserting their own result, that
+  `_render_cochange` had no coverage at all, and that `commit_detail`'s renderer had no coverage at
+  all. The fourth claim was already false by the time this pass reread it, independent of T50: the
+  `commit_detail` section asserts
+  `"BODY TRUNCATED at 4000 of 5000 characters"` in the rendered text over the real pipe, which is
+  `_render_detail`'s own output — a documented gap this repo's own docs discipline exists to catch, and
+  did not, because `identifiers-exist`/`rendered-labels-exist` check identifiers and rendered labels,
+  never a sentence claiming an absence. T50 closed the other three: `commits_touching`,
+  `commits_between` and `search_subjects` each now have ground truth read straight from `git log`;
+  `hotspots` has the same, plus the `changes_with`-style rendering treatment `_render_cochange` already
+  had; and `_render_rows` (behind all five list queries) is now rendered and content-checked over the
+  real pipe, not just structurally exercised (see Verify above for the T50 section names). What is
+  still open: `coupling_between`'s branch of `_render_cochange` has ground truth but is never rendered
+  over the pipe; `around_path` and `around_commit` have no `_render_cross` content assertion at all
+  (`timeline`'s one pipe call only proves the server survives a corrupt worklog, not that its rendered
+  text is right); and the four session queries render nothing through the pipe at all, tracked
+  separately as T54 below, since that gap has its own shape and its own history (see the corrected
+  session-librarian entry below).
+- **T50's four ground-truth query sections were watched failing once, by hand, not encoded as
+  `[watch-fail]`s in `validate.sh` — a real, stateable difference from the nineteen sections that are.**
+  The lane broke `store.py:1208`'s `ORDER BY` (`commits_touching`), `store.py:1231`'s `epoch >= ?`
+  boundary narrowed to `>` (`commits_between`), `store.py:1111`'s `ORDER BY` (`hotspots`), and
+  `store.py:1247`'s leading `%` in the `LIKE` pattern (`search_subjects`) on scratch copies, watched
+  each ground-truth assertion fail, and reverted — `git status` on `server/librarian/` came back clean
+  afterward. That is real proof the assertions are not vacuous *today*. It is not the same guarantee an
+  encoded `[watch-fail]` gives: nothing re-runs that break on the next CI run, so a later refactor of any
+  of these four queries could make its ground-truth check vacuous again with nothing in `validate.sh`
+  itself there to catch it. See Verify above for exactly which lines and what was broken.
 - **Four prompt-to-renderer mismatches, found while writing `agents/history-librarian.md` and not yet
   reconciled.** The agent prompt documents named row fields (`shared_commits`, `jaccard`, `weak`, and
   so on); `_render_cochange` emits prose instead, not those field names. `share_of_anchor` is computed
@@ -892,13 +957,36 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
 - `rewrite_records()`'s preservation of non-commit records (`kind != "commit"`, meant for phase 2's
   reasoned entries) through a full reindex has no test coverage, since no phase-2 code writes such a
   record yet.
-- **The session librarian's tools exist; nothing consults them.** `teamme_librarian_query`'s
-  `sessions`/`search_turns`/`window`/`compaction` queries are live on the MCP server, but
-  `agents/history-librarian.md`, `commands/init-team.md`'s shared guardrail block and
-  `templates/intake.md` step 1 mention only `history-librarian` and git history — none of them
-  instructs any agent to ask the session index about lost context. Until an agent (or an instruction
-  telling `history-librarian` to reach for it) is added, the session librarian is reachable only by an
-  agent that happens to know the tool exists and calls it directly.
+- **Closed: the session librarian's tools are now instructed, and this entry was already false when
+  T50 reread it.** It used to say `teamme_librarian_query`'s `sessions`/`search_turns`/`window`/
+  `compaction` queries were live but that nothing instructed any agent to ask the session index for
+  lost context. All four are named in `agents/history-librarian.md`'s own LOCATE-then-READ working
+  order and query table, and the same wiring reached `commands/init-team.md`'s shared guardrail block
+  and `templates/intake.md` step 1 before this entry was next read. A closed gap left open in the
+  register is the same failure as an open one left unrecorded — this pass found both at once, in the
+  same paragraph of this file: this entry had gone stale in one direction while, separately, the
+  cross-index queries (`around_path`/`around_commit`/`around_task`/`timeline`) had zero prompt callers
+  and no gap entry naming that fact at all, until the same brief that closed this entry also wired
+  those four into the same prompt. Treat a "Known gaps" line as a claim with the same shelf life as any
+  other in this file: reread it against the code, not against memory of when it was written. The stale
+  claim itself was not unique to this file: the identical sentence — "nothing yet tells an agent to
+  consult `sessions`... nothing in the roster calls them yet" — was duplicated verbatim in `README.md`
+  and `plugins/teamme/README.md` too, so the same fact went stale in three places at once, at 0.8.0,
+  and was corrected in all three the same day it was found. That is exactly the copied-fact shape this
+  gap register exists to catch elsewhere (see T22/T23/T26/T40 and the roster-is-four-copies entry
+  above), except this time it happened to the gap register's own claim about itself.
+- **The session librarian's four queries are never driven through the real MCP pipe (T54).** Every
+  `validate.sh` assertion for `sessions`/`search_turns`/`window`/`compaction` calls
+  `sessions.query()`/`sessions.index()` directly, module-level, the same way `history`'s ground-truth
+  sections correctly keep the librarian module out of the loop for *ground truth* — but unlike
+  `history`, no section for `sessions` also drives the same query through `teamme_mcp.py` over a real
+  JSON-RPC pipe the way `commit_detail`, `changes_with` and (since T50) `commits_touching`,
+  `commits_between`, `search_subjects`, `hotspots` and `around_task` all do. `_render_sessions_status`,
+  `_render_sessions_privacy` and `_render_session_rows` — the prose the session librarian actually
+  reads back — are therefore unexercised in practice, even though the query logic underneath them is
+  well covered. Named rather than covered thinly: a synthetic transcript fixture exists for the session
+  librarian's other six sections (see Verify above), so extending one of them through the pipe is the
+  concrete next step, not a redesign.
 - The following are unasserted by `validate.sh` for the session librarian: the subagent-sidecar
   indexing path (a session's `subagents/agent-*.jsonl` children are indexed and reported by
   `sessions`/`search_turns` in code, but no fixture builds one to prove it); `locate()`'s cwd-based

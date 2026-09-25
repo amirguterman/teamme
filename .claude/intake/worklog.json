@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "next_id": 50,
+  "next_id": 55,
   "tasks": [
     {
       "id": "T1",
@@ -917,16 +917,103 @@
     },
     {
       "id": "T49",
-      "title": "add additional team agent to propose upon building the team, that its purpose is to try to find all the reasons from all aspects why a proposed plan is wrong, has holes, not optimal, inefficient, bad practice, has better alternatives, etc. which utilizes the other agents' specialization/profession/familiarity by questioning them from a higher level rather than knowing everything. this is the role of the troublemaker and not a compliance officer. its job is to push the other agents to the limit and prevent them from going with the first default path to provide solutions. this agent should be able to provoke them for raising questions yet the orchestrator is the one to decide whether to choose an alternative or pass it to the user to decide. it should also be able to communicate with them, or alternatively let the orchestrator pass to it instead, your call for the hierarchy design.",
+      "title": "New devils-advocate agent: interrogates an approved plan by questioning the owning lanes, never by re-deriving their expertise - the orchestrator decides what to act on",
       "status": "open",
       "priority": "P1",
-      "lane": "",
-      "notes": [],
+      "lane": "teamme-prompt-author",
+      "notes": [
+        "NAMED by the user: the agent is devils-advocate, not troublemaker. Reason worth keeping - the advocatus diaboli was a real office whose holder was NOT an expert on the candidate and had no power to decide anything; the entire function was to interrogate the people who did know, so a case could not pass on its first favourable telling. That is exactly the described mechanism (questions the lanes from a higher level rather than knowing everything) and the described hierarchy (the orchestrator decides, not the advocate). Rejected: design-adversary (neutral but structural rather than role-shaped), premortem-analyst (names one exercise at one moment, while this runs throughout), socratic-reviewer (most literally accurate to the questioning mechanism, but reads gentle and undersells the friction asked for).",
+        "SEQUENCED by the user: stabilize first, build this after. Recorded because the ordering is itself an argument for the agent - a devils-advocate dispatched over a codebase whose shipped features are unreachable or unproven would spend its questions on known debt instead of on the plan in front of it.",
+        "retitled from: \"add additional team agent to propose upon building the team, that its purpose is to try to find all the reasons from all aspects why a proposed plan is wrong, has holes, not optimal, inefficient, bad practice, has better alternatives, etc. which utilizes the other agents' specialization/profession/familiarity by questioning them from a higher level rather than knowing everything. this is the role of the troublemaker and not a compliance officer. its job is to push the other agents to the limit and prevent them from going with the first default path to provide solutions. this agent should be able to provoke them for raising questions yet the orchestrator is the one to decide whether to choose an alternative or pass it to the user to decide. it should also be able to communicate with them, or alternatively let the orchestrator pass to it instead, your call for the hierarchy design.\""
+      ],
       "blocked_on": "",
       "dispatched_to": "",
       "created": "2026-09-25T11:44:04+00:00",
-      "updated": "2026-09-25T11:44:04+00:00",
+      "updated": "2026-09-25T12:06:49+00:00",
       "status_changed": "2026-09-25T11:44:04+00:00"
+    },
+    {
+      "id": "T50",
+      "title": "Stabilization sweep: wire the four orphaned cross-index queries into the prompts, prove the four unasserted queries and the MCP renderers, fix T48, and correct the stale gap register",
+      "status": "done",
+      "priority": "P0",
+      "lane": "",
+      "notes": [
+        "MEASURED. (1) history-librarian.md - the only agent sanctioned to call the librarian tools - mentions the cross-index join ZERO times. It carries a full query table for the session queries at line 174, a working-order section and a limits section, and nothing at all for around_path/around_commit/around_task/timeline. So a feature shipped in 0.7.0 and documented in both READMEs is invisible to its only caller. (2) CLAUDE.md-s Known gaps entry says \"the session librarian-s tools exist; nothing consults them\" - that is now FALSE, all four session queries are named in three prompt files since 0.8.0. The recorded gap is closed and the live one was never recorded. Fifth instance of a gap entry outliving its gap.",
+        "MEASURED, renderers: teamme_mcp.py has ten _render_* functions and SEVEN have zero mentions in validate.sh - _render_sessions_status, _render_sessions_privacy, _render_rows, _render_detail, _render_session_rows, _render_cross. The three with 1-2 hits are incidental mentions, not assertions. CLAUDE.md-s T35 entry scopes this gap to _render_cochange and commit_detail only, so it understates its own subject: _render_rows and _render_detail carry recent/commits_touching/commit_detail - the librarian-s most-used answers - and nothing asserts what a caller actually reads back.",
+        "Starting validate.sh lane: adding commits_between/commits_touching/search_subjects/hotspots ground-truthed assertions, MCP renderer coverage over the pipe, and an ERR trap for T48",
+        "prompt half: wired the cross-index join into the prompts. plugins/teamme/agents/history-librarian.md - frontmatter description gained a cross-index clause plus two examples (task reconstruction, around a commit); opening table now lists three stores (the work log as a live, non-indexed third); new Step 2c documents around_path/around_commit/around_task/timeline with arguments, returns, the per-store cap (12 default, 50 max, vs 30/200 and 20/100), the six per-store states, the inferred task window and pad, the prose-matching under-report, UTC normalization, the spine ranking note, and the refusal shapes; new Step 3b carries the vocabulary rule (active while / around, never implements / caused / fixes) with the measured 3-of-18 / 4-note basis; two new compositions in Step 4; two citation bullets; an `around:` / `stores:` / `basis:` output block; two refusals. Step 1 now says a disabled or absent store NARROWS a cross answer rather than stopping it, except around_commit, whose absent-vs-disabled refusals are different remedies. plugins/teamme/commands/init-team.md shared guardrail block and plugins/teamme/templates/intake.md step 1 each gained the third category, proportionate, with the same vocabulary rule; mirrored verbatim into .claude/commands/intake.md. No placeholder added or changed (still six). No server/ or scripts/ edits. ./scripts/validate.sh NOT run - this lane has no Bash.",
+        "validate.sh lane done: added ground-truth sections for commits_touching/commits_between/search_subjects/hotspots against git log directly, a render-rows pipe test, and an around_task cross-index renderer test, plus an ERR trap for T48. 114 to 118 ok lines, 92 to 96 sections, all green, runtime unchanged at about 23s",
+        "VERIFIED the validation half myself: bash -n clean, suite exits 0 at 118 ok lines / 96 sections (114/92 at 4472bdd), ERR trap present using BASH_LINENO[0], and git status over plugins/teamme/server/ is clean after six watch-fails on scratch copies. The lane also CORRECTED my brief: I reported seven renderers with zero coverage from grep -c on function names, but _render_detail is genuinely exercised (the commit_detail section asserts \"BODY TRUNCATED at 4000 of 5000 characters\" at validate.sh:3482) and hotspots already had a renderer section. My grep counted identifiers, not coverage - the same mistake identifiers-exist makes by design, made by me while measuring the gap that check cannot see.",
+        "Docs lane (no Bash, validate.sh not rerun by me): updated CLAUDE.md, CONTRIBUTING.md, README.md, plugins/teamme/README.md. CLAUDE.md Verify: added paragraph on T50's four new ground-truth sections (commits_touching/commits_between/search_subjects/hotspots vs git log, no watch-fail of their own - verified by grep, corrected a fabricated watch-fail claim before committing it) plus two renderer sections (_render_rows across 5 queries, _render_cross/around_task), and T48's ERR trap (${BASH_LINENO[0]} vs $LINENO). CLAUDE.md Decisions: added entry recording the rejected minimum-ok:-count proposal and why. CLAUDE.md Known gaps: merged and corrected the stale \"commits_touching/commits_between/search_subjects/hotspots have no section\" + \"MCP renderers untested (T35)\" entries (4 false sub-claims, one - commit_detail's renderer - already false pre-T50, verified via validate.sh:3482 BODY TRUNCATED assertion); corrected \"session librarian tools exist; nothing consults them\" (false - all 4 session queries are named in agents/history-librarian.md's LOCATE/READ order, confirmed by grep) and added meta-note about docs drifting in both directions same day; added new T54 gap (session query renderers never driven through the real MCP pipe - confirmed via grep, no pipe calls for sessions/search_turns/window/compaction). Found a 5th false claim outside CLAUDE.md: both README.md and plugins/teamme/README.md still said \"nothing yet tells an agent to consult sessions\" - fixed in both. Left CHANGELOG.md, plugin.json, plugins/teamme/agents/, and command prompts untouched (not my lane). Did not add cross-index-query mentions to the READMEs beyond the sessions fix - they already document the queries and adding \"who calls them\" would risk the over-specification T46 already rejected.",
+        "Addressed coordinator correction on T50: my \"no watch-fail of its own\" phrasing for the four new ground-truth query sections was too harsh - the breaks were genuinely performed and reverted by hand, just not encoded as [watch-fail]s in validate.sh. Independently verified (Read, not Bash) the three-state distinction against plugins/teamme/server/librarian/store.py: line 1208 (commits_touching's ORDER BY c.epoch DESC, c.hash), line 1231 (commits_between's epoch >= ? boundary), line 1111 (hotspots' ORDER BY commits DESC, last_epoch DESC, f.path), line 1247 (search_subjects' leading % in the LIKE pattern) - all four match what the coordinator named. Rewrote CLAUDE.md's Verify paragraph to say \"performed and reverted, not encoded\" explicitly, distinct from the 19 grep-countable [watch-fail]-tagged sections, and added a new Known gaps bullet stating the same limit (not re-proven on the next CI run, a future refactor could make one vacuous silently). Also updated the closed session-librarian gap entry to note the stale \"nothing consults the session index\" claim was duplicated verbatim in three places (CLAUDE.md + both READMEs), went stale together, found together. validate.sh still not run by me (no Bash) - hand back unrun.",
+        "Watch-fail precision resolved, and the imprecision was mine. My brief said \"four watch-fails on scratch copies\" without distinguishing PERFORMED from ENCODED. The docs lane read validate.sh, found no encoded watch-fail on the new sections and corrected my prose - right conclusion. But it then implied never-watched-failing, which was harsher than the truth. Measured: 19 encoded [watch-fail] sections exist (grep on the source format echo \"== ...[watch-fail]\"), none of T50-s five new sections carries the marker, and the breaks were genuinely performed - I verified store.py:1208 ORDER BY c.epoch DESC, 1231 epoch >= ?, 1111 ORDER BY commits DESC, and the lane independently found and verified a fourth I had not named, 1247 params = [\"%\" + _like(text) + \"%\", fetch]. Three states, not two: encoded (re-proves every CI run), performed-and-reverted (proven once, nothing re-checks it), never-watched. Now recorded as its own Known gap.",
+        "FIFTH false claim of the day, and it was in THREE places: \"nothing yet tells an agent to consult sessions... nothing in the roster calls them yet\" sat verbatim in CLAUDE.md, README.md and plugins/teamme/README.md. All three went stale together at 0.8.0 when the session wiring shipped, and all three were found and fixed today. The copied-fact shape T22/T23/T26/T40 exist to catch, landing on the gap register-s own claim about itself.",
+        "FINAL: suite exits 0 at 118 ok / 96 sections (114/92 at 4472bdd). The 0.11.0 entry took three rounds. Round 1 fabricated a count (\"four renderers\" naming three plus \"and others\" - there are exactly three), invented a command (git rev-list, where the section uses git log only), added a heading the file has never used (### Validation), and LEAKED MY BRIEF-S INSTRUCTION into the shipped text (\"Do not flatten to no watch-fail; do not inflate to watch-failed\" - my direction to the writer, sitting in user-facing prose). Round 2 over-corrected: told not to invent a heading, it deleted the coverage entirely, leaving Known limitations caveating four ground-truth checks the entry never introduced - and justified it as \"internal testing infrastructure, not user-visible\", which grep -c validate.sh CHANGELOG.md = 4 contradicts across three prior releases. Round 3 correct. Verified on disk: exactly the three real session renderers named, zero rev-list, zero leaked instruction, headings Added/Fixed/Known limitations only."
+      ],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-25T12:06:42+00:00",
+      "updated": "2026-09-25T12:43:13+00:00",
+      "status_changed": "2026-09-25T12:43:13+00:00"
+    },
+    {
+      "id": "T51",
+      "title": "This repo's own roster carries no librarian guardrail block at all - zero of seven .claude/agents/*.md mention a librarian, while init-team.md has required it of generated rosters since 0.6.0",
+      "status": "open",
+      "priority": "P1",
+      "lane": "teamme-prompt-author",
+      "notes": [
+        "Found by the prompt lane while wiring the cross-index (T50), verified by me: grep -il librarian over .claude/agents/*.md returns ZERO of 7 files. init-team.md instructs every generated roster to carry the librarian consultation contract - history since 0.6.0, sessions since 0.8.0, cross as of T50 - and this repo, which dogfoods its own installer, never received any of it. The purest instance of the shape CLAUDE.md warns about: a fix made only in the template never reaches this repo. Unrecorded in Known gaps."
+      ],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-25T12:16:30+00:00",
+      "updated": "2026-09-25T12:16:31+00:00",
+      "status_changed": "2026-09-25T12:16:30+00:00"
+    },
+    {
+      "id": "T52",
+      "title": "teamme_mcp.py's limit schema description names history's 30/200 and sessions' 20/100 but never the cross queries' own 12/50, so a caller reading the schema expects 30 and gets 12",
+      "status": "open",
+      "priority": "P2",
+      "lane": "teamme-hook-engineer",
+      "notes": [
+        "Verified at teamme_mcp.py:784 - \"Row cap. Defaults to 30 for history ...\". A value claim in a tool schema, which is the one class neither identifiers-exist nor rendered-labels-exist can catch (CONTRIBUTING.md says so explicitly). The cross caps are DEFAULT_LIMIT = 12 and MAX_LIMIT = 50 in cross.py."
+      ],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-25T12:16:31+00:00",
+      "updated": "2026-09-25T12:16:31+00:00",
+      "status_changed": "2026-09-25T12:16:31+00:00"
+    },
+    {
+      "id": "T53",
+      "title": "history-librarian.md defines 'weak' only in changes_with's sense (one shared commit) while the renderer also prints it for hotspots (changed once) - one word, two thresholds, one definition",
+      "status": "open",
+      "priority": "P2",
+      "lane": "teamme-prompt-author",
+      "notes": [],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-25T12:16:31+00:00",
+      "updated": "2026-09-25T12:16:31+00:00",
+      "status_changed": "2026-09-25T12:16:31+00:00"
+    },
+    {
+      "id": "T54",
+      "title": "The session librarian's four queries are never driven through the real MCP pipe - every assertion calls sessions.query()/index() directly, so _render_sessions_status, _render_sessions_privacy and _render_session_rows are unrendered in practice",
+      "status": "open",
+      "priority": "P2",
+      "lane": "teamme-validation-engineer",
+      "notes": [
+        "Named by the validation lane as a real, sizable gap it chose not to close rather than cover thinly: doing it well needs a full transcript fixture plus pipe plumbing on top of an already large brief. The brief had said a reasoned subset beats thin coverage of all ten renderers, and it took that at its word and said which it skipped and why."
+      ],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-25T12:22:14+00:00",
+      "updated": "2026-09-25T12:22:14+00:00",
+      "status_changed": "2026-09-25T12:22:14+00:00"
     }
   ]
 }

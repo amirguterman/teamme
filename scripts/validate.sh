@@ -6,6 +6,22 @@ cd "$(dirname "$0")/.."
 ROOT="$PWD"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+# T48: under `set -euo pipefail`, a bare command that exits non-zero (e.g. a
+# `preflight.py check` invoked directly rather than through a wrapper that
+# checks its exit code) kills the whole run immediately - correctly - but with
+# NO line saying so: just an unexplained stop after the last `ok:` this run
+# printed. That already cannot produce a false green (CI still exits non-zero
+# and ALL CHECKS PASSED never prints), but it left a contributor diffing `ok:`
+# counts to find out where it died. This ERR trap fires on that same
+# already-fatal condition and names the line and the command, so the NEXT
+# person sees a FAIL: line instead of silence. It changes nothing about
+# whether the run passes or fails - only whether the failure explains itself.
+on_err() {
+  local ec=$?
+  echo "FAIL: unexpected error (exit $ec) at ${BASH_SOURCE[0]:-$0}:${BASH_LINENO[0]} running: ${BASH_COMMAND}" >&2
+}
+trap on_err ERR
+
 echo "== manifests =="
 python3 - <<'PY'
 import json, pathlib, sys
@@ -3739,6 +3755,267 @@ print("  ok: unknown path, damped-away path, genuinely-alone path and a young in
       "distinct, non-colliding answers")
 PY
 
+echo "== librarian query: commits_touching, commits_between and search_subjects match ground truth read straight from git log, module out of the loop (T50) =="
+# CLAUDE.md's own admission: these three query names, plus hotspots below, were
+# "exercised while building fixtures and ground truth for OTHER assertions" but
+# never asserted directly. Same doctrine as changes_with's ground-truth section
+# above: expected results are computed straight from `git log`, with the
+# librarian module entirely out of that computation, so this cannot pass by
+# agreeing with a bug in the same code it is checking.
+LIB_LIST="$PWD/lib-list-queries"
+mkdir -p "$LIB_LIST"
+gitc -C "$LIB_LIST" init -q
+echo 1 > "$LIB_LIST/readme.md"; gitc -C "$LIB_LIST" add -A
+gitc -C "$LIB_LIST" commit -qm "add readme" --date="2024-01-01T00:00:00+00:00"
+echo 1 > "$LIB_LIST/foo.py"; gitc -C "$LIB_LIST" add -A
+gitc -C "$LIB_LIST" commit -qm "add feature foo" --date="2024-01-05T00:00:00+00:00"
+echo 2 > "$LIB_LIST/foo.py"; echo 1 > "$LIB_LIST/bar.py"; gitc -C "$LIB_LIST" add -A
+gitc -C "$LIB_LIST" commit -qm "fix bug in foo" --date="2024-01-10T00:00:00+00:00"
+echo 1 > "$LIB_LIST/foo_test.py"; gitc -C "$LIB_LIST" add -A
+gitc -C "$LIB_LIST" commit -qm "add tests for foo" --date="2024-01-15T00:00:00+00:00"
+echo 2 > "$LIB_LIST/readme.md"; gitc -C "$LIB_LIST" add -A
+gitc -C "$LIB_LIST" commit -qm "unrelated docs update" --date="2024-01-20T00:00:00+00:00"
+python3 - "$LIBPATH" "$LIB_LIST" <<'PY'
+import subprocess, sys
+from datetime import datetime, timezone
+
+libpath, repo = sys.argv[1], sys.argv[2]
+sys.path.insert(0, libpath)
+
+log = subprocess.run(
+    ["git", "-C", repo, "log", "--format=%H\x1f%at\x1f%s"],
+    capture_output=True, text=True, check=True,
+).stdout.splitlines()
+by_hash = {}
+for line in log:
+    h, at, s = line.split("\x1f", 2)
+    by_hash[h] = (int(at), s)
+
+# commits_touching: git itself, filtered to the path - the same command a
+# human would run, entirely independent of the SQL this checks.
+touching_ground = subprocess.run(
+    ["git", "-C", repo, "log", "--format=%H", "--", "foo.py"],
+    capture_output=True, text=True, check=True,
+).stdout.split()
+
+# commits_between: the boundary is set to fall EXACTLY on two commits' own
+# epochs (foo/2024-01-05 and foo_test/2024-01-15), so this also proves the
+# bounds are inclusive (epoch >= lo AND epoch <= hi), not off-by-one.
+since, until = "2024-01-05T00:00:00+00:00", "2024-01-15T00:00:00+00:00"
+lo = int(datetime.fromisoformat(since).timestamp())
+hi = int(datetime.fromisoformat(until).timestamp())
+between_ground = sorted(
+    (h for h, (at, _) in by_hash.items() if lo <= at <= hi),
+    key=lambda h: -by_hash[h][0],
+)
+
+# search_subjects: a plain, independent substring test over the subjects git
+# itself reports - no LIKE, no SQL.
+subjects_ground = sorted(
+    (h for h, (_, s) in by_hash.items() if "foo" in s.lower()),
+    key=lambda h: -by_hash[h][0],
+)
+
+from librarian import history, store
+
+r = history.index(repo, full=True)
+if not r.get("ok") or r.get("commits") != 5:
+    sys.exit(f"could not build the list-queries fixture: {r}")
+conn = store.connect(repo)
+
+q_touch = store.query(conn, "commits_touching", {"path": "foo.py"}, repo)
+got_touch = [row["hash"] for row in q_touch["rows"]]
+if got_touch != touching_ground:
+    sys.exit(f"commits_touching(foo.py) does not match git log directly: "
+              f"module={got_touch}, git={touching_ground}")
+
+q_between = store.query(conn, "commits_between", {"since": since, "until": until}, repo)
+got_between = [row["hash"] for row in q_between["rows"]]
+if got_between != between_ground:
+    sys.exit(f"commits_between({since}..{until}) does not match ground truth computed "
+              f"independently from git's own commit epochs: module={got_between}, "
+              f"ground={between_ground}")
+
+q_search = store.query(conn, "search_subjects", {"text": "foo"}, repo)
+got_search = [row["hash"] for row in q_search["rows"]]
+if got_search != subjects_ground:
+    sys.exit(f"search_subjects('foo') does not match an independent substring scan of the "
+              f"subjects: module={got_search}, ground={subjects_ground}")
+
+conn.close()
+print(f"  ok: commits_touching(foo.py)={len(got_touch)}, commits_between (inclusive bounds "
+      f"landing exactly on two commits' own epochs)={len(got_between)}, "
+      f"search_subjects('foo')={len(got_search)} - all three match git log directly")
+PY
+
+echo "== librarian renderer: commits_touching, commits_between and search_subjects render their rows over the real pipe - _render_rows was previously unasserted (T50) =="
+# store.query() is proven correct above; this drives the SAME fixture through
+# teamme_librarian_query over the real JSON-RPC pipe and checks the RENDERED
+# text - _render_rows, the prose a librarian agent actually reads back for the
+# four most-used list queries plus recent/files_in_commit, had no assertion of
+# its own anywhere in this file. Also exercises both of its branches: a row
+# carrying "path" (commits_touching, bracketed) and one that does not
+# (commits_between/search_subjects, no bracket).
+python3 - "$LIBPATH" "$LIB_LIST" <<'PY'
+import json, subprocess, sys
+
+libpath, proj = sys.argv[1], sys.argv[2]
+server = libpath + "/teamme_mcp.py"
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+def call_text(resp):
+    result = resp.get("result") or {}
+    return result, "".join(c.get("text", "") for c in result.get("content") or [])
+
+
+proc = subprocess.Popen(
+    ["python3", server],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_librarian_refresh", "arguments": {"project_dir": proj}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"refresh of the list-queries fixture over the pipe reported an error: {text}")
+
+    send(proc, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {"name": "teamme_librarian_query",
+                           "arguments": {"project_dir": proj, "query": "commits_touching",
+                                         "path": "foo.py"}}})
+    result, text_touch = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"commits_touching over the pipe reported an error: {text_touch}")
+    for needle in ("fix bug in foo", "[foo.py +", "add feature foo"):
+        if needle not in text_touch:
+            sys.exit(f"commits_touching's rendered text is missing {needle!r}: {text_touch!r}")
+    if "unrelated docs update" in text_touch or "add tests for foo" in text_touch:
+        sys.exit(f"commits_touching rendered a commit that never touched foo.py: {text_touch!r}")
+
+    send(proc, {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                "params": {"name": "teamme_librarian_query",
+                           "arguments": {"project_dir": proj, "query": "commits_between",
+                                         "since": "2024-01-05T00:00:00+00:00",
+                                         "until": "2024-01-15T00:00:00+00:00"}}})
+    result, text_between = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"commits_between over the pipe reported an error: {text_between}")
+    for needle in ("add feature foo", "fix bug in foo", "add tests for foo"):
+        if needle not in text_between:
+            sys.exit(f"commits_between's rendered text is missing {needle!r}: {text_between!r}")
+    if "add readme" in text_between or "unrelated docs update" in text_between:
+        sys.exit(f"commits_between rendered a commit outside its since/until bounds: {text_between!r}")
+    # the OTHER branch of _render_rows: no "path" on these rows, so no bracket.
+    if "[" in text_between:
+        sys.exit(f"commits_between rendered a [path ...] bracket it has no row data for: {text_between!r}")
+
+    send(proc, {"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                "params": {"name": "teamme_librarian_query",
+                           "arguments": {"project_dir": proj, "query": "search_subjects",
+                                         "text": "foo"}}})
+    result, text_search = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"search_subjects over the pipe reported an error: {text_search}")
+    for needle in ("add feature foo", "fix bug in foo", "add tests for foo"):
+        if needle not in text_search:
+            sys.exit(f"search_subjects's rendered text is missing {needle!r}: {text_search!r}")
+    if "add readme" in text_search or "unrelated docs update" in text_search:
+        sys.exit(f"search_subjects rendered a commit whose subject does not contain 'foo': {text_search!r}")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+print("  ok: commits_touching, commits_between and search_subjects all render their expected "
+      "subjects (and only those) over the real pipe; commits_touching's rows carry a [path ...] "
+      "bracket, commits_between's do not - both branches of _render_rows exercised")
+PY
+
+echo "== librarian query: hotspots matches ground truth counted straight from git log --name-only, module out of the loop (T35/T50) =="
+# hotspots had a renderer assertion below (checking rendered TEXT against known
+# values) but no assertion of store.query()'s own ranking against an
+# independent count - the same gap changes_with closed for itself earlier in
+# this file. Ground truth here is a plain per-file commit count read directly
+# from git log --name-only, with the librarian module out of that count.
+LIB_HOTSPOTS="$PWD/lib-hotspots"
+mkdir -p "$LIB_HOTSPOTS"
+gitc -C "$LIB_HOTSPOTS" init -q
+echo 1 > "$LIB_HOTSPOTS/a.py"; gitc -C "$LIB_HOTSPOTS" add -A; gitc -C "$LIB_HOTSPOTS" commit -qm "add a"
+echo 1 > "$LIB_HOTSPOTS/b.py"; gitc -C "$LIB_HOTSPOTS" add -A; gitc -C "$LIB_HOTSPOTS" commit -qm "add b"
+echo 1 > "$LIB_HOTSPOTS/c.py"; gitc -C "$LIB_HOTSPOTS" add -A; gitc -C "$LIB_HOTSPOTS" commit -qm "add c (touched once - weak)"
+echo 2 > "$LIB_HOTSPOTS/a.py"; gitc -C "$LIB_HOTSPOTS" add -A; gitc -C "$LIB_HOTSPOTS" commit -qm "touch a 2"
+printf '2\n3\n' > "$LIB_HOTSPOTS/a.py"; echo 2 > "$LIB_HOTSPOTS/b.py"
+gitc -C "$LIB_HOTSPOTS" add -A; gitc -C "$LIB_HOTSPOTS" commit -qm "touch a+b"
+printf '2\n3\n4\n' > "$LIB_HOTSPOTS/a.py"; gitc -C "$LIB_HOTSPOTS" add -A; gitc -C "$LIB_HOTSPOTS" commit -qm "touch a 3"
+echo 3 > "$LIB_HOTSPOTS/b.py"; gitc -C "$LIB_HOTSPOTS" add -A; gitc -C "$LIB_HOTSPOTS" commit -qm "touch b 2"
+printf '2\n3\n4\n5\n' > "$LIB_HOTSPOTS/a.py"; gitc -C "$LIB_HOTSPOTS" add -A; gitc -C "$LIB_HOTSPOTS" commit -qm "touch a 4"
+printf '2\n3\n4\n5\n6\n' > "$LIB_HOTSPOTS/a.py"; gitc -C "$LIB_HOTSPOTS" add -A; gitc -C "$LIB_HOTSPOTS" commit -qm "touch a 5"
+python3 - "$LIBPATH" "$LIB_HOTSPOTS" <<'PY'
+import collections, subprocess, sys
+
+libpath, repo = sys.argv[1], sys.argv[2]
+sys.path.insert(0, libpath)
+
+log = subprocess.run(
+    ["git", "-C", repo, "log", "--no-renames", "--name-only", "--format=COMMIT\t%H"],
+    capture_output=True, text=True, check=True,
+).stdout
+by_hash = {}
+cur = None
+for line in log.splitlines():
+    if line.startswith("COMMIT\t"):
+        cur = line.split("\t", 1)[1]
+        by_hash[cur] = set()
+    elif line.strip():
+        by_hash[cur].add(line.strip())
+
+counts = collections.Counter()
+for files in by_hash.values():
+    for f in files:
+        counts[f] += 1
+expected_order = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+
+from librarian import history, store
+
+r = history.index(repo, full=True)
+if not r.get("ok") or r.get("commits") != 9:
+    sys.exit(f"could not build the hotspots ground-truth fixture: {r}")
+conn = store.connect(repo)
+q = store.query(conn, "hotspots", {}, repo)
+conn.close()
+
+got_order = [(row["path"], row["commits"]) for row in q["rows"]]
+if got_order != expected_order:
+    sys.exit(f"hotspots does not match a per-file commit count read straight from "
+              f"git log --name-only: module={got_order}, git={expected_order}")
+
+weak = {row["path"] for row in q["rows"] if row.get("weak")}
+if weak != {"c.py"}:
+    sys.exit(f"expected only c.py (1 commit) marked weak, got: {weak}")
+
+print(f"  ok: hotspots({{}}) matches a per-file commit count read straight from "
+      f"git log --name-only: {got_order}; only the single-commit file (c.py) is marked weak")
+PY
+
 echo "== librarian renderer: changes_with's caveats and evidence base survive into RENDERED text, and a weak row visibly differs from a strong one (over the real pipe) [watch-fail] =="
 # Everything up to here compares store.query()'s row data directly - correct
 # for ground truth, but it never once looks at the prose _render_cochange
@@ -5219,6 +5496,85 @@ print("  ok: pad_minutes=0 misses the commit that closed the task 30s after stat
       f"default pad ({qd.get('pad_minutes')} min) catches it and says the window was widened")
 PY
 
+echo "== librarian renderer: around_task over the real pipe names the task, its window and the commit that closed it - _render_cross was previously unasserted beyond structural survival (T50) =="
+# Every cross-index section above checks cross.query()'s data directly (or, for
+# the corrupt-worklog case, only that the pipe survives) - none of them looks
+# at the prose _render_cross produces, which is what a librarian agent reading
+# teamme_librarian_query's answer actually sees. Reuses LIB_CROSS_PAD (task T1
+# "pad boundary task", closed by commit "c1 closes the task") rather than
+# building a fourth fixture.
+python3 - "$LIBPATH" "$LIB_CROSS_PAD" <<'PY'
+import json, subprocess, sys
+
+libpath, proj = sys.argv[1], sys.argv[2]
+server = libpath + "/teamme_mcp.py"
+
+closing_hash = subprocess.run(
+    ["git", "log", "-1", "--format=%H", "--grep=closes the task"], cwd=proj,
+    capture_output=True, text=True, check=True).stdout.strip()
+if not closing_hash:
+    sys.exit("fixture is wrong: could not find the closing commit by its own message")
+closing_short = subprocess.run(
+    ["git", "log", "-1", "--format=%h", closing_hash], cwd=proj,
+    capture_output=True, text=True, check=True).stdout.strip()
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+def call_text(resp):
+    result = resp.get("result") or {}
+    return result, "".join(c.get("text", "") for c in result.get("content") or [])
+
+
+proc = subprocess.Popen(
+    ["python3", server],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_librarian_query",
+                           "arguments": {"project_dir": proj, "query": "around_task",
+                                         "task": "T1"}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"around_task(T1) over the pipe reported an error: {text}")
+
+    must_contain = [
+        "around T1 [done]  pad boundary task",   # the task line, exact
+        "INFERRED ACTIVE WINDOW:",
+        "Padded",                                 # window_basis says the pad widened it
+        closing_short,                            # the commit that closed the task, by short hash
+        "closes the task",                        # its subject
+        "what each store contributed",             # per-store contribution block header
+    ]
+    missing = [m for m in must_contain if m not in text]
+    if missing:
+        sys.exit(f"around_task's rendered text is missing: {missing}\n--- full text ---\n{text}")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+print(f"  ok: around_task(T1) over the real pipe names the task, its padded window and the "
+      f"closing commit ({closing_short}) in the rendered text")
+PY
 
 echo "== librarian-gate: fixtures + helpers live under the throwaway project; the hook always runs as a real subprocess, never imported =="
 GATEPATH="$ROOT/plugins/teamme/templates/hooks/librarian-gate.py"
