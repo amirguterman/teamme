@@ -22,8 +22,11 @@ plugins/teamme/
                                    also runs and reports `preflight.py roster`, a separate verdict
   commands/modify-team.md         changes an EXISTING team - add/drop/retool/rename a lane - without
                                    re-running init-team; migrates the work log's `lane` fields and
-                                   never touches a closed task; a prompt, not code (see Decisions
-                                   already made: "A roster is four copies")
+                                   never touches a closed task; reads plugins/teamme/templates/agents/
+                                   live to offer a shipped-but-optional lane rather than naming one in
+                                   its own text (Phase 1b - see Decisions already made, the entry after
+                                   "A third agent tier"); a prompt, not code (see Decisions already
+                                   made: "A roster is four copies")
   commands/queue.md               parks a request in the work log; no grounding, no phase interaction
   server/teamme_mcp.py            stdio JSON-RPC MCP server: status/install/worklog/intake-phase/
                                    librarian tools
@@ -58,7 +61,8 @@ plugins/teamme/
                                    index is behind HEAD, reading a one-line marker rather than the
                                    database - see Design invariants #1 and Decisions already made
     agents/devils-advocate.md     opt-in, roster-selectable - COPIED VERBATIM into a project's
-                                   .claude/agents/ only if chosen in /teamme:init-team's Phase 3;
+                                   .claude/agents/ if chosen in /teamme:init-team's Phase 3, or added
+                                   to an existing team later via /teamme:modify-team's Phase 1b;
                                    a third agent tier, distinct from agents/history-librarian.md
                                    above (always present, never selectable) and from generated
                                    .claude/agents/*.md (derived per project, never copied) - see
@@ -668,9 +672,42 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   **verbatim** into a project's `.claude/agents/` only when selected in `/teamme:init-team`'s Phase 3
   — the same relationship `templates/hooks/*.py` already has to `.claude/hooks/*.py` (invariant #5),
   extended to an agent file for the first time. Because it is copied into the roster rather than
-  shipped alongside it, it joins the four places a roster is written down (see "A roster is four
-  copies" below) and `preflight.py roster` covers it like any other selectable lane — the librarian,
-  never in the roster, needs no such coverage and gets none.
+  shipped alongside it, it joins **three of the four** places a roster is written down (see "A roster
+  is four copies" below), not all four: the agent file and the roster README's row, the same as any
+  other lane, but no row in `/intake`'s own lane table, because that table is what a request is
+  classified *into* and a lane that owns no layer is never the destination of a classification — it is
+  instead named, as a whole word, at the step that actually engages it. `preflight.py roster` still
+  covers it on those three, the same as any other selectable lane; the librarian, never in the roster
+  at all, needs no such coverage and gets none.
+- **A shipped-but-optional lane is matched by directory content, not a name in a prompt — and the two
+  commands that can add one are deliberately not symmetric about how, with a stated trigger to revisit
+  that asymmetry rather than a memory of having chosen it.** `/teamme:modify-team`'s Phase 1b lists
+  `plugins/teamme/templates/agents/*.md` and matches the lane being added against each file's own
+  frontmatter `name:`, whole-name — the command's own text names no selectable lane anywhere; a grep
+  confirms the only agent name that appears in the whole file is `history-librarian`, which was already
+  there for the always-present tier, not for this one. A second file landing in that directory needs no
+  edit to `modify-team.md` at all. `/teamme:init-team`'s Phase 3 questionnaire, by contrast, still
+  offers `devils-advocate` by name — it stays enumerated. That is a decision, not an oversight, and the
+  two failure shapes an enumerated list produces are not the same size: `modify-team.md` is invoked on
+  an arbitrary later day, against a roster that already works, so a stale enumeration there would
+  produce a *wrong* artifact — a hand-written imitation of a prompt that already exists, shipped under
+  the same name, which nothing downstream would ever flag, because a roster naming all the right lanes
+  is exactly what every check here looks for. That breaches invariant #5 (the command copies
+  scaffolding, it does not re-author it). `init-team.md`'s Phase 3 runs once, at first install, against
+  a small and already-known set; a stale enumeration there produces only a *missing offer*, which
+  `modify-team.md`'s own Phase 1b already exists to correct after the fact — a documentation lag, not a
+  write of something wrong. Only the first shape is the one invariant #5 actually forbids, which is why
+  only `modify-team.md` went directory-keyed. Phase 1b also states plainly that "I could not read that
+  directory" is not "I checked and it does not ship" — a directory that cannot be listed is its own
+  branch, never collapsed into "does not ship", for the same reason: collapsing the two produces exactly
+  the wrong-artifact failure this design exists to avoid. **The revisit trigger is recorded here, not
+  left to memory, on T47's own instruction** ("a comment that says 'until X happens' is a debt that
+  needs a trigger to revisit it, not just a memory of having written it" — see T47 above, the concrete
+  precedent this decision follows rather than restates): the day a second file lands in
+  `plugins/teamme/templates/agents/`, reconsider whether `init-team.md`'s Phase 3 should read that
+  directory too instead of continuing to name `devils-advocate` by hand. One shipped-but-optional lane
+  cannot show whether an enumerated list at first-install time is actually a problem; a second one
+  might. Until then, the asymmetry stands as written here.
 - **The design-return cycle: one round between the approved brief and the code, gated by one trigger
   rule, run in two separate spawns over the same designs.** `/intake` step 5 (`.claude/commands/
   intake.md`) and `commands/init-team.md`'s generated equivalent put a step between "brief approved"
@@ -916,11 +953,14 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   from agent frontmatter at read time, which is the structurally cleaner answer but would change the
   generated-prompt contract for every existing install — the same upgrade pain `installed` derivation
   paid a P0 to avoid. What shipped instead: `/teamme:modify-team` (add, drop, retool or rename a lane)
-  writes all four copies and migrates the affected tasks' `lane` fields through `worklog.py lane`,
-  never by hand; a dropped or renamed agent's file is moved aside to `<name>.md.disabled`, never
-  deleted, the same reversible-disable preference `init-team.md` already states for skills and MCP
-  servers; and a closed task is never re-laned — that agent really did do that work, and the ledger is
-  append-only about what happened, the same reasoning `retitle` already established for titles.
+  writes all four copies for an ordinary lane — three of the four for a lane that owns no layer, since
+  such a lane gets no row in `/intake`'s own lane table and is instead named at the step that engages
+  it (see "A third agent tier" above for why, and Phase 4 step 4 of `modify-team.md` itself for where)
+  — and migrates the affected tasks' `lane` fields through `worklog.py lane`, never by hand; a dropped
+  or renamed agent's file is moved aside to `<name>.md.disabled`, never deleted, the same
+  reversible-disable preference `init-team.md` already states for skills and MCP servers; and a closed
+  task is never re-laned — that agent really did do that work, and the ledger is append-only about
+  what happened, the same reasoning `retitle` already established for titles.
   `preflight.py roster` is the proof: three checks (`roster_readme`, `roster_command`, `roster_tasks`),
   three marks (`PASS`, `FAIL`, and `SKIP` for "could not be read, so not verified" — never silently
   read as agreement), exit 0 iff all three `PASS`. It is kept out of `check`'s exit code on purpose: a
@@ -950,9 +990,11 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
 ## Known gaps
 
 - No eval suite yet (`claude plugin eval`). The prompts (`init-team.md`, `team-doctor.md`,
-  `intake.md`, `queue.md`) are checked only for parsable frontmatter; nothing tests what they
-  instruct. The command-level preflight refusal, `/teamme:queue`'s one-line output contract, and
-  `/intake`'s step 0a deferral short-circuit are all prompt text, not enforced behaviour.
+  `modify-team.md`, `intake.md`, `queue.md`) are checked only for parsable frontmatter; nothing tests
+  what they instruct. The command-level preflight refusal, `/teamme:queue`'s one-line output contract,
+  `/intake`'s step 0a deferral short-circuit, and `modify-team.md`'s Phase 1b directory lookup with its
+  three-outcome (ships / does not ship / not answered) branch are all prompt text, not enforced
+  behaviour.
 - `templates/intake.md` has been exercised on one real project (a Minecraft Fabric mod). The
   `{{PLACEHOLDER}}` set may not fit stacks with very different doc conventions.
 - **Whether a real, user-edited `intake.md` can drift far enough to stop naming any teamme hook is
@@ -1234,6 +1276,22 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   without saying what it decided. Same register as every other convention this project states rather
   than enforces (see the MCP install gate, the librarian intended-caller entry, and the push-reminder
   entry above) — say it in the same breath as the feature, not as an afterthought.
+- **A copied agent prompt has no drift detection at all — a real asymmetry with hooks, not a shared
+  limit, and worth stating precisely rather than by analogy.** `hook_freshness()` (`preflight.py:324`)
+  is a byte-exact comparison between an installed hook script and the plugin's shipped copy; it drives
+  `installed-outdated` and is asserted by `validate.sh` (see Verify above and the "Hook freshness has
+  exactly one implementation" entry in Decisions already made). Nothing equivalent exists for an agent
+  file copied verbatim out of `plugins/teamme/templates/agents/`, whether by `/teamme:init-team`'s
+  Phase 3 or `/teamme:modify-team`'s Phase 1b. `preflight.py roster`'s checks resolve an agent through
+  `_frontmatter_name()` (`preflight.py:885`), which reads only the `name:` line — they prove *identity*
+  (a file exists, is named consistently across the four copies), never *content*. If the plugin later
+  ships a revised `devils-advocate.md` — a prompt fix, a tightened guardrail, a corrected invariant —
+  a project that copied the earlier version has no mechanism anywhere, hook-style or otherwise, that
+  would ever flag its `.claude/agents/devils-advocate.md` as differing from what the plugin now ships;
+  `/teamme:team-doctor` and `teamme_install` do not reach `.claude/agents/` at all. This is not the same
+  limit invariant #5 has always had at hooks: the hook half of that invariant is checked; the agent half
+  is a total blind spot, and describing it as a limit the two already share would understate it in
+  exactly the direction T58 (above) already found to be the worse one to get wrong.
 
 ## Conventions
 

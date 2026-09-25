@@ -114,8 +114,10 @@ plugins/teamme/
   commands/team-doctor.md         the command that diagnoses/repairs an existing install; also runs
                                    and reports `preflight.py roster`, a separate verdict from `check`
   commands/modify-team.md         changes an EXISTING team (add/drop/retool/rename a lane) without
-                                   re-running init-team - see Changing the commands below and
-                                   `CLAUDE.md`'s "A roster is four copies" entry
+                                   re-running init-team; reads templates/agents/ live to offer a
+                                   plugin-shipped lane rather than naming one in its own text - see
+                                   Changing the commands below and `CLAUDE.md`'s "A roster is four
+                                   copies" entry
   commands/queue.md               parks a request in the work log; no grounding, no phase interaction
   server/teamme_mcp.py            stdio JSON-RPC MCP server
   server/librarian/*.py           librarian substrate: append-only JSONL + a disposable SQLite index,
@@ -138,7 +140,8 @@ plugins/teamme/
     hooks/librarian-gate.py       PreToolUse on `git push` - asks, never denies, when the history
                                    index is behind HEAD; see Rules for the hook scripts below
     agents/devils-advocate.md     opt-in, roster-selectable - copied verbatim into a project's
-                                   .claude/agents/ only if chosen in init-team.md's Phase 3; see
+                                   .claude/agents/ if chosen in init-team.md's Phase 3, or added to an
+                                   existing team via modify-team.md's directory-keyed Phase 1b; see
                                    Rules for plugin-shipped agents below
     intake.md                     skeleton with {{PLACEHOLDER}}s the command fills in
     settings.hooks.json           the hooks block merged into the project's settings.json
@@ -211,13 +214,28 @@ prevent. `plugins/teamme/agents/` — `history-librarian.md` is the only file in
 the plugin and is present, unchanged, in every project the plugin is installed in, whether or not that
 project has run `/teamme:init-team`; it is never offered in the Phase 3 roster questionnaire and never
 roster-selectable. `plugins/teamme/templates/agents/` — `devils-advocate.md` is the first and only file
-in it today — also ships project-agnostic with the plugin, but is **opt-in**: it is offered in Phase 3
-like any derived lane, and copied verbatim into a project's `.claude/agents/` only if selected, exactly
-the way `templates/hooks/*.py` are copied rather than derived. Generated `.claude/agents/*.md` are the
-third tier: per-project, derived from that project's own layout, never copied from anywhere. See
-`CLAUDE.md`'s "Decisions already made" — the "two tiers" entry and the "third agent tier" entry that
-follows it — for why shipped-and-fixed, shipped-but-optional and generated-per-project are three
-different answers to three different constraints, not one mechanism with variations.
+in it today — also ships project-agnostic with the plugin, but is **opt-in**, and is now reachable from
+two places that stay deliberately asymmetric about *how* they offer it: `/teamme:init-team`'s Phase 3
+still names `devils-advocate` and offers it like any derived lane at first install, while
+`/teamme:modify-team`'s Phase 1b offers the same directory to an *existing* team by reading it live and
+matching each file's frontmatter `name:` — its own text names no selectable lane, so a second file
+landing in that directory needs no edit to `modify-team.md` at all. See `CLAUDE.md`'s Decisions already
+made for why that asymmetry is a decision, not an oversight, and the stated trigger for revisiting it.
+Either path copies the file verbatim into a project's `.claude/agents/` only if selected, exactly the
+way `templates/hooks/*.py` are copied rather than derived — and neither one is checked afterwards for
+drift the way a hook is; see `CLAUDE.md`'s Known gaps. Generated `.claude/agents/*.md` are the third
+tier: per-project, derived from that project's own layout, never copied from anywhere. See `CLAUDE.md`'s
+"Decisions already made" — the "two tiers" entry and the "third agent tier" entry that follows it — for
+why shipped-and-fixed, shipped-but-optional and generated-per-project are three different answers to
+three different constraints, not one mechanism with variations.
+
+A lane that owns no layer, like `devils-advocate`, gets no row in `intake.md`'s own step-2 lane table —
+a request is never classified *into* a lane that owns no layer, so a row there would invite a dispatch
+that should never happen — but it must still be named somewhere in that file's text, as a whole word, at
+the step that actually engages it. `preflight.py roster`'s `roster_command` check requires every live
+agent's name to appear somewhere in `intake.md`, with no exception for a lane that owns no layer; a
+correct add that skips this mention fails that check on its own, correct roster. Do not "tidy away" that
+mention as a stray reference if you find one while editing a generated `intake.md`.
 
 A plugin-shipped agent's frontmatter must never set `permissionMode`, `hooks` or `mcpServers` —
 whether it lives in `agents/` or `templates/agents/`. The CLI drops all three for a plugin agent —
@@ -242,10 +260,23 @@ that.
 `modify-team.md` changes an *existing* team — it is not a second installer, and it must keep saying so
 in its own text (`init-team.md` and `team-doctor.md` both point users away from re-running the
 installer over a working roster; `modify-team.md` is the alternative those two refusals name). Its
-phase order — preflight, read the inherited roster state, report all four copies, ask what changes,
-migrate the affected tasks' lanes, confirm and execute, re-run `preflight.py roster` as proof, hand
-over — exists so nothing is written before the user approves it and nothing is claimed fixed without
-being checked afterwards; do not collapse phases to save turns. Never let it re-derive
-`preflight.py roster`'s output shape from memory: the `PASS`/`FAIL`/`SKIP` marks and the `not
-verified: <reason>` wording are owned by `preflight.py`, and a prompt that drifts from them is exactly
-the copied-fact bug this check exists to catch elsewhere.
+phase order — preflight, check the inherited roster's own consistency (`preflight.py roster`), report
+all four copies, read the plugin's shipped-but-optional lanes directly from `templates/agents/`, ask
+what changes, migrate the affected tasks' lanes, confirm and execute, re-run `preflight.py roster` as
+proof, hand over — exists so nothing is written before the user approves it and nothing is claimed
+fixed without being checked afterwards; do not collapse phases to save turns.
+
+Keep the shipped-lane lookup (Phase 1b) directory-keyed: match a lane being added against a file's own
+frontmatter `name:` in `plugins/teamme/templates/agents/`, and never hardcode a lane's name anywhere in
+this prompt's own text. A second shipped file landing in that directory must need no edit here at all —
+that is the entire point of reading it live instead of enumerating it, and hardcoding a name back in
+would be a regression to the exact failure shape this design exists to avoid (see `CLAUDE.md`'s
+Decisions already made). Keep the three outcomes distinct in the prompt text: a match ships, no match
+and a readable directory means it does not ship, and a directory that could not be read is its own
+third outcome, never collapsed into "does not ship" — collapsing the two is how a project ends up with
+a hand-written imitation of a prompt that already existed, under the same name, which nothing
+downstream would ever flag.
+
+Never let it re-derive `preflight.py roster`'s output shape from memory: the `PASS`/`FAIL`/`SKIP` marks
+and the `not verified: <reason>` wording are owned by `preflight.py`, and a prompt that drifts from them
+is exactly the copied-fact bug this check exists to catch elsewhere.

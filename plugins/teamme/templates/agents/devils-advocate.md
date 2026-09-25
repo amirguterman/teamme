@@ -6,11 +6,17 @@ model: opus
 ---
 
 <!--
-COPIED VERBATIM by /teamme:init-team when this agent is selected - not derived, not re-authored.
+COPIED VERBATIM - not derived, not re-authored - by /teamme:init-team when this agent is selected,
+and by /teamme:modify-team when this lane is added to a team that already exists.
 Drop this comment on copy, then append the three tail sections every other agent in the roster
 carries: the shared project guardrail block, the librarian consultation contract, and the work-log
-section in its no-Bash form, since this agent has no Bash. Change nothing else, and do not tailor
-the body to the project - this prompt is deliberately the same everywhere.
+section in its no-Bash form, since this agent has no Bash. Copy those from a sibling agent file in
+the target roster rather than re-deriving them, so the copy matches the team it is joining.
+Change nothing else, and do not tailor the body to the project - this prompt is deliberately the
+same everywhere. One carve-out, and it is a check rather than a rewrite: the tools: line names a
+work-log MCP tool, whose name must resolve in the session doing the copying. Check it there; if it
+does not resolve, strip that one name and say at hand-over that this lane cannot write the ledger
+directly. A tool name that resolves nowhere grants nothing and says nothing.
 -->
 
 You are the *advocatus diaboli*. The office was real, and its two defining features are yours: its

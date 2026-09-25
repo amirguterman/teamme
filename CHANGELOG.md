@@ -3,6 +3,24 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-09-26
+
+### Fixed
+- **`/teamme:modify-team` violated the copy-scaffolding invariant.** Adding a lane whose prompt the plugin ships — specifically `devils-advocate`, copied into a project's roster when first selected — re-authored the prompt from a one-line description instead of copying `plugins/teamme/templates/agents/devils-advocate.md` verbatim. A user who declined the advocate at install and added it later got a materially different agent under the same name, with no mechanism to catch or flag the difference. `preflight.py roster` caught nothing — it verifies names exist, never file content. Fixed by a read-only **Phase 1b** that lists `plugins/teamme/templates/agents/` and matches the lane being added against each file's frontmatter `name:`, whole-name: it reports whether the prompt ships, does not ship, or whether the directory could not be read (three distinct outcomes). Phase 4 step 1 now branches: copy the shipped file, or author a new prompt, and state which branch was taken at hand-over.
+- **Phase 4 step 4 violated the lane-roster rule.** The command wrote a lane-table row in `.claude/commands/intake.md` for every added lane, but a lane that owns no layer must not get one — `templates/intake.md` says so explicitly. Fixed in two parts: skip the row for a lane that owns no layer, and ensure it is still named as a whole word at the step that engages it. Skipping the row alone breaks Phase 5's proof, since `preflight.py roster` requires every live agent to appear somewhere in `intake.md`.
+- **Phase 1's exclusion bullet was stale.** It claimed every plugin-shipped agent is "not roster-selectable", written before the third agent tier existed. Updated to exclude only `history-librarian`, which is never selectable; `devils-advocate` is shipped and declinable.
+
+### Added
+- **Phase 1b in `/teamme:modify-team`:** a read-only step between Phase 1 and Phase 2 that probes `plugins/teamme/templates/agents/` for shipped agent prompts. Matches against each file's frontmatter `name:` (whole-name), not a hardcoded list — so a second shipped prompt automatically reaches this step with no edit needed. Returns one of three outcomes: "found" (the prompt ships in the plugin), "not found" (the lane is user-authored), "unreadable" (the directory could not be read). The third outcome is deliberately not collapsed into the second, because "I could not check" read as "it does not ship" produces a wrong artifact rather than a missing one.
+
+### Changed
+- `plugins/teamme/templates/agents/devils-advocate.md`'s leading copy-instruction comment now names both installing commands (`/teamme:init-team` Phase 3 and `/teamme:modify-team` Phase 1b), states that the three appended tail sections — the shared project guardrail block, the librarian consultation contract, and the work-log section in its no-Bash form — are copied from another agent file in the target roster, and adds one carve-out: the `tools:` MCP server name is checked against the session doing the copying and stripped if it does not resolve in that session.
+
+### Known limitations
+- **A copied agent prompt has no drift detection.** `hook_freshness()` byte-compares an installed *hook* against the plugin's copy and drives `installed-outdated`; nothing equivalent exists for a copied *agent* file. If the plugin later ships a revised `devils-advocate.md`, a project holding the old copy has no way to know. Asymmetry: `hook_freshness()` is the one shared comparison that both `preflight.py`'s own check and `teamme_install` call, so two implementations would drift; no equivalent was ever built for agent files.
+- **None of this is tested.** Phase 1b, the three-outcome branch, the copy-or-author split, and the `intake.md` lane-row logic are all prompt text. `validate.sh` reaches frontmatter and file counts; there is no eval suite.
+- **`/teamme:init-team` Phase 3 stays enumerated.** It still names `devils-advocate` by hand rather than probing the directory. Deliberate: `modify-team.md` went directory-keyed because a stale enumeration there produces a *wrong artifact* — a hand-written imitation of a prompt that already ships, under the same name, which nothing downstream ever flags. That breaches invariant #5. `init-team.md` is invoked once at first install against a known set; a stale enumeration there produces only a *missing offer*, which `modify-team.md`'s Phase 1b already exists to correct — a documentation lag, not a write of something wrong. Only the first shape breaches the invariant, so only `modify-team.md` went directory-keyed. The revisit trigger: the day a second file lands in `templates/agents/`, reconsider whether `init-team.md` should read that directory too.
+
 ## [0.12.0] - 2026-09-25
 
 ### Added

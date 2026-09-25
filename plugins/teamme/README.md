@@ -49,7 +49,8 @@ differently without either noticing. It never decides anything itself; the orche
 on a single-lane brief) is what acts on its questions. Selecting it costs one round trip on the briefs
 that reach step 6 below — the entire point on those briefs — and its prompt is copied verbatim rather
 than tailored, the same way the hook scripts are. Declining it costs nothing extra: step 6 still runs,
-with `/intake` asking the questions itself instead of dispatching the agent.
+with `/intake` asking the questions itself instead of dispatching the agent. Declining it here is not
+final: it can be added to a team later, without a reinstall — see `/teamme:modify-team` below.
 
 ## Changing an existing team: `/teamme:modify-team`
 
@@ -62,12 +63,22 @@ dropped or renamed agent's file aside to `<name>.md.disabled` rather than deleti
 re-lanes a closed task — that agent really did do that work, and the record does not get rewritten.
 
 A roster is one fact written down in four places: the agent files, the roster README's table, the
-generated `/intake` command's lane mentions, and every task's `lane` field in the work log. Changing
-one without the others is a bug worth catching, so `/teamme:modify-team` proves its own work with a
-second, separate check: `preflight.py roster`, reported by `/teamme:team-doctor` too. It marks each of
-three checks `PASS`, `FAIL`, or `SKIP` (could not be read, so unproven either way) and never touches
+generated `/intake` command's lane mentions, and every task's `lane` field in the work log — except a
+lane that owns no layer, like `devils-advocate`, which gets three of the four. `/intake`'s own lane
+table is what a request is classified *into*, and a lane no request is ever classified into has
+nothing to put there, so it is named instead, in prose, at the step that actually engages it. Changing
+one copy without the others is a bug worth catching, so `/teamme:modify-team` proves its own work with
+a second, separate check: `preflight.py roster`, reported by `/teamme:team-doctor` too. It marks each
+of three checks `PASS`, `FAIL`, or `SKIP` (could not be read, so unproven either way) and never touches
 `preflight.py check`'s own exit code — a roster gone stale costs a reader a wrong document, not a
 broken team, so it never halts `/intake` the way an incomplete install does.
+
+Adding a lane the plugin ships — `devils-advocate` today — needs no lane name written into
+`/teamme:modify-team` itself: its Phase 1b reads `plugins/teamme/templates/agents/` live and matches
+what it finds by each file's own frontmatter `name:`, so a second shipped-but-optional lane the plugin
+adds in a later release needs no edit to this command at all. If that directory cannot be read, the
+command says so as its own outcome rather than guessing — "could not check" is never read as "does not
+ship".
 
 ## The `/intake` flow
 
