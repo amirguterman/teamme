@@ -509,7 +509,8 @@ PROJECT_DIR_PROP = {
 }
 
 WORKLOG_ACTIONS = ["add", "list", "next", "show", "start", "dispatch", "block", "unblock",
-                   "done", "defer", "decline", "drop", "note", "priority", "lane", "stats"]
+                   "done", "defer", "decline", "drop", "reopen", "note", "retitle", "priority",
+                   "lane", "stats"]
 PHASE_ACTIONS = ["status", "show", "begin", "approve", "reground", "release", "clear"]
 
 TOOLS = [
@@ -550,7 +551,11 @@ TOOLS = [
         "name": "teamme_worklog",
         "description": (
             "Read or update the project's durable work log (tasks, priorities, statuses, notes). "
-            "Requires teamme to be installed: run teamme_install first if it is not."
+            "Requires teamme to be installed: run teamme_install first if it is not. "
+            "`retitle` corrects a title whose scope has changed, keeping the old one as a note. A "
+            "task that is done, declined or dropped is never reopened silently: start/dispatch/"
+            "block/unblock/defer on one is refused, and `reopen` (with a reason) is how to do it "
+            "on purpose."
         ),
         "inputSchema": {
             "type": "object",
@@ -561,7 +566,8 @@ TOOLS = [
                 text={
                     "type": "string",
                     "description": (
-                        "Title for add; reason or note text for block, defer, decline, drop, note; "
+                        "Title for add; the NEW title for retitle (the old one is kept as a note); "
+                        "reason or note text for block, defer, decline, drop, note and reopen; "
                         "for dispatch, the agent it went to - optional, and it falls back to the "
                         "task's lane."
                     ),
@@ -1882,6 +1888,53 @@ def tool_librarian_configure(root: pathlib.Path, args: dict) -> dict:
     return text_result("\n".join(lines), failed)
 
 
+def with_protection_report(result: dict) -> dict:
+    """Append a caveat for any index this call opened WITHOUT its ignore rule.
+
+    store.ignore_guard() runs at the one chokepoint every librarian index is
+    opened through, and it deliberately never refuses the open: protection
+    failing must not stop the work. That makes it the one path carrying the
+    privacy guarantee that could fail with nobody told - the refresh paths
+    report their own ensure_ignored() result, but a query opening an unprotected
+    index said nothing. Draining the record here covers every librarian tool at
+    once rather than one call site at a time, which is the shape of the 0.6.0
+    bug this whole chokepoint exists to avoid repeating.
+
+    It only ever ADDS text, never changes isError and never raises: an index
+    that could not be protected is still a usable answer, and the user needs the
+    answer and the warning, not a refusal. The record is drained either way, so
+    a failure is reported on the call it happened on and never repeated stale.
+    """
+    try:
+        lib = librarian()
+        if lib is None:
+            return result
+        rows = lib[0].take_unprotected()
+        content = result.get("content")
+        already = ""
+        if isinstance(content, list) and content and content[-1].get("type") == "text":
+            already = str(content[-1].get("text") or "")
+        if not rows or "UNPROTECTED" in already:
+            # A refresh renders the fuller block itself (see _render_ignore_state);
+            # this exists for the paths that render nothing, chiefly a query.
+            return result
+        lines = ["", f"  UNPROTECTED:  {UNPROTECTED_NOTE} - teamme could not put its ignore rule "
+                     f"in place, so git can see the index(es) below:"]
+        for r in rows:
+            lines.append(f"                {r.get('path')}")
+            lines.append(f"                {r.get('problem')}")
+        lines.append("                Nothing above was blocked by this. Fix that file (or its "
+                     "permissions) and refresh again.")
+        if isinstance(content, list) and content and content[-1].get("type") == "text":
+            content[-1]["text"] = str(content[-1].get("text") or "") + "\n".join(lines)
+        else:
+            result.setdefault("content", []).append(
+                {"type": "text", "text": "\n".join(lines).lstrip("\n")})
+    except Exception:
+        pass
+    return result
+
+
 def call_tool(name: str, args: dict) -> dict:
     args = args if isinstance(args, dict) else {}
     root = resolve_project(args)
@@ -1894,13 +1947,13 @@ def call_tool(name: str, args: dict) -> dict:
     if name == "teamme_intake_phase":
         return tool_intake_phase(root, args)
     if name == "teamme_librarian_status":
-        return tool_librarian_status(root, args)
+        return with_protection_report(tool_librarian_status(root, args))
     if name == "teamme_librarian_refresh":
-        return tool_librarian_refresh(root, args)
+        return with_protection_report(tool_librarian_refresh(root, args))
     if name == "teamme_librarian_query":
-        return tool_librarian_query(root, args)
+        return with_protection_report(tool_librarian_query(root, args))
     if name == "teamme_librarian_configure":
-        return tool_librarian_configure(root, args)
+        return with_protection_report(tool_librarian_configure(root, args))
     return text_result(
         f"unknown tool '{name}'. Available: " + ", ".join(t["name"] for t in TOOLS), True
     )

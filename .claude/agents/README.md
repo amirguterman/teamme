@@ -20,10 +20,10 @@ in, queue, or redirect — rather than asking you to.
 | Agent | Model | Tools | Owns |
 |---|---|---|---|
 | `teamme-tech-lead` | opus | all (inherits) | Orchestration only. Never implements |
-| `teamme-hook-engineer` | opus | Read, Edit, Write, Grep, Glob, Bash | `plugins/teamme/templates/hooks/*.py`, `settings.hooks.json` |
-| `teamme-prompt-author` | opus | Read, Edit, Write, Grep, Glob | `plugins/teamme/commands/*.md`, `templates/intake.md` |
+| `teamme-hook-engineer` | opus | Read, Edit, Write, Grep, Glob, Bash | `plugins/teamme/templates/hooks/*.py`, `settings.hooks.json`, `plugins/teamme/server/**/*.py` — the only lane permitted to edit `*.py` |
+| `teamme-prompt-author` | opus | Read, Edit, Write, Grep, Glob, `teamme_worklog` | `plugins/teamme/commands/*.md`, `templates/intake.md`, `plugins/teamme/agents/*.md`, and this repo's own `.claude/` prompt copies |
 | `teamme-validation-engineer` | sonnet | Read, Edit, Write, Grep, Glob, Bash | `scripts/validate.sh`, `.github/workflows/` |
-| `teamme-docs-writer` | sonnet | Read, Edit, Write, Grep, Glob | `README.md`, `CLAUDE.md`, `CONTRIBUTING.md` |
+| `teamme-docs-writer` | sonnet | Read, Edit, Write, Grep, Glob, `teamme_worklog` | `README.md`, `CLAUDE.md`, `CONTRIBUTING.md` |
 | `teamme-release-manager` | haiku | Read, Edit, Grep, Glob, Bash | manifests, `CHANGELOG.md` |
 
 ### Why these tiers
@@ -45,6 +45,14 @@ manifest wrong, the build says so immediately.
 hand verification to the lanes that own it. `teamme-release-manager` has **no `Write`** — it only
 edits four files that already exist. `teamme-tech-lead` inherits everything so it can dispatch, and
 is held to "never implements" by its prompt rather than by its tool list.
+
+The two `Bash`-less lanes carry one MCP tool each —
+`mcp__plugin_teamme_teamme__teamme_worklog`, shown as `teamme_worklog` above — because the work log
+is the one file every lane must write and its only other writer is a CLI. Without it they had no
+sanctioned way in, and the observed result was a lane editing `.claude/intake/worklog.json` with
+`Edit` while `worklog.py` held the lock. The tool takes the lock properly and puts no shell in the
+path. The half this does **not** fix: neither lane can run `./scripts/validate.sh`, so both hand it
+back to `teamme-tech-lead` unrun, and both say so rather than implying otherwise.
 
 ## Dependency order
 
@@ -87,6 +95,10 @@ python3 .claude/hooks/worklog.py list      # what is outstanding
 python3 .claude/hooks/worklog.py next      # highest-priority open task
 python3 .claude/hooks/worklog.py stats
 ```
+
+Written only through `worklog.py` or the `teamme_worklog` MCP tool — **never by editing the JSON**.
+Both writers take an `O_EXCL` lock, concurrent writers are normal here, and the ledger is
+append-only, so a note lost to a race can only be superseded, never repaired.
 
 `.claude/intake/worklog.json` is durable and meant to be committed. `.claude/intake/state.json` is
 the transient phase lock — gitignored, and it expires after an hour so a crashed session can never

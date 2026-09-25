@@ -178,6 +178,206 @@ for f in glob.glob('plugins/*/templates/settings.hooks.json'):
     print('  ok: events', sorted(h))
 "
 
+echo "== docs: every backticked query/tool/argument identifier resolves against the real code (T37a) =="
+# Closes the gap this repo hit three times in one release: 0.6.0's CHANGELOG
+# named session queries that do not exist (`recent` for `sessions`, `search`
+# for `search_turns`, `compactions` for `compaction`) plus a phantom tool -
+# nothing compared a documented identifier against the code, so a reader
+# copying it out of the changelog got "unknown session query". This is NOT a
+# general prose linter: it resolves a candidate identifier against everything
+# this codebase actually exposes (tool names, query names, parameter/enum
+# values, record field names, SQL table names, and rendered output labels) -
+# live, imported or grepped from the source, never a second hardcoded copy of
+# any of those lists.
+python3 - "$ROOT" <<'PY'
+import pathlib, re, sys, tempfile
+
+root = pathlib.Path(sys.argv[1])
+sys.path.insert(0, str(root / "plugins/teamme/server"))
+import teamme_mcp
+
+lib = teamme_mcp.librarian()
+if lib is None:
+    sys.exit("could not load the librarian substrate to build the query-name allow-list")
+_store, _history, _config, _sessions, _cross = lib
+
+TOOL_NAMES = {t["name"] for t in teamme_mcp.TOOLS}
+QUERY_NAMES = set(_store.QUERY_NAMES) | set(_sessions.QUERY_NAMES) | set(_cross.QUERY_NAMES)
+# Derived from the tool schemas, never hand-typed - a parameter (commit_record,
+# max_files, enabled, librarian...) is not a query or tool name and must not be
+# flagged as an unresolved one. A hardcoded list here would be the exact
+# "copied fact" this check exists to stop making.
+PARAM_NAMES = set()
+for t in teamme_mcp.TOOLS:
+    PARAM_NAMES |= set(t["inputSchema"].get("properties", {}).keys())
+# enum VALUES of those same parameters (which librarian, which worklog/phase
+# action) are the same category as PARAM_NAMES for the same reason.
+ENUM_VALUES = set(teamme_mcp.LIBRARIANS) | set(teamme_mcp.WORKLOG_ACTIONS) | set(teamme_mcp.PHASE_ACTIONS)
+CALLABLE = TOOL_NAMES | QUERY_NAMES | PARAM_NAMES | ENUM_VALUES
+
+
+def dict_key_vocab(path: pathlib.Path) -> set:
+    """Every quoted lowercase dict key literally present in a source file.
+
+    Mechanical, not hand-typed: a doc correctly naming an internal record
+    field (a worklog task field, a cross-index row key, a SQL column) is not
+    a query or tool name and must not be flagged either - it belongs to a
+    different, legitimate vocabulary this check is not testing.
+    """
+    return set(re.findall(r'"([a-z][a-z_]*)"\s*[:,)\]]', path.read_text()))
+
+
+NON_CALLABLE_BUT_REAL = set()
+for rel in (
+    "plugins/teamme/templates/hooks/worklog.py",
+    "plugins/teamme/server/librarian/cross.py",
+    "plugins/teamme/server/librarian/sessions.py",
+    "plugins/teamme/server/librarian/store.py",
+):
+    NON_CALLABLE_BUT_REAL |= dict_key_vocab(root / rel)
+for rel in ("plugins/teamme/server/librarian/store.py", "plugins/teamme/server/librarian/sessions.py"):
+    NON_CALLABLE_BUT_REAL |= set(re.findall(r'CREATE TABLE IF NOT EXISTS (\w+)', (root / rel).read_text()))
+# A small, explicit, hand-justified residue: ordinary English/tool-name prose
+# this project's docs use that is not a query, tool, parameter, enum value or
+# record field name, and cannot be mechanically derived from a Python
+# collection or a CREATE TABLE statement. If one of these ever collides with a
+# real identifier this check should resolve instead, that is a bug in this
+# list, not a reason to widen it further.
+PROSE_VOCAB = {"git", "jq", "python3", "teamme", "file", "hooks", "true", "false", "live"}
+NON_CALLABLE_BUT_REAL |= PROSE_VOCAB
+
+SERVER_SRC = (root / "plugins/teamme/server/teamme_mcp.py").read_text()
+
+
+def rendered_ok(ident: str) -> bool:
+    """ident + ':' appears literally in the server source, i.e. it is really printed."""
+    return (ident + ":") in SERVER_SRC
+
+
+def suffix_of_callable(ident: str) -> bool:
+    """ident is prose shorthand for exactly the tail of one known full name.
+
+    Deliberately narrow: an EXACT trailing word match after an underscore
+    boundary, e.g. 'configure' for 'teamme_librarian_configure'. A typo like
+    'instal' is not a suffix of 'teamme_install' and stays flagged. A
+    stricter, no-shorthand policy was tried first and rejected: it flags a
+    real, current, in-context shorthand use of 'configure' in CHANGELOG.md
+    (a sentence that already named `teamme_librarian_configure` in full
+    moments earlier) - not a wrong name, just an abbreviation this lane does
+    not own the file to reword. This fallback is intentionally narrow enough
+    that it would not have resolved any of the three real 0.6.0 mistakes (see
+    the watch-fail below).
+    """
+    return any(name != ident and name.endswith("_" + ident) for name in CALLABLE)
+
+
+CANDIDATE_RE = re.compile(r'`([a-z][a-z0-9_]*)`')
+
+
+def find_candidates(paths):
+    found = {}
+    for p in paths:
+        label = str(p.relative_to(root)) if root in p.parents else p.name
+        text = p.read_text()
+        for m in CANDIDATE_RE.finditer(text):
+            found.setdefault(m.group(1), set()).add(label)
+    return found
+
+
+def unresolved(paths):
+    bad = {}
+    for ident, files in find_candidates(paths).items():
+        if (ident in CALLABLE or ident in NON_CALLABLE_BUT_REAL
+                or rendered_ok(ident) or suffix_of_callable(ident)):
+            continue
+        bad[ident] = files
+    return bad
+
+
+DOC_PATHS = [root / "CHANGELOG.md", root / "README.md", root / "plugins/teamme/README.md"]
+
+# ---- watch-fail: a scratch doc reusing two of the real 0.6.0 mistakes (a
+# session query typo'd as 'search' instead of 'search_turns', a name that was
+# never a query at all) plus a phantom tool name must be caught. A scratch
+# temp dir, never this repo's own docs. ----
+with tempfile.TemporaryDirectory() as scratch:
+    bad_doc = pathlib.Path(scratch) / "FAKE_CHANGELOG.md"
+    bad_doc.write_text(
+        "The new session queries are `search` and `commit_details`, plus `teamme_search_history`.\n"
+    )
+    watch_bad = unresolved([bad_doc])
+if not watch_bad:
+    sys.exit("[watch-fail] a doc naming 'search'/'commit_details'/'teamme_search_history' was NOT flagged - "
+             "this assertion would not have caught the real 0.6.0 defect")
+for expect in ("search", "commit_details", "teamme_search_history"):
+    if expect not in watch_bad:
+        sys.exit(f"[watch-fail] expected '{expect}' to be flagged, got only {sorted(watch_bad)}")
+print(f"  ok: [watch-fail] a scratch doc reusing the real 0.6.0 mistake (search/commit_details/a phantom "
+      f"tool) is flagged: {sorted(watch_bad)}")
+
+# ---- the real check, against this repo's own docs ----
+real_bad = unresolved(DOC_PATHS)
+if real_bad:
+    sys.exit(
+        "docs name an identifier that does not resolve to any known tool name, query name, "
+        f"parameter/enum value, record field, or rendered label: {real_bad}"
+    )
+total = len(find_candidates(DOC_PATHS))
+print(f"  ok: {total} distinct backticked lowercase identifier(s) across CHANGELOG.md, README.md and "
+      f"plugins/teamme/README.md all resolve")
+PY
+
+echo "== docs: every claimed literal \`key: value\` rendered output names a label teamme_mcp.py actually prints (T37b) =="
+# The second, narrower half of T37: 0.6.0 documented \`has_data: false\` as
+# user-visible output. has_data is a real internal dict key, but it is never
+# the thing printed - the renderer reads it and prints 'data: yes'/'data: no'
+# instead. A doc claim of the literal shape \`key: value\` (mimicking real tool
+# output) must name a key the server's own source really prints with its
+# colon, not merely a key that exists somewhere internally.
+python3 - "$ROOT" <<'PY'
+import pathlib, re, sys, tempfile
+
+root = pathlib.Path(sys.argv[1])
+SERVER_SRC = (root / "plugins/teamme/server/teamme_mcp.py").read_text()
+
+LABEL_RE = re.compile(r'`([a-z][a-z0-9_]*): *[^`]{1,60}`')
+
+
+def unresolved_labels(paths):
+    bad = {}
+    for p in paths:
+        text = p.read_text()
+        for m in LABEL_RE.finditer(text):
+            ident = m.group(1)
+            if (ident + ":") in SERVER_SRC:
+                continue
+            bad.setdefault(ident, []).append(m.group(0))
+    return bad
+
+
+with tempfile.TemporaryDirectory() as scratch:
+    bad_doc = pathlib.Path(scratch) / "FAKE_CHANGELOG_B.md"
+    bad_doc.write_text(
+        "teamme_librarian_status now reports `has_data: false` when nothing is indexed yet.\n"
+    )
+    watch_bad = unresolved_labels([bad_doc])
+if "has_data" not in watch_bad:
+    sys.exit(
+        "[watch-fail] a doc claiming literal `has_data: false` output was NOT flagged - this "
+        "assertion would not have caught the real 0.6.0 defect (has_data is an internal dict key, "
+        "never printed - the real output reads 'data: no')"
+    )
+print("  ok: [watch-fail] a scratch doc claiming `has_data: false` as literal output is flagged "
+      "(has_data is checked internally but rendered as 'data:', never printed by its own name)")
+
+DOC_PATHS = [root / "CHANGELOG.md", root / "README.md", root / "plugins/teamme/README.md"]
+real_bad = unresolved_labels(DOC_PATHS)
+if real_bad:
+    sys.exit(f"docs claim a literal `key: value` output that no renderer in teamme_mcp.py ever prints: {real_bad}")
+print("  ok: every `key: value`-shaped output claim in CHANGELOG.md, README.md and "
+      "plugins/teamme/README.md names a label teamme_mcp.py's renderers actually print")
+PY
+
 echo "== smoke test in a throwaway project =="
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/.claude/hooks" "$T/src"
@@ -250,6 +450,271 @@ echo '{}' | python3 $H/worklog-enforce.py stop | grep -q '"block"' \
   || fail "a real status transition after the note did not re-arm the Stop nag (overcorrection: nag stopped enforcing)"
 echo "  ok: note leaves the nag armed, a real transition re-arms it"
 
+echo "== worklog: retitle - the invariant #2 property (note appended, status_changed unmoved, Stop not re-armed), plus the cheap edges, plus the MCP path =="
+RT_TASK=$(python3 $H/worklog.py add "original title" --priority P1 | grep -oE 'T[0-9]+' | head -1)
+python3 $H/worklog.py start "$RT_TASK" >/dev/null
+echo '{}' | python3 $H/worklog-enforce.py stop | grep -q '"block"' || fail "Stop did not block on a freshly-active retitle-test task"
+SC_BEFORE=$(python3 -c "import json; print(next(t for t in json.load(open('$WLJSON'))['tasks'] if t['id']=='$RT_TASK')['status_changed'])")
+sleep 1  # force any accidental status_changed move to differ at second resolution
+python3 $H/worklog.py retitle "$RT_TASK" "corrected title" >/dev/null
+SC_AFTER=$(python3 -c "import json; print(next(t for t in json.load(open('$WLJSON'))['tasks'] if t['id']=='$RT_TASK')['status_changed'])")
+[ "$SC_BEFORE" = "$SC_AFTER" ] || fail "retitle moved status_changed ($SC_BEFORE -> $SC_AFTER) - it is a field edit, not a status transition"
+python3 -c "
+import json
+t = next(x for x in json.load(open('$WLJSON'))['tasks'] if x['id'] == '$RT_TASK')
+assert t['title'] == 'corrected title', t['title']
+assert any('retitled from' in n and 'original title' in n for n in t['notes']), t['notes']
+" || fail "retitle did not update the title and append a note naming the old one"
+RETITLE_STOP=$(echo '{}' | python3 $H/worklog-enforce.py stop)
+[ -z "$RETITLE_STOP" ] || fail "retitle re-armed the Stop nag - it is not a status transition: $RETITLE_STOP"
+# cheap edges: same-title is a silent no-op (no junk note), empty title is rc 2
+python3 $H/worklog.py retitle "$RT_TASK" "corrected title" | grep -q "already has that title" || fail "same-title retitle did not report a no-op"
+NOTE_COUNT_AFTER=$(python3 -c "import json; print(len(next(t for t in json.load(open('$WLJSON'))['tasks'] if t['id']=='$RT_TASK')['notes']))")
+[ "$NOTE_COUNT_AFTER" = "1" ] || fail "a same-title retitle appended a junk note (count now $NOTE_COUNT_AFTER, expected still 1)"
+set +e
+python3 $H/worklog.py retitle "$RT_TASK" >/dev/null 2>&1
+RT_EMPTY_RC=$?
+set -e
+[ "$RT_EMPTY_RC" = "2" ] || fail "retitle with no new title exited $RT_EMPTY_RC, expected 2"
+# the MCP path - teamme_worklog goes through the SAME worklog.py CLI, but a
+# divergence in tool_worklog's own argv-building is exactly the second-
+# implementation problem this repo already paid for with hook_freshness().
+python3 - "$ROOT" "$PWD" "$RT_TASK" <<'PY'
+import json, pathlib, subprocess, sys
+
+root, proj, tid = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+server = root / "plugins/teamme/server/teamme_mcp.py"
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                                  "params": {"protocolVersion": "2025-06-18"}}) + "\n")
+    proc.stdin.flush()
+    proc.stdout.readline()
+    proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                                  "params": {"name": "teamme_worklog",
+                                             "arguments": {"action": "retitle", "id": tid,
+                                                            "text": "mcp-path title",
+                                                            "project_dir": proj}}}) + "\n")
+    proc.stdin.flush()
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    resp = json.loads(line)
+    result = resp.get("result") or {}
+    text = "".join(c.get("text", "") for c in result.get("content") or [])
+    if result.get("isError"):
+        sys.exit(f"teamme_worklog retitle over the pipe reported an error: {text!r}")
+    if "mcp-path title" not in text:
+        sys.exit(f"teamme_worklog retitle over the pipe did not report the new title: {text!r}")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+PY
+echo "  ok: retitle appends a note naming the old title, leaves status_changed and the Stop nag untouched, same-title is a silent no-op, empty title is rc 2, and the MCP path matches the CLI"
+
+echo "== worklog: [watch-fail] retitle's status_changed/Stop-silence invariant is not vacuous =="
+# A scratch copy of worklog.py - never $H/worklog.py, which the smoke test's
+# own project keeps using afterward - run against a FRESH scratch project so
+# the broken data never touches the real $WLJSON ledger. Break retitle by
+# folding it into STATUS_ACTIONS, exactly the bug this section exists to catch
+# (a future edit that makes retitle a status transition by accident).
+cp $H/worklog.py wf-worklog-broken-retitle.py
+python3 - "$PWD/wf-worklog-broken-retitle.py" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+text = p.read_text()
+needle = 'STATUS_ACTIONS = ("start", "dispatch", "block", "unblock", "done", "defer", "decline", "drop",\n                  "reopen")'
+if needle not in text:
+    sys.exit("could not find STATUS_ACTIONS to break - has worklog.py moved?")
+broken = text.replace(needle, needle.replace('"reopen")', '"reopen", "retitle")'), 1)
+if broken == text:
+    sys.exit("substitution did not change anything - refusing to run a watch-fail against unmodified code")
+p.write_text(broken)
+PY
+mkdir -p wf-retitle-proj
+WF_TASK=$(CLAUDE_PROJECT_DIR="$PWD/wf-retitle-proj" python3 wf-worklog-broken-retitle.py add "wf task" --priority P1 | grep -oE 'T[0-9]+' | head -1)
+CLAUDE_PROJECT_DIR="$PWD/wf-retitle-proj" python3 wf-worklog-broken-retitle.py start "$WF_TASK" >/dev/null
+WF_SC_BEFORE=$(python3 -c "import json; print(next(t for t in json.load(open('wf-retitle-proj/.claude/intake/worklog.json'))['tasks'] if t['id']=='$WF_TASK')['status_changed'])")
+sleep 1
+CLAUDE_PROJECT_DIR="$PWD/wf-retitle-proj" python3 wf-worklog-broken-retitle.py retitle "$WF_TASK" "broken retitle" >/dev/null
+WF_SC_AFTER=$(python3 -c "import json; print(next(t for t in json.load(open('wf-retitle-proj/.claude/intake/worklog.json'))['tasks'] if t['id']=='$WF_TASK')['status_changed'])")
+WF_STOP=$(echo '{}' | CLAUDE_PROJECT_DIR="$PWD/wf-retitle-proj" python3 $H/worklog-enforce.py stop)
+if [ "$WF_SC_BEFORE" = "$WF_SC_AFTER" ] && [ -z "$WF_STOP" ]; then
+  fail "[watch-fail] folding retitle into STATUS_ACTIONS did NOT move status_changed or re-arm Stop - this assertion would not have caught a regression here"
+fi
+echo "  ok: [watch-fail] with retitle folded into STATUS_ACTIONS, status_changed moves and/or Stop re-arms (status_changed $WF_SC_BEFORE -> $WF_SC_AFTER, Stop: ${WF_STOP:-<empty>}) - confirming the real invariant above is not vacuous"
+
+echo "== worklog: reopen and the closed-task refusal (rc4), the correction-between-conclusions exception (rc0), and the load-bearing Stop-stays-silent property =="
+# start/dispatch/block/unblock/defer against each of done/declined/dropped: 15
+# combinations, refused (rc4), never silently reopened. A python loop rather
+# than 15 hand-written lines - the same instinct that kept the ordering sweep
+# from being 504 hand-written permutations.
+python3 - "$H" <<'PY'
+import subprocess, sys
+
+H = sys.argv[1]
+
+
+def wl(*args):
+    return subprocess.run(["python3", f"{H}/worklog.py", *args], capture_output=True, text=True)
+
+
+CLOSERS = {"done": [], "declined": ["decline", "not needed"], "dropped": ["drop", "superseded"]}
+REFUSED = {"start": [], "dispatch": [], "block": ["reason"], "unblock": [], "defer": ["later"]}
+
+for status, closer_args in CLOSERS.items():
+    r = wl("add", f"closed-task refusal fixture ({status})", "--priority", "P2")
+    tid = r.stdout.split()[1]
+    close_action = closer_args[0] if closer_args else "done"
+    wl(close_action, tid, *closer_args[1:])
+    for action, extra in REFUSED.items():
+        r = wl(action, tid, *extra)
+        if r.returncode != 4:
+            sys.exit(f"{action} against a {status} task exited {r.returncode}, expected 4: "
+                      f"{r.stdout!r} {r.stderr!r}")
+        if "reopen" not in r.stderr:
+            sys.exit(f"{action} against a {status} task did not name reopen in its refusal: {r.stderr!r}")
+
+print(f"  ok: 15/15 refused combinations (5 actions x 3 closed statuses) exit 4 and name reopen")
+
+# the correction-between-conclusions exception: done -> dropped is allowed, rc 0
+r = wl("add", "correction between conclusions fixture", "--priority", "P2")
+tid = r.stdout.split()[1]
+wl("done", tid)
+r = wl("drop", tid, "actually should not have shipped")
+if r.returncode != 0:
+    sys.exit(f"done -> dropped (a correction between conclusions, not a reopen) exited "
+              f"{r.returncode}, expected 0: {r.stdout!r} {r.stderr!r}")
+print("  ok: done -> dropped (a correction between conclusions) is allowed, rc 0")
+
+# reopen itself: no reason is rc 2; reopen on a task that is not closed is rc 4
+r = wl("reopen", tid)
+if r.returncode != 2:
+    sys.exit(f"reopen with no reason exited {r.returncode}, expected 2: {r.stdout!r} {r.stderr!r}")
+r = wl("add", "not-closed reopen fixture", "--priority", "P2")
+open_tid = r.stdout.split()[1]
+r = wl("reopen", open_tid, "does not apply")
+if r.returncode != 4:
+    sys.exit(f"reopen on a task that is not closed exited {r.returncode}, expected 4: "
+              f"{r.stdout!r} {r.stderr!r}")
+print("  ok: reopen with no reason is rc 2; reopen on a non-closed task is rc 4")
+PY
+# the property that matters most: reopen lands a CLOSED task on `open`, not
+# `active` - so the Stop reminder (which nags on active alone) stays SILENT
+# immediately afterward. This is the one assertion this section exists for.
+REOPEN_TASK=$(python3 $H/worklog.py add "reopen stop-silence fixture" --priority P1 | grep -oE 'T[0-9]+' | head -1)
+python3 $H/worklog.py done "$REOPEN_TASK" >/dev/null
+python3 $H/worklog.py reopen "$REOPEN_TASK" "turned out incomplete" >/dev/null
+REOPEN_STOP=$(echo '{}' | python3 $H/worklog-enforce.py stop)
+[ -z "$REOPEN_STOP" ] || fail "Stop nagged immediately after reopen - reopen must land on open, not active: $REOPEN_STOP"
+python3 $H/worklog.py list | grep -q "\[ \] $REOPEN_TASK" || fail "reopened task is not marked open ([ ]) in list"
+echo "  ok: reopen lands on open (not active) - the Stop reminder stays silent immediately after"
+# the MCP path for reopen
+python3 - "$ROOT" "$PWD" "$REOPEN_TASK" <<'PY'
+import json, pathlib, subprocess, sys
+
+root, proj, tid = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+server = root / "plugins/teamme/server/teamme_mcp.py"
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                                  "params": {"protocolVersion": "2025-06-18"}}) + "\n")
+    proc.stdin.flush()
+    proc.stdout.readline()
+    # this task is already open (not closed) after the CLI reopen above, so the
+    # MCP call re-uses the SAME refusal path retitle's section proved: reopen
+    # on a non-closed task is rc 4, over the pipe too.
+    proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                                  "params": {"name": "teamme_worklog",
+                                             "arguments": {"action": "reopen", "id": tid,
+                                                            "text": "does not apply",
+                                                            "project_dir": proj}}}) + "\n")
+    proc.stdin.flush()
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    resp = json.loads(line)
+    result = resp.get("result") or {}
+    text = "".join(c.get("text", "") for c in result.get("content") or [])
+    if not result.get("isError"):
+        sys.exit(f"teamme_worklog reopen on a non-closed task did not report isError over the pipe: {text!r}")
+    if "not closed" not in text:
+        sys.exit(f"teamme_worklog reopen's refusal over the pipe did not explain why: {text!r}")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+PY
+echo "  ok: teamme_worklog reopen over the pipe matches the CLI's refusal on a non-closed task"
+
+echo "== worklog: [watch-fail] the two properties above (Stop-stays-silent, rc4 refusal) are not vacuous =="
+# Two independent scratch copies of worklog.py, run against fresh scratch
+# projects so the broken data never touches the real $WLJSON ledger.
+
+# (a) reopen landing on `active` instead of `open` must wrongly re-arm Stop.
+cp $H/worklog.py wf-worklog-broken-reopen-status.py
+python3 - "$PWD/wf-worklog-broken-reopen-status.py" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+text = p.read_text()
+needle = (
+    '            elif action == "reopen":\n'
+    '                # Back to `open`, deliberately not `active`: the Stop reminder\n'
+    '                # nags on `active` alone, and nobody has picked this up yet.\n'
+    '                t["status"] = "open"\n'
+)
+if needle not in text:
+    sys.exit("could not find reopen's status assignment to break - has worklog.py moved?")
+broken = text.replace(needle, needle.replace('t["status"] = "open"', 't["status"] = "active"  # watch-fail'), 1)
+if broken == text:
+    sys.exit("substitution did not change anything - refusing to run a watch-fail against unmodified code")
+p.write_text(broken)
+PY
+mkdir -p wf-reopen-proj
+WF2_TASK=$(CLAUDE_PROJECT_DIR="$PWD/wf-reopen-proj" python3 wf-worklog-broken-reopen-status.py add "wf2 task" --priority P1 | grep -oE 'T[0-9]+' | head -1)
+CLAUDE_PROJECT_DIR="$PWD/wf-reopen-proj" python3 wf-worklog-broken-reopen-status.py done "$WF2_TASK" >/dev/null
+CLAUDE_PROJECT_DIR="$PWD/wf-reopen-proj" python3 wf-worklog-broken-reopen-status.py reopen "$WF2_TASK" "incomplete after all" >/dev/null
+WF2_STOP=$(echo '{}' | CLAUDE_PROJECT_DIR="$PWD/wf-reopen-proj" python3 $H/worklog-enforce.py stop)
+[ -n "$WF2_STOP" ] || fail "[watch-fail] a reopen that lands on active did NOT re-arm Stop - this assertion would not have caught a regression here"
+echo "  ok: [watch-fail] with reopen landing on active instead of open, Stop wrongly nags immediately - confirming the silence proven above is not vacuous"
+
+# (b) disabling the closed-task refusal must let a refused combination through.
+cp $H/worklog.py wf-worklog-broken-refusal.py
+python3 - "$PWD/wf-worklog-broken-refusal.py" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+text = p.read_text()
+needle = 'if (action in STATUS_ACTIONS and was in CLOSED_STATUSES\n                    and LANDS_ON.get(action) not in CLOSED_STATUSES and action != "reopen"):'
+if needle not in text:
+    sys.exit("could not find the closed-task refusal condition to break - has worklog.py moved?")
+broken = text.replace(needle, "if False:  # watch-fail: closed-task refusal disabled", 1)
+if broken == text:
+    sys.exit("substitution did not change anything - refusing to run a watch-fail against unmodified code")
+p.write_text(broken)
+PY
+mkdir -p wf-refusal-proj
+WF3_TASK=$(CLAUDE_PROJECT_DIR="$PWD/wf-refusal-proj" python3 wf-worklog-broken-refusal.py add "wf3 task" --priority P1 | grep -oE 'T[0-9]+' | head -1)
+CLAUDE_PROJECT_DIR="$PWD/wf-refusal-proj" python3 wf-worklog-broken-refusal.py done "$WF3_TASK" >/dev/null
+set +e
+CLAUDE_PROJECT_DIR="$PWD/wf-refusal-proj" python3 wf-worklog-broken-refusal.py start "$WF3_TASK" >/dev/null 2>&1
+WF3_RC=$?
+set -e
+[ "$WF3_RC" != 4 ] || fail "[watch-fail] disabling the closed-task refusal condition did NOT let start on a done task through - this assertion would not have caught a regression here"
+echo "  ok: [watch-fail] with the closed-task refusal disabled, start on a done task silently succeeds (rc $WF3_RC, not 4) - confirming the 15/15 refusal sweep above is not vacuous"
+
 echo "== worklog: a pre-migration ledger with no status_changed loads, lists and does not spuriously re-nag =="
 mkdir -p compat-proj/.claude/hooks compat-proj/.claude/intake
 cp "$H"/*.py compat-proj/.claude/hooks/
@@ -285,6 +750,58 @@ echo "$SESSION_OUT" | grep -q "$DISPATCH_TASK" || fail "SessionStart did not men
 echo "$SESSION_OUT" | grep -q "in flight with another agent" || fail "SessionStart did not use the dispatched-specific wording, distinct from blocked"
 echo "$SESSION_OUT" | grep -q "blocked and need an input" && fail "SessionStart used blocked wording for a dispatched-only task"
 echo "  ok: dispatched is unfinished, unnagged, listed, and worded distinctly at SessionStart"
+
+echo "== route-to-intake: /queue and a blank/missing prompt pass through with NO output at all (T20) =="
+QUEUE_OUT=$(echo '{"prompt":"/queue write the T20 doc"}' | python3 $H/route-to-intake.py)
+[ -z "$QUEUE_OUT" ] || fail "route-to-intake.py produced output for a /queue prompt, which must pass through untouched: $QUEUE_OUT"
+BLANK_OUT=$(echo '{"prompt":"   "}' | python3 $H/route-to-intake.py)
+[ -z "$BLANK_OUT" ] || fail "route-to-intake.py produced output for a blank (whitespace-only) prompt: $BLANK_OUT"
+NOPROMPT_OUT=$(echo '{}' | python3 $H/route-to-intake.py)
+[ -z "$NOPROMPT_OUT" ] || fail "route-to-intake.py produced output with no prompt key at all: $NOPROMPT_OUT"
+# Contrast: an ordinary work request DOES get guidance, so the three empty
+# results above are not just "the hook never prints anything, ever".
+NORMAL_OUT=$(echo '{"prompt":"please add a new feature"}' | python3 $H/route-to-intake.py)
+[ -n "$NORMAL_OUT" ] || fail "route-to-intake.py produced no output for an ordinary work request - the passthrough/blank checks above would be vacuous"
+echo "$NORMAL_OUT" | grep -q additionalContext || fail "the ordinary work request did not get additionalContext: $NORMAL_OUT"
+echo "  ok: /queue and a blank/missing prompt pass through with no output; an ordinary request still gets guidance"
+
+echo "== route-to-intake: [watch-fail] breaking the /queue passthrough or the blank-prompt check makes the hook wrongly speak up =="
+# Two independent scratch copies (never the real template, and never the
+# smoke test's own $H/route-to-intake.py, which is what the section above
+# just proved silent) - one with /queue removed from PASSTHROUGH, one with
+# the blank-prompt early return removed.
+cp $H/route-to-intake.py rti-broken-passthrough.py
+python3 - "$PWD/rti-broken-passthrough.py" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+text = p.read_text()
+needle = "r\"(intake|queue|init-team|team-doctor\"\n"
+if needle not in text:
+    sys.exit("could not find 'queue' in the PASSTHROUGH pattern to remove - has route-to-intake.py moved?")
+broken = text.replace(needle, "r\"(intake|init-team|team-doctor\"\n", 1)  # 'queue' dropped
+if broken == text:
+    sys.exit("substitution did not change anything - refusing to run a watch-fail against unmodified code")
+p.write_text(broken)
+PY
+BROKEN_QUEUE_OUT=$(echo '{"prompt":"/queue write the T20 doc"}' | python3 rti-broken-passthrough.py)
+[ -n "$BROKEN_QUEUE_OUT" ] || fail "[watch-fail] removing 'queue' from PASSTHROUGH did NOT make a /queue prompt produce output - this assertion would not have caught a regression here"
+
+cp $H/route-to-intake.py rti-broken-blank.py
+python3 - "$PWD/rti-broken-blank.py" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+text = p.read_text()
+needle = '    if not isinstance(prompt, str) or not prompt.strip():\n        return  # a missing, null or blank prompt asks for nothing; say nothing\n'
+if needle not in text:
+    sys.exit("could not find the blank-prompt early return to remove - has route-to-intake.py moved?")
+broken = text.replace(needle, "", 1)
+if broken == text:
+    sys.exit("substitution did not change anything - refusing to run a watch-fail against unmodified code")
+p.write_text(broken)
+PY
+BROKEN_BLANK_OUT=$(echo '{"prompt":"   "}' | python3 rti-broken-blank.py)
+[ -n "$BROKEN_BLANK_OUT" ] || fail "[watch-fail] removing the blank-prompt early return did NOT make a blank prompt produce output - this assertion would not have caught a regression here"
+echo "  ok: [watch-fail] a scratch copy with 'queue' dropped from PASSTHROUGH speaks up on /queue; one with the blank-prompt check removed speaks up on whitespace - confirming the real hook's silence above is not vacuous"
 
 echo "== mcp server: teamme_worklog/teamme_intake_phase are gated on teamme_install =="
 mkdir -p gate-proj
@@ -361,6 +878,160 @@ finally:
 
 print("  ok: teamme_worklog refuses (naming teamme_install) before install, succeeds after")
 PY
+
+echo "== mcp server: teamme_intake_phase is gated on teamme_install too, independently of teamme_worklog (T17) =="
+# teamme_worklog above exercises the shared gate() path; nothing previously
+# exercised teamme_intake_phase's OWN call to it (tool_intake_phase's `refusal
+# = gate(root, "intake-state.py", "teamme_intake_phase")`), so a change that
+# gated one tool and not the other would have passed CI. A fresh, never-
+# installed project, never gate-proj from the section above (already
+# installed by the time we get here).
+mkdir -p gate-proj-phase
+python3 - "$ROOT" "$PWD/gate-proj-phase" <<'PY'
+import json, pathlib, subprocess, sys
+
+root = pathlib.Path(sys.argv[1])
+gate_proj = pathlib.Path(sys.argv[2])
+server = root / "plugins/teamme/server/teamme_mcp.py"
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+def call_text(resp):
+    result = resp.get("result") or {}
+    return result, "".join(c.get("text", "") for c in result.get("content") or [])
+
+
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_intake_phase",
+                           "arguments": {"action": "status", "project_dir": str(gate_proj)}}})
+    result, text = call_text(recv(proc))
+    if not result.get("isError"):
+        sys.exit(f"teamme_intake_phase was not gated against an unscaffolded project: {result}")
+    if "teamme_install" not in text:
+        sys.exit(f"the refusal did not name teamme_install: {text!r}")
+
+    send(proc, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {"name": "teamme_install", "arguments": {"project_dir": str(gate_proj)}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"teamme_install reported an error: {text}")
+
+    send(proc, {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                "params": {"name": "teamme_intake_phase",
+                           "arguments": {"action": "status", "project_dir": str(gate_proj)}}})
+    result, text = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"teamme_intake_phase is still gated after teamme_install: {text}")
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+print("  ok: teamme_intake_phase refuses (naming teamme_install) before install, succeeds after - "
+      "gated independently of teamme_worklog")
+PY
+
+echo "== mcp server: [watch-fail] with teamme_intake_phase's own gate() call removed (scratch copy), it wrongly answers against an unscaffolded project =="
+# A scratch copy of plugins/teamme/server/ - never the real file, which the
+# python lane is editing concurrently right now. Proves the assertion above
+# is not vacuous: if tool_intake_phase's gate call were ever dropped while
+# tool_worklog's stayed intact, this section would have caught it and the one
+# above would not.
+rm -rf mcp-scratch-t17
+cp -r "$ROOT/plugins/teamme/server" mcp-scratch-t17
+rm -rf mcp-scratch-t17/__pycache__ mcp-scratch-t17/librarian/__pycache__
+python3 - "$PWD/mcp-scratch-t17/teamme_mcp.py" <<'PY'
+import pathlib, sys
+
+p = pathlib.Path(sys.argv[1])
+text = p.read_text()
+needle = 'refusal = gate(root, "intake-state.py", "teamme_intake_phase")'
+if needle not in text:
+    sys.exit(f"could not find teamme_intake_phase's gate() call to remove in {p} - has tool_intake_phase moved?")
+broken = text.replace(needle, "refusal = None  # watch-fail: gate call removed", 1)
+if broken == text:
+    sys.exit("substitution did not change anything - refusing to run a watch-fail against unmodified code")
+p.write_text(broken)
+PY
+mkdir -p gate-proj-phase-broken
+python3 - "$PWD/mcp-scratch-t17/teamme_mcp.py" "$PWD/gate-proj-phase-broken" <<'PY'
+import json, pathlib, subprocess, sys
+
+server = pathlib.Path(sys.argv[1])
+gate_proj = pathlib.Path(sys.argv[2])
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+proc = subprocess.Popen(
+    ["python3", str(server)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_intake_phase",
+                           "arguments": {"action": "status", "project_dir": str(gate_proj)}}})
+    result = recv(proc).get("result") or {}
+    text = "".join(c.get("text", "") for c in result.get("content") or [])
+    # With gate() no longer called first, tool_intake_phase falls through to
+    # run_script(), which ALSO reports isError (intake-state.py genuinely does
+    # not exist yet) - so isError alone cannot tell the two apart. What the
+    # real section above actually asserts is that the refusal NAMES
+    # teamme_install; that is what a removed gate() call loses.
+    if "teamme_install" in text:
+        sys.exit(
+            "[watch-fail] removing teamme_intake_phase's gate() call did NOT make its error stop "
+            f"naming teamme_install - this assertion would not have caught a regression here: {text!r}"
+        )
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+print(f"  ok: [watch-fail] with the gate() call removed, teamme_intake_phase's refusal against an "
+      f"unscaffolded project stopped naming teamme_install ({text[:80]!r}...) - confirming the real "
+      f"gate's refusal above is not vacuous")
+PY
+rm -rf mcp-scratch-t17
 
 echo "== mcp server: serverInfo.version always matches plugin.json, read live - the T22 drift guard =="
 python3 - "$ROOT" <<'PY'
@@ -1000,6 +1671,72 @@ set -e
 [ "$HB_RC" -eq 0 ] || fail "heartbeat exited $HB_RC"
 test -f "hb-empty/.claude/intake/heartbeat.json" || fail "heartbeat did not stamp its file"
 echo "  ok: heartbeat is silent and always exits 0"
+
+echo "== preflight heartbeat: silent and exits 0 under a REAL pty too, not just a pipe (T20) =="
+# drain_stdin() short-circuits on stream.isatty() before it ever reaches
+# select() - a pipe (the section above, </dev/null) never takes that branch,
+# a real pty does. pty.openpty() (stdlib) gives the child a genuine terminal
+# device as its stdin, closed on our side before the process even starts, the
+# same "nobody is ever going to write to this" shape as </dev/null above.
+mkdir -p hb-pty-empty
+python3 - "$PF" "$PWD/hb-pty-empty" <<'PY'
+import os, pathlib, pty, subprocess, sys
+
+pf, project_dir = sys.argv[1], sys.argv[2]
+
+
+def run_heartbeat(script):
+    master_fd, slave_fd = pty.openpty()
+    env = dict(os.environ)
+    env["CLAUDE_PROJECT_DIR"] = project_dir
+    proc = subprocess.Popen(
+        ["python3", script, "heartbeat"],
+        stdin=slave_fd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        env=env,
+    )
+    os.close(slave_fd)
+    os.close(master_fd)  # nobody will ever type at this pty
+    out = proc.stdout.read()
+    rc = proc.wait(timeout=10)
+    proc.stdout.close()
+    return out, rc
+
+
+out, rc = run_heartbeat(pf)
+if out:
+    sys.exit(f"heartbeat printed output under a real pty: {out!r}")
+if rc != 0:
+    sys.exit(f"heartbeat exited {rc} under a real pty")
+hb = pathlib.Path(project_dir) / ".claude/intake/heartbeat.json"
+if not hb.is_file():
+    sys.exit("heartbeat did not stamp its file under a real pty")
+print("  ok: heartbeat is silent and exits 0 under a real pty (isatty() short-circuits drain_stdin() "
+      "before select() - a branch a pipe never takes)")
+
+# ---- watch-fail: this harness (pty allocation, output/exit-code capture)
+# must itself be able to catch a broken heartbeat, not just happen to agree
+# with a working one. A scratch copy of preflight.py - never the real
+# template - with "return 0  # ALWAYS." changed to return 1. ----
+import shutil, tempfile
+
+with tempfile.TemporaryDirectory() as scratch:
+    broken = pathlib.Path(scratch) / "preflight-broken.py"
+    text = pathlib.Path(pf).read_text()
+    needle = "        write_heartbeat()\n        return 0  # ALWAYS. A session start is never blocked by this script.\n"
+    if needle not in text:
+        sys.exit("could not find the heartbeat mode's 'return 0' to break - has preflight.py's main() moved?")
+    broken_text = text.replace(needle, "        write_heartbeat()\n        return 1  # watch-fail: broken on purpose\n", 1)
+    if broken_text == text:
+        sys.exit("substitution did not change anything - refusing to run a watch-fail against unmodified code")
+    broken.write_text(broken_text)
+    _, broken_rc = run_heartbeat(str(broken))
+
+if broken_rc == 0:
+    sys.exit("[watch-fail] a heartbeat mode forced to return 1 still exited 0 under the pty harness - "
+             "this assertion would not have caught a regression here")
+print(f"  ok: [watch-fail] the pty harness catches a heartbeat forced to exit non-zero (got {broken_rc}) "
+      f"- confirming the real exit-0 check above is not vacuous")
+PY
 
 echo "== librarian: git fixtures live under a fresh subdirectory of the throwaway project; never touch this repos own .claude/librarians/ =="
 LIBPATH="$ROOT/plugins/teamme/server"
@@ -2453,6 +3190,15 @@ try:
     if strong_line_raised is None or "WEAK" in strong_line_raised:
         sys.exit(f"a_test.py (19 shared commits) was wrongly rendered WEAK once a weak partner "
                   f"also appeared: {strong_line_raised!r}")
+
+    # a healthy, writable fixture - with_protection_report must add NOTHING here.
+    # Without this, "exactly one block" and "a query reports it" elsewhere could
+    # both pass while the feature is actually a false-positive generator that
+    # tags every answer, healthy or not.
+    if "UNPROTECTED" in text_default or "UNPROTECTED" in text_raised:
+        sys.exit(f"a healthy, writable project's query results mention UNPROTECTED - "
+                 f"with_protection_report is firing with nothing wrong: "
+                 f"{text_default!r} / {text_raised!r}")
 finally:
     try:
         proc.stdin.close()
@@ -2461,7 +3207,8 @@ finally:
     proc.wait(timeout=5)
 
 print("  ok: changes_with's rendered text carries its caveats and evidence base, and visibly "
-      "marks a 1-shared-commit row WEAK while leaving a 19-shared-commit row unmarked")
+      "marks a 1-shared-commit row WEAK while leaving a 19-shared-commit row unmarked; a healthy, "
+      "writable project's query results mention no UNPROTECTED block")
 PY
 
 echo "== librarian renderer: hotspots renders over the real pipe (previously unasserted) =="
@@ -3163,7 +3910,7 @@ if gitignore.exists():
 print("  ok: teamme_librarian_status on an empty project creates neither .claude/librarians nor .gitignore")
 PY
 
-echo "== librarian: [watch-fail] an unwritable .gitignore does not block a refresh - the index is still written, and the result SAYS it could not be protected =="
+echo "== librarian: [watch-fail] an unwritable .gitignore does not block a refresh OR a query - the result SAYS it could not be protected, exactly once, and a query still answers with isError=False =="
 LIB_T40_C="$PWD/lib-t40-unwritable"
 mkdir -p "$LIB_T40_C"
 gitc -C "$LIB_T40_C" init -q
@@ -3223,6 +3970,27 @@ try:
         sys.exit(f"refresh against an unwritable .gitignore did not report isError: {text!r}")
     if "UNPROTECTED" not in text:
         sys.exit(f"an unwritable .gitignore was not called out in the refresh result: {text!r}")
+    # refresh renders its OWN UNPROTECTED block (_render_ignore_state); with_protection_report
+    # must see that and add nothing more - exactly one block, never two.
+    count = text.count("UNPROTECTED:")
+    if count != 1:
+        sys.exit(f"expected exactly one UNPROTECTED: block from refresh, got {count}: {text!r}")
+
+    # a QUERY against the same still-unprotected index: with_protection_report is the ONLY
+    # thing that can report this for a query (queries render nothing of their own), and it
+    # must never turn a successful read into a failure - the user needs the answer AND the
+    # warning, not a refusal.
+    send(proc, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {"name": "teamme_librarian_query",
+                           "arguments": {"project_dir": proj, "query": "recent"}}})
+    result, text_q = call_text(recv(proc))
+    if result.get("isError"):
+        sys.exit(f"a query against an unprotected index reported isError=True - it should still "
+                 f"answer, only with a warning appended: {text_q!r}")
+    if "UNPROTECTED" not in text_q:
+        sys.exit(f"a query against an unprotected index said nothing about it - the exact gap "
+                 f"with_protection_report exists to close (queries render no ignore-state of "
+                 f"their own): {text_q!r}")
 finally:
     try:
         proc.stdin.close()
@@ -3238,8 +4006,76 @@ if ignored(DB):
              "stale, this assertion proves nothing")
 
 print("  ok: an unwritable .gitignore does not block the refresh; the index is written and the "
-      "result names the failure out loud - silence here is how the original bug felt safe")
+      "result names the failure out loud - silence here is how the original bug felt safe; a "
+      "query against the same unprotected index still answers (isError=False) and says so too")
 PY
+
+# watch-fail: a scratch copy of teamme_mcp.py (never the real file, which the
+# python lane may still be editing) with with_protection_report's dedup check
+# ("UNPROTECTED" in already) removed, rerun against the SAME still-unwritable
+# fixture - proves the "exactly one block" count above is not vacuously 1
+# because nothing else could ever add a second.
+rm -rf mcp-scratch-unprot
+cp -r "$ROOT/plugins/teamme/server" mcp-scratch-unprot
+rm -rf mcp-scratch-unprot/__pycache__ mcp-scratch-unprot/librarian/__pycache__
+python3 - "$PWD/mcp-scratch-unprot/teamme_mcp.py" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+text = p.read_text()
+needle = 'if not rows or "UNPROTECTED" in already:'
+if needle not in text:
+    sys.exit(f"could not find with_protection_report's dedup check to remove in {p} - has it moved?")
+broken = text.replace(needle, 'if not rows:  # watch-fail: dedup check removed', 1)
+if broken == text:
+    sys.exit("substitution did not change anything - refusing to run a watch-fail against unmodified code")
+p.write_text(broken)
+PY
+python3 - "$PWD/mcp-scratch-unprot/teamme_mcp.py" "$LIB_T40_C" <<'PY'
+import json, subprocess, sys
+
+server, proj = sys.argv[1], sys.argv[2]
+
+
+def send(proc, obj):
+    proc.stdin.write(json.dumps(obj) + "\n")
+    proc.stdin.flush()
+
+
+def recv(proc):
+    line = proc.stdout.readline()
+    if not line:
+        sys.exit(f"server closed the pipe unexpectedly; stderr: {proc.stderr.read()}")
+    return json.loads(line)
+
+
+proc = subprocess.Popen(
+    ["python3", server],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, bufsize=1,
+)
+try:
+    send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})
+    recv(proc)
+    send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "teamme_librarian_refresh", "arguments": {"project_dir": proj}}})
+    result = recv(proc).get("result") or {}
+    text = "".join(c.get("text", "") for c in result.get("content") or [])
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=5)
+
+count = text.count("UNPROTECTED:")
+if count < 2:
+    sys.exit(f"[watch-fail] removing the dedup check did NOT produce a second UNPROTECTED: block "
+             f"(got {count}) - this assertion would not have caught a regression here: {text!r}")
+print(f"  ok: [watch-fail] with the dedup check removed, refresh renders {count} UNPROTECTED: "
+      f"blocks instead of 1 - confirming the exactly-one count above is not vacuous")
+PY
+rm -rf mcp-scratch-unprot
 chmod 0644 "$LIB_T40_C/.gitignore" 2>/dev/null || true
 
 echo "== librarian: commit_record=true, then refresh alone (no second configure call) - sessions/ stays ignored, commits.jsonl becomes committable =="

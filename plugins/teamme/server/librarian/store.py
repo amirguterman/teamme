@@ -98,6 +98,44 @@ def project_root_of(path):
     return None
 
 
+# Paths whose ignore rule could NOT be put in place, recorded as it happens.
+#
+# ignore_guard() runs at the chokepoint every index is opened through, and its
+# return value is discarded by most of its callers - connect_file() has to open
+# the index either way, because protection failing must never stop the work.
+# That left the ONE code path carrying the privacy guarantee as the one that
+# failed silently: the refresh paths report their own ensure_ignored() result,
+# but a query opening an unprotected index said nothing at all. So a failure is
+# also recorded here, where a caller that never looked at the return value can
+# still find it and say so. Bounded, so a loop cannot grow it without limit.
+MAX_UNPROTECTED = 8
+_UNPROTECTED = []
+
+
+def note_unprotected(path, problem: str) -> None:
+    """Record that `path` was opened without its ignore rule in place. Never raises."""
+    try:
+        entry = {"path": str(path), "problem": str(problem)}
+        if entry in _UNPROTECTED:
+            return
+        if len(_UNPROTECTED) < MAX_UNPROTECTED:
+            _UNPROTECTED.append(entry)
+    except Exception:
+        pass
+
+
+def take_unprotected() -> list:
+    """The unprotected-index records since the last call, and clear them.
+
+    Draining rather than accumulating: the caller (teamme_mcp.py, after every
+    librarian tool call) reports each failure once, on the call it happened on,
+    rather than repeating a stale one on every later call in the same process.
+    """
+    out = list(_UNPROTECTED)
+    del _UNPROTECTED[:]
+    return out
+
+
 def ignore_guard(path) -> dict:
     """Put teamme's .gitignore block in place before a librarian file is created.
 
@@ -111,17 +149,28 @@ def ignore_guard(path) -> dict:
 
     Never raises, and never refuses the caller: a .gitignore that cannot be
     written is reported (the refresh result says the index could not be
-    protected) rather than being allowed to fail an index.
+    protected, and take_unprotected() carries it to callers that do not read
+    this return value) rather than being allowed to fail an index.
     """
     root = project_root_of(path)
     if root is None:
         return None
     try:
-        from . import config       # deferred: config imports this module
-        return config.ensure_ignored(root)
+        # The loose-module fallback every other cross-module import in this
+        # package has. Without it, `import store` with server/librarian on
+        # sys.path made the relative import raise, and the guard degraded into
+        # the problem dict below - no .gitignore written, nothing said.
+        try:
+            from . import config   # deferred: config imports this module
+        except ImportError:        # loaded as a loose module rather than a package member
+            import config          # type: ignore
+        result = config.ensure_ignored(root)
     except Exception as exc:
-        return {"ok": False, "path": None, "changed": False, "wrote": [], "notes": [],
-                "problem": f"teamme's ignore rule could not be put in place: {exc}"}
+        result = {"ok": False, "path": None, "changed": False, "wrote": [], "notes": [],
+                  "problem": f"teamme's ignore rule could not be put in place: {exc}"}
+    if isinstance(result, dict) and not result.get("ok"):
+        note_unprotected(path, result.get("problem") or "the ignore rule was not applied")
+    return result
 
 
 # --------------------------------------------------------------------------- #

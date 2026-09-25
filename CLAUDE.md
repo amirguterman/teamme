@@ -112,6 +112,28 @@ output, shows `[@]` in `list`, counts as unfinished in `stats`, and gets its own
 wording distinct from `blocked`. If you change a hook or the MCP server, this is the proof — not
 inspection.
 
+`retitle` and `reopen` get their own sections, each with a watch-fail. `retitle` is proven to append a
+note naming the old title, leave `status_changed` unmoved, and leave a freshly-armed `Stop` reminder
+silent — a field edit, not a status transition — plus the cheap edges (a same-title call is a silent
+no-op, not a junk note; an empty new title exits 2) and the MCP path over the real pipe reporting the
+same new title the CLI wrote (watch-failed by folding `retitle` into `STATUS_ACTIONS`, which moved
+`status_changed` and re-armed `Stop`). `reopen` and the closed-task refusal are proven across all
+fifteen combinations (five status actions × three closed statuses) exiting 4 and naming `reopen`, with
+`done → dropped` — a correction between conclusions, not a reopen — still succeeding at exit 0; and the
+load-bearing property, that `Stop` stays silent immediately after a reopen because it lands on `open`
+and never `active`, is proven directly and over the MCP pipe's refusal path too (watch-failed by
+changing `reopen`'s landing status to `active`, which made `Stop` wrongly nag). Two honest limits: the
+fifteen refused combinations are driven by one loop rather than fifteen separate watch-fails — one
+representative break (the shared refusal condition disabled) proves the mechanism the sweep depends
+on, not each combination individually; and neither new action gets its own MCP-path watch-fail,
+reasoned rather than assumed — `tool_worklog` forwards every action past `add`/`list`/`next`/`stats`
+through the same generic `argv = [action, id, text]` branch with no per-action logic, `retitle`'s MCP
+section already drives that exact branch to a full success result, and `reopen`'s MCP section drives
+its refusal through the same `WORKLOG_ACTIONS` gate — so a divergence in that shared forwarding code is
+not an unwatched risk the way two *independent* implementations (the `hook_freshness()` shape) would
+be. Judge that reasoning against `tool_worklog` yourself if you touch it; it holds only as long as
+`retitle`/`reopen` stay generic there.
+
 The librarian substrate (`server/librarian/`) gets the same treatment, plus a fix to the compile step
 itself: `plugins/*/server/*.py`, the old glob, only ever expanded to the top-level MCP server file and
 silently never reached `server/librarian/*.py` — the same failure shape as a `REQUIRED_HOOKS` that
@@ -185,9 +207,15 @@ sitting in a file git would track, while this repo's own docs said it was "ALWAY
 protects both `index.db` and `sessions/`, while a foreign `.gitignore` line survives byte-intact and
 three refreshes leave the file byte-identical after the first; a read-only `teamme_librarian_status`
 on an empty project creates neither `.claude/librarians/` nor `.gitignore` — a diagnostic call must
-never be the thing that conjures state; an unwritable `.gitignore` does not block a refresh — the
-index is still written and the result says out loud that it could not be protected rather than
-silently succeeding; `commit_record=true` followed by a plain refresh with no second `configure` call
+never be the thing that conjures state; an unwritable `.gitignore` does not block a refresh OR a
+query against the same still-unprotected index — the index is still written (or read), `isError`
+stays `False` for the query, and both results say out loud that the index could not be protected
+rather than silently succeeding, with refresh's own render checked to appear *exactly once*
+(watch-failed by removing `with_protection_report`'s dedup check on a scratch copy, which rendered a
+second `UNPROTECTED:` block) and a healthy, writable fixture's query results checked to carry none at
+all — the false-positive case, since "exactly one" and "a query reports it" could both pass while the
+feature tagged every answer, broken or not; `commit_record=true` followed by a plain refresh with no
+second `configure` call
 leaves `sessions/` ignored while `commits.jsonl` becomes committable, proving the always-ignored and
 the choice-dependent paths are independent of each other; and a `[watch-fail]` **reduced ordering
 sweep** drives all 24 permutations of 4 entry points — `status`, `refresh`, `configure(enable)`,
@@ -237,6 +265,24 @@ librarian's privacy guarantee is checked. What none of this proves: the count is
 push-relative — the hook never contacts a remote, and pinning that boundary would mean building a fake
 upstream for a property the code already makes structurally true by never calling one; and shallow
 clones remain unfixtured, as they already are for `history.py` generally (see Known gaps).
+
+Two more sections check the *documentation* itself against the code, closing a gap that let three real
+0.6.0 mistakes ship in `CHANGELOG.md` — a session query typo'd as `search` instead of `search_turns`, a
+query name that was never real, and a phantom tool — none of it compared against the source before it
+shipped. `identifiers-exist` resolves every backticked lowercase identifier in `CHANGELOG.md`,
+`README.md` and `plugins/teamme/README.md` against the live `TOOLS` registry, the three `QUERY_NAMES`
+tuples, every tool schema's parameter and enum values, and a vocabulary of real-but-non-callable names
+derived mechanically from dict-key literals and `CREATE TABLE` statements — never a hand-typed
+allow-list, since that would be the next copied fact this check exists to stop making. A narrow suffix
+rule accepts genuine shorthand (`configure` for `teamme_librarian_configure`, matched only as an exact
+trailing word after an underscore) after a strict full-names-only policy was tried first and rejected:
+it flagged a real, already-released shorthand sitting in the 0.7.0 `CHANGELOG.md` entry.
+`rendered-labels-exist` checks every documented `` `key: value` `` output claim against
+`teamme_mcp.py`'s own renderer source — this is what would have caught 0.6.0's `` `has_data: false` ``,
+a real internal dict key the renderer never actually prints by that name (it prints
+`data: yes`/`data: no`). **Neither check catches a bare value claim** — 0.6.0 also documented "defaults
+to disabled" against `DEFAULT_ENABLED = True`, invisible to identifier extraction; see Known gaps and
+`CONTRIBUTING.md` for how that class of mistake is handled without a check.
 
 ## Design invariants
 
@@ -550,6 +596,63 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   measurement into a watch-fail — a scratch copy with the exclusion removed re-arms and is asserted to
   count exactly that one commit. Same shape as invariant #2's `status_changed`-not-`updated` stamp: an
   enforcement hook must never be able to react to its own effect.
+- **`retitle` does not violate the append-only ledger — a title is current scope, not history.**
+  `worklog.py`'s ledger is append-only about what happened, not about what a task is called right now:
+  a stale title actively lies at every `SessionStart`. T14's title claimed "Ship 3 librarian agents…
+  selectable in `/init-team`" for eight days after every clause of it had gone false. `retitle`
+  replaces the `title` field and appends the old text as a note, so the record stays complete — the old
+  title is still there, in the notes — while the screen stops lying.
+- **A closed task refuses to reopen silently — a CLI-level refusal invariant #1 does not reach, and
+  `reopen` lands on `open`, not `active`.** `start`/`dispatch`/`block`/`unblock`/`defer` on a `done`,
+  `declined` or `dropped` task now exit 4 (distinct from 2 = usage, 3 = no such task) and name
+  `reopen`; `done`/`decline`/`drop` on an already-closed task still succeed, since that is a correction
+  between conclusions, not a reopen. This does not weaken invariant #1: `worklog.py` is a CLI a model
+  runs deliberately, not a `PreToolUse` hook standing between a session and its own edit, so refusing
+  here blocks nobody's editing loop — and a warning printed *after* the status already changed could
+  only be superseded in an append-only ledger, never undone, so refusing before the write is the only
+  point a mistake is still cheap to catch. `reopen` itself lands on `open`, deliberately not `active`:
+  the `Stop` hook nags on `active` alone (invariant #2), so a reopened task re-enters the
+  `SessionStart` listing without arming a reminder for work nobody has picked up yet — invariant #2's
+  reasoning applied to a new action, not rediscovered later by trapping a session.
+- **The privacy chokepoint gained the loose-module import fallback every other cross-module import in
+  `server/librarian/` already had, and a query now reports what only a refresh used to.**
+  `store.ignore_guard()` imported `config` with a bare relative import; every other cross-module import
+  in the package already falls back to a plain `import config` for the case where `server/librarian` is
+  loaded off `sys.path` rather than as a package (see `store.py`'s own comment at `ignore_guard()`).
+  `ignore_guard()` was the one path that lacked it, so that specific `ImportError` degraded silently
+  into the ordinary problem-dict return with nobody told. Not live today — both real callers
+  (`teamme_mcp.py`, `store.py` itself) import as a package — but the shape mattered: the one code path
+  carrying teamme's privacy guarantee was also the one that could fail invisibly. Fixed at both levels.
+  The second half closes the asymmetry that made a failure here genuinely invisible: the refresh paths
+  already render their own `ensure_ignored()` result (`_render_ignore_state` in `teamme_mcp.py`), but a
+  *query* opening an unprotected index said nothing at all. `store.note_unprotected()`/
+  `take_unprotected()` now record a failure at the one chokepoint every index is opened through
+  (`connect_file()`), and `teamme_mcp.py`'s `with_protection_report()` drains and appends an
+  `UNPROTECTED` block to *any* of the four librarian tools' results, not only refresh's — never
+  changing `isError` on its own and never raising, since an index that could not be protected is still
+  a usable answer. See Verify above for how `validate.sh` proves this, including the false-positive
+  check against a healthy fixture.
+- **`teamme_worklog` is the sanctioned ledger path for an agent with no `Bash` tool, and a generated
+  roster must resolve the tool name live, not hardcode it.** A tool name that does not resolve in the
+  calling session grants nothing and says nothing — the same failure shape invariant #3 exists to
+  prevent for a missing `jq`. The instruction carries an explicit fallback: if `teamme_worklog` is not
+  in that agent's tool list, or the call fails, it hands the note back to whatever dispatched it,
+  marked unrecorded, rather than improvising a write some other way — `.claude/intake/worklog.json` is
+  taken under a lockfile by `worklog.py`, and a `Write`/`Edit` against it races that lock and can lose a
+  concurrent note, exactly the failure the lock exists to prevent.
+- **A documented value — a default, a cap, a count — is only as honest as the constant behind it, and
+  `validate.sh` cannot check that mechanically.** `identifiers-exist` and `rendered-labels-exist`
+  (T37a/T37b, above) resolve a documented *identifier* or *rendered label* against the live code, but
+  neither sees a bare value written in prose — 0.6.0 shipped "defaults to disabled" against
+  `DEFAULT_ENABLED = True` and no identifier extraction would have caught it. Rather than leave that
+  class of mistake unaddressed until something builds a value-diffing check, the rule is written into
+  how these docs are written (see `CONTRIBUTING.md`): a doc stating a default, cap or count names the
+  constant that backs it, so a reader can grep the real value instead of trusting the prose. This was
+  checked against the numeric and boolean defaults already stated in `README.md` and
+  `plugins/teamme/README.md` (`max_files`/`DEFAULT_MAX_COMMIT_FILES`, `pad_minutes`/
+  `DEFAULT_PAD_MINUTES`, `enabled`/`DEFAULT_ENABLED`, `commit_record`/`DEFAULT_COMMIT_RECORD`) at the
+  time this rule was adopted, and all four matched; the rule's value is in catching the *next* drift,
+  not this one.
 
 ## Known gaps
 
@@ -584,13 +687,34 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   and it is what the librarian reaches for when a subject alone does not explain a change. Deliberate
   row-shape economy, not an oversight — but a claim that the librarian "explains why a change was
   made" rests on that second, targeted query, not on the list queries by themselves.
-- `route-to-intake.py`, `reground`, out-of-project paths and stale-state expiry remain unexercised
-  by the smoke test.
-- `route-to-intake.py`'s new `/queue` passthrough and its blank-prompt return, and `preflight.py`'s
-  heartbeat under a real pty, have been checked by hand but are not yet asserted in `validate.sh`
-  (tracked as T20).
-- `teamme_intake_phase` is not separately gate-tested; only `teamme_worklog` exercises the shared
-  gate-on-install path against the MCP server.
+- `route-to-intake.py`'s `/queue` passthrough, its blank/missing-prompt silence, and its ordinary
+  work-request guidance are asserted; its phase-aware mid-flight routing (pointing a message at the
+  triage rules instead of starting a fresh brief) is not. `reground`, out-of-project paths and
+  stale-state expiry in `intake-state.py` remain unexercised by the smoke test.
+- **T17 and T20 closed, not everything they touched.** `teamme_intake_phase` is now gate-tested
+  independently of `teamme_worklog` (its own refusal, naming `teamme_install`, against a fresh
+  unscaffolded project, plus a watch-fail with its `gate()` call removed on a scratch copy), and
+  `route-to-intake.py`'s `/queue`/blank-prompt paths and `preflight.py`'s heartbeat under a real pty
+  are both asserted — the two "checked by hand, not yet asserted" gaps this entry used to record. What
+  T20 left: the `isatty()` branch of `drain_stdin` could not be isolated by a differential watch-fail
+  — with the master pty fd closed before the child starts, both the tty and non-tty branches converge
+  on the same observable outcome (silence, exit 0), so only the pty case itself is asserted; that one
+  branch is not independently isolable this way.
+- **A lane with no `Bash` tool still cannot run `./scripts/validate.sh` itself.** `teamme_worklog` is
+  the sanctioned ledger path for such a lane (see Decisions already made), but that only covers
+  recording work — it does not let that lane verify a change it made. That half of T32 is unfixed and
+  may be unfixable by design: there is no MCP tool standing in for a shell, and adding one would widen
+  what an agent without `Bash` can do well past running a fixed verification script.
+- **`retitle`/`reopen` and the query-side of the `UNPROTECTED` fix are proven now** (see Verify
+  above) — this entry used to say they were not; a gap entry is a claim too, and it went stale as fast
+  as any other undocumented fact once the validation lane closed the work. Two honest limits survive
+  from that closure, not fixed and not planned to be: the fifteen refused reopen combinations are
+  driven by one loop with one representative watch-fail, not fifteen independent ones; and neither
+  `retitle` nor `reopen` has its own MCP-path watch-fail, on the reasoning (checked against
+  `tool_worklog` directly, not just asserted) that both forward through the exact same generic,
+  per-action-logic-free branch that `retitle`'s own MCP success test already exercises — see Verify
+  above for the reasoning in full, since it is load-bearing and worth re-checking if that branch ever
+  grows a per-action special case.
 - Version bumps are manual: `plugin.json` `version` plus a `CHANGELOG.md` entry.
 - This repo's own dogfood install is `installed-outdated` by the definition above: `.claude/commands/
   intake.md` predates the preflight block entirely (no Preflight section, no `state:` handling), so

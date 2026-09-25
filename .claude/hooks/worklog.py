@@ -19,7 +19,9 @@ Actions:
   defer <id> "<reason>"        deliberately not now - spec'd or parked, not forgotten
   decline <id> "<reason>"      judged that it should not be done, with the reason
   drop <id> ["<reason>"]       abandoned - recorded, not deleted
+  reopen <id> "<reason>"       deliberately return a CLOSED task to open, with why
   note <id> "<text>"           append a refinement, input or decision
+  retitle <id> "<new title>"   correct a title whose scope has changed
   priority <id> P0|P1|P2       re-prioritize
   lane <id> <agent>            assign the owning specialist
   stats                        counts by status, and whether anything is unfinished
@@ -29,6 +31,23 @@ not now); done, declined, dropped (closed). `dispatched` means the work is in
 flight with another agent: it is unfinished, but nothing this session does can
 advance it, so the Stop reminder leaves it alone.
 Priorities: P0 (now), P1 (normal, default), P2 (someday).
+
+A CLOSED task is never quietly reopened. start/dispatch/block/unblock/defer on a
+done, declined or dropped task are REFUSED and name `reopen`, because the quiet
+version of that put a task somebody had concluded on back into the Stop nag and
+the SessionStart list with nobody told. Reopening is legitimate - work thought
+finished often is not - so `reopen` exists to do it on purpose, with the reason
+recorded; it returns the task to `open` rather than `active`, so it re-enters the
+listing without arming a Stop reminder for work nobody has picked up yet. This is
+a CLI and not a hook: refusing here blocks nobody's editing loop, which is why
+invariant #1's fail-open rule does not reach it.
+
+`retitle` replaces the title field and appends the old one as a note. A title is
+a field describing current scope, not an entry in the history, and a title that
+has gone false misleads at every SessionStart - T14's said it would ship three
+roster-selectable librarian agents long after every clause of that had been
+overtaken. Appending the previous text keeps the record complete without keeping
+the wrong title on screen.
 
 Two timestamps, deliberately: `updated` moves on any change (an audit stamp),
 `status_changed` moves only on a real status transition. worklog-enforce.py arms
@@ -51,13 +70,21 @@ from datetime import datetime, timezone
 
 PRIORITIES = ("P0", "P1", "P2")
 OPEN_STATUSES = ("open", "active", "dispatched", "blocked")
+# Concluded, one way or another. Reachable again only through `reopen`.
+CLOSED_STATUSES = ("done", "declined", "dropped")
 STATUS_MARK = {"open": "[ ]", "active": "[>]", "dispatched": "[@]", "blocked": "[!]",
                "deferred": "[~]", "done": "[x]", "declined": "[/]", "dropped": "[-]"}
 
 # Actions that are a genuine status transition, and so re-arm the Stop reminder.
-STATUS_ACTIONS = ("start", "dispatch", "block", "unblock", "done", "defer", "decline", "drop")
+STATUS_ACTIONS = ("start", "dispatch", "block", "unblock", "done", "defer", "decline", "drop",
+                  "reopen")
+# Where each status action lands. A transition out of a CLOSED status into
+# anything not closed is a reopen, and only `reopen` itself is allowed to be one.
+LANDS_ON = {"start": "active", "dispatch": "dispatched", "block": "blocked", "unblock": "open",
+            "done": "done", "defer": "deferred", "decline": "declined", "drop": "dropped",
+            "reopen": "open"}
 # Actions that read-modify-write the ledger, and so run under the lock.
-MUTATING = STATUS_ACTIONS + ("add", "note", "priority", "lane")
+MUTATING = STATUS_ACTIONS + ("add", "note", "retitle", "priority", "lane")
 
 LOCK_STALE_SECONDS = 30     # a lock older than this is assumed to be a crashed process
 LOCK_TRIES = 40             # bounded retries...
@@ -271,7 +298,7 @@ def main() -> int:
             print(f"unfinished: {len(unfinished(d))}, deferred: {len(deferred(d))}")
 
         elif action in ("show", "start", "dispatch", "block", "unblock", "done", "defer",
-                        "decline", "drop", "note", "priority", "lane"):
+                        "decline", "drop", "reopen", "note", "retitle", "priority", "lane"):
             if len(args) < 2:
                 print(f"worklog: {action} needs a task id.", file=sys.stderr)
                 return 2
@@ -284,7 +311,32 @@ def main() -> int:
             if action == "show":
                 print(json.dumps(t, indent=2))
                 return 0
-            elif action == "start":
+
+            # A closed task does not reopen by accident. `done`/`decline`/`drop`
+            # on an already-closed task is a correction between conclusions and
+            # is allowed; anything that would put it back among open, parked or
+            # in-flight work is refused and told how to do it deliberately.
+            was = t.get("status", "")
+            if (action in STATUS_ACTIONS and was in CLOSED_STATUSES
+                    and LANDS_ON.get(action) not in CLOSED_STATUSES and action != "reopen"):
+                print(f"worklog: {t['id']} is {was} - `{action}` would reopen it silently, back "
+                      f"into the Stop reminder and the SessionStart list with nobody told. If it "
+                      f"really needs reopening, say so on purpose: "
+                      f"worklog.py reopen {t['id']} \"<why it is not finished after all>\", then "
+                      f"{action} it.", file=sys.stderr)
+                return 4
+            if action == "reopen":
+                if was not in CLOSED_STATUSES:
+                    print(f"worklog: {t['id']} is {was}, not closed - reopen is only for "
+                          f"{', '.join(CLOSED_STATUSES)}. Use start, dispatch, block or unblock.",
+                          file=sys.stderr)
+                    return 4
+                if not rest:
+                    print("worklog: reopen needs a reason - it contradicts a conclusion that was "
+                          "already recorded.", file=sys.stderr)
+                    return 2
+
+            if action == "start":
                 t["status"] = "active"
             elif action == "dispatch":
                 t["status"] = "dispatched"
@@ -309,11 +361,28 @@ def main() -> int:
                 t["status"] = "dropped"
                 if rest:
                     t["notes"].append(f"dropped: {rest}")
+            elif action == "reopen":
+                # Back to `open`, deliberately not `active`: the Stop reminder
+                # nags on `active` alone, and nobody has picked this up yet.
+                t["status"] = "open"
+                t.setdefault("notes", []).append(f"reopened (was {was}): {rest}")
             elif action == "note":
                 if not rest:
                     print("worklog: note needs text.", file=sys.stderr)
                     return 2
                 t["notes"].append(rest)
+            elif action == "retitle":
+                if not rest:
+                    print("worklog: retitle needs the new title.", file=sys.stderr)
+                    return 2
+                old = t.get("title", "")
+                if rest == old:
+                    print(f"worklog: {t['id']} already has that title - nothing changed.")
+                    return 0
+                # The old title is appended, not discarded: the title is a field
+                # describing current scope, the note is the history of it.
+                t.setdefault("notes", []).append(f'retitled from: "{old}"')
+                t["title"] = rest
             elif action == "priority":
                 p = rest.upper()
                 if p not in PRIORITIES:

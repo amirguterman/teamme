@@ -3,6 +3,21 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-09-25
+
+### Added
+- `worklog.py` gained two commands for task lifecycle management: `retitle <id> "<new title>"` replaces the title and appends the old one as a note, for correcting a title whose scope has shifted; and `reopen <id> "<reason>"` deliberately returns a CLOSED task to open with a required explanation, the only sanctioned way to reopen a task.
+- Librarian tool results can now carry an `UNPROTECTED` block when an index was opened but `teamme` could not put an ignore rule in place for it in `.gitignore`. It never sets `isError`, never raises, never stops an index opening, and a healthy project never sees it — this is a visibility feature only, naming when the `.gitignore` file itself is unreadable or unwritable (file permissions, encoding errors, missing parent directory, disk full, or similar).
+- Agents without `Bash` in their tool list now have a sanctioned path — the `teamme_worklog` MCP tool — to contribute to the work log. The tool works on agents with or without command execution. (A separate gap remains: an agent without `Bash` cannot run its own verification steps, a lane property the brief-writer must name. The `/intake` template now instructs: when naming who verifies a lane, say so plainly rather than leaving it unattributed to an agent who cannot verify.)
+
+### Changed
+- **Exit code 4 is a behaviour change for anything scripting `worklog.py`.** A caller that ran `start`, `dispatch`, `block`, `unblock`, or `defer` on a CLOSED task and got exit 0 now gets exit 4, naming `reopen` as the required path. (Correction between conclusions — `done`, `decline`, or `drop` on an already-closed task — still works at exit 0.) This is the only way to prevent a task from silently reopening during a status change, which would re-arm the `Stop` hook reminder and land it back in the next `SessionStart` list with nobody told.
+- `ignore_guard()` in the librarian store module gained a loose-module import fallback (`try: from . import config / except ImportError: import config`), so it can import config even when loaded as a loose module rather than through a package import. The fallback was missing before and caused the guard to degrade silently when store was run with server/librarian on sys.path but outside a package context.
+- `/intake` template expanded: added a preflight validation section that explains the four install states (`not-installed`, `installed-outdated`, `installed-not-live`, `live`), names common failure modes (missing scripts, unparseable settings, unwritable directories), and explains when repair rather than re-installation is the correct move. This repo's own `/intake` command (`.claude/commands/intake.md`) was brought up to the shipped template.
+
+### Known limitations
+- `UNPROTECTED` appears only when the ignore rule cannot be written. A successful refresh prints `protected: wrote <entries> to <file>`; a query that does not try to write reports nothing about protection, leaving it to the last refresh's output.
+
 ## [0.8.0] - 2026-09-25
 
 ### Added

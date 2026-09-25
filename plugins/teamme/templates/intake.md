@@ -216,6 +216,12 @@ the repo write-locked until the timeout.
 agent per part, in dependency order · **Plan** · **Spec delta** (exact doc text, honestly labelled)
 · **Risks** · **Done criteria** per lane · **Verification**: {{VERIFY}}
 
+**Name who runs that verification.** Not every lane can: an agent whose tool list has no `Bash`
+cannot run a command at all, so "verification passes" as its done criterion is a check nobody
+performed. Say in the brief which lanes cannot run it themselves and who runs it for them - the
+orchestrator, a lane that can, or you. A lane that could not run it hands it back unrun and says so;
+that is the expected report, not a failure.
+
 ## 4. Confirm, then lift the read-only phase
 
 Use the interactive question tool only for genuine forks. Do not ask whether the brief is good. Once

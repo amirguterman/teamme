@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "next_id": 44,
+  "next_id": 46,
   "tasks": [
     {
       "id": "T1",
@@ -282,14 +282,17 @@
     {
       "id": "T17",
       "title": "teamme_intake_phase is not separately gate-tested; only teamme_worklog exercises the shared gate() path",
-      "status": "open",
+      "status": "done",
       "priority": "P2",
       "lane": "teamme-validation-engineer",
-      "notes": [],
+      "notes": [
+        "FIXED - two sections mirroring the existing teamme_worklog gate section: refuses naming teamme_install against a fresh unscaffolded project, succeeds after teamme_install. The watch-fail found a wrinkle worth recording: with gate() neutralized, the call STILL reports isError, because it falls through to run_script() which fails anyway (intake-state.py genuinely does not exist yet). So isError alone cannot distinguish a removed gate from a working one, and an assertion written on isError would have passed against broken code. The section asserts on what it actually cares about instead - that the refusal text NAMES teamme_install - which the neutered version does not do."
+      ],
       "blocked_on": "",
       "created": "2026-09-17T18:10:40+00:00",
-      "updated": "2026-09-17T18:10:40+00:00",
-      "status_changed": "2026-09-17T18:10:40+00:00"
+      "updated": "2026-09-25T08:56:13+00:00",
+      "status_changed": "2026-09-25T08:56:13+00:00",
+      "dispatched_to": ""
     },
     {
       "id": "T18",
@@ -309,28 +312,33 @@
     {
       "id": "T19",
       "title": "Status transitions silently reopen a closed task: dispatch/start/block on done/dropped/declined should warn or refuse",
-      "status": "open",
+      "status": "done",
       "priority": "P2",
       "lane": "teamme-hook-engineer",
-      "notes": [],
+      "notes": [
+        "Chose refuse over warn, with a sanctioned deliberate path. start/dispatch/block/unblock/defer on a done, declined or dropped task now exit 4 and name the remedy; done/decline/drop on an already-closed task still work, since that is a correction between conclusions rather than a reopen. New reopen action requires a reason, refuses on a task that is not closed, records reopened (was X): reason as a note, and lands on open rather than active - the Stop nag fires on active alone, so nothing is armed for work nobody has picked up. Mirrored into WORKLOG_ACTIONS.",
+        "FIXED as REFUSE, not warn, with a sanctioned reopen. Reasoning recorded: worklog.py is a CLI, not a hook, so invariant #1 fail-open does not reach it and a refusal blocks nobody editing loop; and a warning arrives AFTER the state has already changed, which in an append-only ledger can only be superseded, never undone. Rule: a status action is refused when the task is in CLOSED_STATUSES (done/declined/dropped) AND the action target status is not itself closed - so done->dropped still works, because that is a correction between conclusions rather than a reopen. New exit code 4, distinct from 2 (usage) and 3 (no such task). New reopen <id> \"<reason>\" REQUIRES a reason because it contradicts a recorded conclusion. THE SHARPEST DETAIL: reopen lands on open, deliberately not active, because worklog-enforce.py stop nags on active alone - so a reopen re-enters the SessionStart listing without arming a Stop reminder for work nobody has picked up. That is invariant #2 reasoning applied to a new action rather than rediscovered later. Verified live by me: start on a done task exits 4 and names reopen."
+      ],
       "blocked_on": "",
       "dispatched_to": "",
       "created": "2026-09-17T18:32:24+00:00",
-      "updated": "2026-09-17T18:32:24+00:00",
-      "status_changed": "2026-09-17T18:32:24+00:00"
+      "updated": "2026-09-25T08:42:09+00:00",
+      "status_changed": "2026-09-25T08:42:09+00:00"
     },
     {
       "id": "T20",
       "title": "Cover the new router/heartbeat branches in validate.sh: /queue passthrough, blank-prompt return, bounded heartbeat on a pty",
-      "status": "open",
+      "status": "done",
       "priority": "P2",
       "lane": "teamme-validation-engineer",
-      "notes": [],
+      "notes": [
+        "FIXED - three sections plus a combined watch-fail. The queue passthrough and the blank-prompt return are both asserted to produce ZERO stdout, contrasted against an ordinary request that does get additionalContext, so the empty-output assertions are not vacuously true for \"the hook never prints anything\" - that contrast is the part that makes them real. The heartbeat runs under a real pty (pty.openpty, stdlib): silent, exit 0, heartbeat written. That is the case a pipe never reproduces, because drain_stdin short-circuits on stream.isatty() before reaching select(). HONEST LIMIT the lane volunteered: it could not build a differential watch-fail isolating the isatty branch from the bounded-select path, because with the master fd closed before the child starts both branches converge on the same observable outcome. It said so rather than claiming the coverage."
+      ],
       "blocked_on": "",
       "dispatched_to": "",
       "created": "2026-09-17T18:40:55+00:00",
-      "updated": "2026-09-17T18:40:55+00:00",
-      "status_changed": "2026-09-17T18:40:55+00:00"
+      "updated": "2026-09-25T08:56:21+00:00",
+      "status_changed": "2026-09-25T08:56:21+00:00"
     },
     {
       "id": "T21",
@@ -389,15 +397,17 @@
     {
       "id": "T24",
       "title": "This repo's own .claude/commands/intake.md predates the preflight block and lacks it entirely",
-      "status": "open",
+      "status": "done",
       "priority": "P1",
       "lane": "teamme-prompt-author",
-      "notes": [],
+      "notes": [
+        "FIXED, and it was worse than the title said. The headline (no preflight block) was real and is adopted verbatim from the template - four-state table, halt paragraph, offer-repair-ask-before-writing. But reconciling the two files turned up a LIVE STATE-MACHINE BUG in this repo own copy: step 2b Already satisfied, Defer and Decline all ended the flow with \"stop\" and NO intake-state.py release. Each of those is terminal, so /intake here left begin with no matching approve or release - a write-locked repo until the one-hour stale timeout, on three of six dispositions. Verified by me against HEAD: the old file had 4 release calls, the new one has 6, and the three old rows end at \"stop\". The expiry timeout is exactly the invariant #1 provision that kept this from being a trap, which is the second time that timeout has caught a real defect rather than a hypothetical one."
+      ],
       "blocked_on": "",
       "dispatched_to": "",
       "created": "2026-09-24T08:59:39+00:00",
-      "updated": "2026-09-24T08:59:39+00:00",
-      "status_changed": "2026-09-24T08:59:39+00:00"
+      "updated": "2026-09-25T08:46:25+00:00",
+      "status_changed": "2026-09-25T08:46:25+00:00"
     },
     {
       "id": "T25",
@@ -460,15 +470,18 @@
     {
       "id": "T28",
       "title": "worklog.py has no retitle action, so a task whose scope is corrected keeps a misleading title forever",
-      "status": "open",
+      "status": "done",
       "priority": "P2",
       "lane": "teamme-hook-engineer",
-      "notes": [],
+      "notes": [
+        "Added retitle to worklog.py and to WORKLOG_ACTIONS in teamme_mcp.py. The title field is replaced and the old text is appended as a note, so the record stays complete without leaving the wrong title on screen at every SessionStart. retitle is not a status action: updated moves, status_changed does not, so it cannot re-arm the Stop nag. Same title is a no-op with no junk note; empty title exits 2.",
+        "FIXED. retitle replaces the title field and APPENDS the old one as a note (retitled from: ...). The reasoning is worth keeping: the ledger is append-only about HISTORY, but a title is a field describing current scope, and a stale one actively lies at every SessionStart - T14 did for eight days. Appending keeps the record complete without keeping the wrong title on screen. Takes the lockfile, is deliberately NOT a status action, and is mirrored into WORKLOG_ACTIONS so the MCP path is not a smaller CLI than the shell one. Verified by the lane: status_changed unmoved after a retitle and the Stop nag not re-armed; same-title is a no-op that writes no junk note; empty title rc 2; unknown id rc 3; a closed task can still be retitled."
+      ],
       "blocked_on": "",
       "dispatched_to": "",
       "created": "2026-09-24T14:28:42+00:00",
-      "updated": "2026-09-24T14:28:42+00:00",
-      "status_changed": "2026-09-24T14:28:42+00:00"
+      "updated": "2026-09-25T08:42:00+00:00",
+      "status_changed": "2026-09-25T08:42:00+00:00"
     },
     {
       "id": "T29",
@@ -547,19 +560,20 @@
     {
       "id": "T32",
       "title": "Roster defect: agents without Bash cannot use worklog.py, so they edit .claude/intake/worklog.json directly and bypass the lockfile",
-      "status": "open",
+      "status": "done",
       "priority": "P1",
       "lane": "teamme-hook-engineer",
       "notes": [
         "OBSERVED, not theoretical: during T31 the docs lane (teamme-docs-writer, tools Read/Edit/Write/Grep/Glob - no Bash) appended its note by editing .claude/intake/worklog.json with Edit, concurrently with the orchestrator writing notes through worklog.py's O_EXCL lock. It happened to survive - valid JSON, 31 tasks, all notes intact, no debris - but that is luck. The lock exists precisely because 3 of 24 notes were measurably lost before it was added. Two agents in the shipped roster template have no Bash, so they have no correct option: the ledger is the one file every lane must write and the only writer is a CLI. FIXES WORTH WEIGHING: (a) give every generated agent Bash scoped to worklog.py, (b) expose the worklog over the MCP server so a Bash-less agent can write it safely - teamme_worklog ALREADY EXISTS and does exactly this, so the real gap may just be that generated agents are never told to use it, (c) have the orchestrator record notes on the lane's behalf. (b) looks strongest and nearly free. Same defect class as the prompt-author lane being unable to git mv.",
         "A THIRD failure mode for writing the ledger, distinct from the no-Bash one this task already records: writing a note THROUGH bash silently corrupts any backticked identifier, because the shell substitutes it as a command. It happened to me just now on T37 - the note recorded with its identifiers missing and no error, and only a re-read caught it. bash printed \"configure: command not found\" to stderr, which is easy to miss in a long output. The ledger is append-only, so a corrupted note cannot be repaired, only superseded. Relevant to this task because the proposed fix - route notes through the teamme_worklog MCP tool instead of the worklog.py CLI - removes the shell from the path entirely and fixes all three failure modes at once: no-Bash agents can write, the lockfile is respected, and no shell metacharacter can eat content.",
-        "THIRD DOCUMENTED INSTANCE, this time costing a lane its own bookkeeping: teamme-prompt-author has no Bash tool, so it could neither run ./scripts/validate.sh nor record its own worklog note. It reported both gaps honestly and handed them back rather than claiming verification it did not have - which is the good outcome, but it means every no-Bash lane silently depends on the dispatcher to close its ledger entry. The proposed fix (route notes through the existing teamme_worklog MCP tool) would close the note half; the validate.sh half is separate and may be unfixable for a no-Bash lane by design."
+        "THIRD DOCUMENTED INSTANCE, this time costing a lane its own bookkeeping: teamme-prompt-author has no Bash tool, so it could neither run ./scripts/validate.sh nor record its own worklog note. It reported both gaps honestly and handed them back rather than claiming verification it did not have - which is the good outcome, but it means every no-Bash lane silently depends on the dispatcher to close its ledger entry. The proposed fix (route notes through the existing teamme_worklog MCP tool) would close the note half; the validate.sh half is separate and may be unfixable for a no-Bash lane by design.",
+        "FIXED, three failure modes closed at once. The two no-Bash lanes (docs-writer, prompt-author) now carry the worklog MCP tool, which takes the lockfile properly and puts no shell in the path - so a no-Bash agent can write, the lock is respected, and no shell metacharacter can eat a backticked identifier. Every agent prompt gained a never-hand-edit-worklog.json rule, the four Bash lanes were told to single-quote notes and why, and init-team.md teaches the same to every generated roster - resolving the tool name from the LIVE SESSION rather than hardcoding it. The lane verified the mcp__plugin_<plugin>_<server>__<tool> scheme against real tool calls in the harness own transcripts and established that no marketplace segment or install path is encoded, so the name does not vary with install scope. What it could NOT verify, and said so: teamme is not installed as a plugin in this sandbox, so it never watched that exact name resolve - hence the fallback written into both agents (if the tool is not in your list, improvise nothing, hand the note back marked unrecorded). It then used that fallback on itself the same turn. THE HALF STILL OPEN: a no-Bash lane still cannot run validate.sh. Not papered over - both agent prompts, the roster README and this repo /intake step 3 now say it out loud, and tech-lead is told to run it on their behalf. The shipped template gained the same honesty as a structural claim: a brief whose done-criteria is \"the verification passes\" must name which lanes cannot run it and who does."
       ],
       "blocked_on": "",
       "dispatched_to": "",
       "created": "2026-09-24T15:57:49+00:00",
-      "updated": "2026-09-25T08:02:59+00:00",
-      "status_changed": "2026-09-24T15:57:49+00:00"
+      "updated": "2026-09-25T08:47:30+00:00",
+      "status_changed": "2026-09-25T08:47:30+00:00"
     },
     {
       "id": "T33",
@@ -634,22 +648,23 @@
     {
       "id": "T36",
       "title": "Watch-fail briefs must say HOW to break the code when it lives in another lane's file",
-      "status": "open",
+      "status": "done",
       "priority": "P1",
       "lane": "teamme-validation-engineer",
       "notes": [
-        "MY BRIEF DEFECT, caught by a near-miss during T35. I told the validation lane 'watch it fail' AND 'only scripts/validate.sh' in the same brief. Breaking _render_cochange to prove the assertion catches it requires editing teamme_mcp.py, so the two instructions contradict each other. The lane edited teamme_mcp.py and restored it - while a hook lane was concurrently assigned that same directory. No damage: teamme_mcp.py is byte-identical to HEAD and the render call sites are intact, because the hook lane had not written to that file yet. That is TIMING, not safety. Earlier briefs in this session avoided it by telling lanes to break a SCRATCH COPY (the T22 drift guard and the phase-1 rebuild assertion both did this, and both reported doing it). FIX: every watch-fail instruction must name the mechanism - scratch copy, monkeypatched import path, or an injected fixture - whenever the code to break is outside the lane's own file. Better still, say it once in CONTRIBUTING.md's rules rather than in every brief, so it is not dependent on the orchestrator remembering."
+        "MY BRIEF DEFECT, caught by a near-miss during T35. I told the validation lane 'watch it fail' AND 'only scripts/validate.sh' in the same brief. Breaking _render_cochange to prove the assertion catches it requires editing teamme_mcp.py, so the two instructions contradict each other. The lane edited teamme_mcp.py and restored it - while a hook lane was concurrently assigned that same directory. No damage: teamme_mcp.py is byte-identical to HEAD and the render call sites are intact, because the hook lane had not written to that file yet. That is TIMING, not safety. Earlier briefs in this session avoided it by telling lanes to break a SCRATCH COPY (the T22 drift guard and the phase-1 rebuild assertion both did this, and both reported doing it). FIX: every watch-fail instruction must name the mechanism - scratch copy, monkeypatched import path, or an injected fixture - whenever the code to break is outside the lane's own file. Better still, say it once in CONTRIBUTING.md's rules rather than in every brief, so it is not dependent on the orchestrator remembering.",
+        "ALREADY SATISFIED - closing. The rule is in CONTRIBUTING.md under \"Rules for the hook scripts\": a watch-fail against code outside the lane own file must name the mechanism (scratch copy, monkeypatched import path, or injected fixture). Written as a standing rule rather than per-brief, which was the point - the failure was the orchestrator forgetting, so the fix had to live somewhere that does not depend on remembering. Evidence it holds: all four T41 briefs today named their mechanism, and the validation lane used a scratch copy for both of its watch-fails against another lane file, reporting which it used."
       ],
       "blocked_on": "",
       "dispatched_to": "",
       "created": "2026-09-25T01:25:50+00:00",
-      "updated": "2026-09-25T01:25:50+00:00",
-      "status_changed": "2026-09-25T01:25:50+00:00"
+      "updated": "2026-09-25T08:31:17+00:00",
+      "status_changed": "2026-09-25T08:31:17+00:00"
     },
     {
       "id": "T37",
       "title": "validate.sh does not check that identifiers named in CHANGELOG/README exist in the code - a doc can name a query that does not exist and CI stays green",
-      "status": "open",
+      "status": "done",
       "priority": "P1",
       "lane": "teamme-validation-engineer",
       "notes": [
@@ -658,13 +673,14 @@
         "Second live instance, same release: a false capability claim ('defaults to disabled') reached CHANGELOG.md and passed CI, because nothing checks a doc's ASSERTIONS against code - only its identifiers would be caught by the prototype above. Worth noting the honest limit of T37 as scoped: extracting backticked names catches 'this query exists', not 'this default is true'. The second class may not be mechanically checkable at all, which is an argument for the cheaper structural fix - a doc claim about a default should quote the constant's name so a reader can grep it, rather than restating its value in prose.",
         "THIRD instance in one release entry: 'has_data: false' was documented as user-visible output when it is an internal dict key never printed. Note the pattern across all three - a query name that does not exist, a default stated backwards, and an output field the user never sees. Only the first is catchable by extracting identifiers and checking them against QUERY_NAMES. The other two need a different check, and there is a cheap one available for the third: the set of field labels a renderer actually prints is greppable from the renderer functions, so a doc claiming 'status reports X' can be checked against the strings those functions emit. Worth scoping T37 as two checks, not one: identifiers-exist (easy, high yield) and rendered-labels-exist (also mechanical).",
         "REFINEMENT from running the prototype on a clean entry: it produced one FALSE POSITIVE - a bare  used as prose shorthand in the same sentence that had already given the full . A naive backtick extractor cannot tell shorthand from a wrong name. Two options for the real check, and the second is better: (a) allow an identifier that is a suffix of a known one, which is loose enough to let a genuinely wrong name through; (b) require full names in docs and treat shorthand as a style error - stricter, mechanically checkable, and it makes the doc more copy-pasteable, which was the original argument for this check. Prefer (b). Also worth noting: the human-legible mitigation (require the lane to name the source file it verified against) produced a clean entry on the first pass today, which is evidence the check is worth automating rather than evidence it is unnecessary.",
-        "CORRECTION - the previous note was silently mangled: I wrote it through bash with backticked identifiers, and the shell substituted them away, so it reads \"a bare  used as prose shorthand ... the full .\" with the names missing. The ledger has no note-edit action, so this replaces it rather than fixing it in place. THE REFINEMENT, restated: running the prototype over the clean 0.7.0 entry produced one false positive - a bare \"configure\" used as shorthand in the same sentence that had already given the full \"teamme_librarian_configure\". A naive backtick extractor cannot distinguish shorthand from a wrong name. Two options: (a) accept any identifier that is a suffix of a known one, which is loose enough to let a genuinely wrong name through; (b) require full names in docs and treat shorthand as a style error. Prefer (b) - stricter, mechanically checkable, and it makes docs more copy-pasteable, which was the original argument for the check."
+        "CORRECTION - the previous note was silently mangled: I wrote it through bash with backticked identifiers, and the shell substituted them away, so it reads \"a bare  used as prose shorthand ... the full .\" with the names missing. The ledger has no note-edit action, so this replaces it rather than fixing it in place. THE REFINEMENT, restated: running the prototype over the clean 0.7.0 entry produced one false positive - a bare \"configure\" used as shorthand in the same sentence that had already given the full \"teamme_librarian_configure\". A naive backtick extractor cannot distinguish shorthand from a wrong name. Two options: (a) accept any identifier that is a suffix of a known one, which is loose enough to let a genuinely wrong name through; (b) require full names in docs and treat shorthand as a style error. Prefer (b) - stricter, mechanically checkable, and it makes docs more copy-pasteable, which was the original argument for the check.",
+        "BUILT AS TWO CHECKS, as scoped. Both resolve candidates against sets built LIVE from the code - teamme_mcp.TOOLS, the three QUERY_NAMES tuples, every tool schema properties key and enum value, plus a mechanically-derived vocabulary of real-but-non-callable identifiers (worklog fields, cross-index row keys, SQL CREATE TABLE names) extracted by regex from source rather than retyped. The hardcoded-allow-list trap the earlier prototype warned about is avoided by construction. Both watch-fails are permanent sections built from the REAL 0.6.0 mistakes: a scratch doc using \"search\" for search_turns plus a fabricated commit_details and a phantom tool, and a scratch doc claiming has_data: false as output when the renderer only ever prints data: yes / data: no. DELIBERATE DEVIATION, and the lane was right: I asked for strict full-names-only, but that policy does not survive contact - it would fail CI on the DATED, ALREADY-RELEASED 0.7.0 entry over a genuine shorthand (\"whether or not they called configure\", in a sentence that had already given teamme_librarian_configure in full). It used the fallback instead: a narrow suffix rule accepting an identifier only as an exact trailing-word match of one known full name. Confirmed to still catch a real typo (teame_worklog) and still catch both 0.6.0 fixtures. Strict remains available later if the released entry is ever reworded, but rewriting a dated release entry to satisfy a linter is the wrong trade."
       ],
       "blocked_on": "",
       "dispatched_to": "",
       "created": "2026-09-25T01:52:27+00:00",
-      "updated": "2026-09-25T03:36:20+00:00",
-      "status_changed": "2026-09-25T01:52:27+00:00"
+      "updated": "2026-09-25T08:56:13+00:00",
+      "status_changed": "2026-09-25T08:56:13+00:00"
     },
     {
       "id": "T38",
@@ -753,17 +769,19 @@
     {
       "id": "T42",
       "title": "store.ignore_guard imports config without a loose-module fallback, so a loose import silently skips the gitignore protection",
-      "status": "open",
+      "status": "done",
       "priority": "P1",
       "lane": "",
       "notes": [
-        "Found by the hook lane while VERIFYING the connect_file -> ignore_guard -> ensure_ignored chain for T41, not by inspection. Every other cross-module import under server/librarian/ carries an except ImportError loose fallback; ignore_guard does \"from . import config\" with none. Import store as a loose module (sys.path.insert on server/librarian, then import store) and the ImportError is swallowed into a problem dict nobody inspects at connect_file - no .gitignore written, no error surfaced. NOT a live defect: both real callers import it as a package (teamme_mcp.py via importlib.import_module(\"librarian.store\"), validate.sh via \"from librarian import store\"), so neither production nor CI reaches it. The hazard is that the one code path carrying the privacy guarantee is also the one that degrades silently under an import style the rest of the package tolerates. Fix is one except ImportError away; the harder question is whether a swallowed problem dict at connect_file should be silent at all."
+        "Found by the hook lane while VERIFYING the connect_file -> ignore_guard -> ensure_ignored chain for T41, not by inspection. Every other cross-module import under server/librarian/ carries an except ImportError loose fallback; ignore_guard does \"from . import config\" with none. Import store as a loose module (sys.path.insert on server/librarian, then import store) and the ImportError is swallowed into a problem dict nobody inspects at connect_file - no .gitignore written, no error surfaced. NOT a live defect: both real callers import it as a package (teamme_mcp.py via importlib.import_module(\"librarian.store\"), validate.sh via \"from librarian import store\"), so neither production nor CI reaches it. The hazard is that the one code path carrying the privacy guarantee is also the one that degrades silently under an import style the rest of the package tolerates. Fix is one except ImportError away; the harder question is whether a swallowed problem dict at connect_file should be silent at all.",
+        "Fixed: ignore_guard now uses the same try-package/except-ImportError-loose fallback every other cross-module import in server/librarian uses. Also changed the silence: a failed guard is recorded in store._UNPROTECTED (bounded at 8, deduped) and drained by teamme_mcp.with_protection_report, which appends an UNPROTECTED block to every librarian tool result, so a query that opens an unprotected index now says so. It only adds text, never changes isError, never raises - protection failing still cannot stop the work.",
+        "FIXED, and the lane went past the one-liner as invited. (1) ignore_guard now carries the same try/except ImportError loose fallback the rest of the package uses - the defect was first REPRODUCED (loose import -> problem dict, no .gitignore written) and then re-run after the fix (ok, and git check-ignore confirms both index paths ignored). (2) The silence changed: store.py gained note_unprotected/take_unprotected over a capped, deduped module-level list, and teamme_mcp.py wraps all four librarian tools in with_protection_report, which APPENDS an UNPROTECTED block and never sets isError, never raises, and cannot stop an index opening. Previously only the refresh paths reported their own ensure_ignored result, so a QUERY opening an unprotected index said nothing at all. It suppresses itself when the result already contains UNPROTECTED so a refresh still renders only its own fuller block, and drains the record either way so a failure is reported on the call it happened on and never repeated stale."
       ],
       "blocked_on": "",
       "dispatched_to": "",
       "created": "2026-09-25T07:58:06+00:00",
-      "updated": "2026-09-25T07:58:06+00:00",
-      "status_changed": "2026-09-25T07:58:06+00:00"
+      "updated": "2026-09-25T08:42:00+00:00",
+      "status_changed": "2026-09-25T08:42:00+00:00"
     },
     {
       "id": "T43",
@@ -779,6 +797,43 @@
       "created": "2026-09-25T08:03:07+00:00",
       "updated": "2026-09-25T08:03:07+00:00",
       "status_changed": "2026-09-25T08:03:07+00:00"
+    },
+    {
+      "id": "T44",
+      "title": "Debt sweep: nine specified fixes and test gaps (T42 T28 T19 T32 T37 T17 T20 T24 T36)",
+      "status": "done",
+      "priority": "P0",
+      "lane": "",
+      "notes": [
+        "PYTHON LANE LANDED (T42, T28, T19). Verified independently by me: the loose-import fallback is in store.py, retitle/reopen/CLOSED_STATUSES/LANDS_ON are in worklog.py, the .claude/hooks copy is byte-identical to the template, and \"start\" on a closed task really does exit 4 with a refusal naming reopen. The lane also exercised degradation rather than believing it: a pre-migration row with no notes and no status_changed, a row with no status key at all, and a corrupt ledger - all three handled without a crash.",
+        "Prompt lane: gave teamme-docs-writer and teamme-prompt-author the worklog MCP tool plus a never-hand-edit-worklog.json rule and an unrecorded-note fallback; taught init-team.md to do the same for every generated roster, resolving the tool name from the live session rather than from memory. Verified the mcp__plugin_<plugin>_<server>__<tool> scheme against real tool calls in the harness own transcripts and confirmed no marketplace or install path is encoded, so the teamme name is stable. Brought .claude/commands/intake.md up to the template: added the preflight block, step 0a, the template queue rows and the librarian paragraphs, and fixed a real bug where already-satisfied, defer and decline ended the flow without intake-state.py release, leaving the repo write-locked until timeout. Added the missing server and prompts rows to the lane table. validate.sh not run - no Bash in this lane.",
+        "VALIDATION LANE landed (T37, T17, T20). T37: two new validate.sh sections resolve every backticked query/tool/param identifier in CHANGELOG.md/README.md/plugins/teamme/README.md against TOOLS/QUERY_NAMES/schema properties (live-imported, never hardcoded) plus a rendered-label check for literal `key: value` output claims. Watch-failed both against synthetic docs reusing the real 0.6.0 mistakes (search/commit_details/phantom tool; has_data: false) before confirming zero findings on today's docs. Found strict full-name-only resolution does flag one real, current, in-context shorthand ('configure' for teamme_librarian_configure in CHANGELOG.md) - used a narrow suffix-of-known-name fallback instead of editing that file (not my lane), documented in validate.sh. T17: teamme_intake_phase now gate-tested independently of teamme_worklog over the real JSON-RPC pipe, plus a scratch-copy watch-fail with its gate() call removed. T20: route-to-intake.py's /queue passthrough and blank-prompt silence now asserted with a two-way watch-fail; preflight.py heartbeat now asserted silent+exit0 under a real pty (stdlib pty.openpty()), with a watch-fail proving the harness itself can catch a broken heartbeat. validate.sh: 77 sections (+7), ~14.4s (was ~13.5s/70). Only scripts/validate.sh touched - never plugins/teamme/server/teamme_mcp.py or worklog.py, which the python lane is editing concurrently; all watch-fails ran against scratch/tempfile copies.",
+        "DOCS LANE LANDED - and refused to claim two things as proven, which was correct and caught MY sequencing error. It grepped the whole 4523-line validate.sh and found ZERO coverage for retitle, reopen, or the QUERY-side UNPROTECTED path (the one existing UNPROTECTED section drives refresh only, and refresh renders its own block BEFORE with_protection_report/take_unprotected ever runs - so it does not exercise the drain-and-append path the fix added at all). Verified by me: grep -c reopen = 0, retitle = 0. Cause: I dispatched the Python and validation lanes IN PARALLEL, so validation was briefed before the actions it would have needed to assert existed. The lane documented the features factually in the READMEs, put the reasoning in Decisions, and added precise Known-gaps entries rather than adding them to the proven-by-validate.sh ledger - then recommended routing back. Folding that in before release rather than shipping a claim nobody checked.",
+        "DOCS LANE ADOPTED THE VALUE-CLAIM RULE: when a doc states a default, cap or count, NAME THE CONSTANT that backs it rather than restating its value in prose. This is the mitigation for the one defect class neither new check reaches - 0.6.0 shipped \"defaults to disabled\" against DEFAULT_ENABLED = True and no identifier extraction would ever see it. Applied to the four load-bearing default claims already in the READMEs (max_files/DEFAULT_MAX_COMMIT_FILES, pad_minutes/DEFAULT_PAD_MINUTES, enabled/DEFAULT_ENABLED, commit_record/DEFAULT_COMMIT_RECORD), each verified against the code before annotating. Deliberately NOT a sweeping retroactive rewrite, and CONTRIBUTING.md says so explicitly so the rule is not silently narrower than it sounds: apply to new claims, retrofit only what you are already touching.",
+        "VALIDATION LANE, round 2 (coordinator follow-up, still T44): closed the three gaps the docs lane found unproven. (1) UNPROTECTED path: folded into the existing unwritable-.gitignore section - a query against the same unprotected index now asserted to still answer (isError=False) and say so; refresh asserted to emit exactly one UNPROTECTED: block (watch-failed by removing with_protection_report's dedup check, got 2); a healthy fixture asserted to emit none, folded into the existing changes_with-renderer pipe section. (2) retitle: new section - note appended/status_changed unmoved/Stop not re-armed, same-title no-op, empty-title rc2, MCP path - watch-failed by folding retitle into STATUS_ACTIONS (status_changed moved, Stop re-armed). (3) reopen: new section - 15/15 refused combinations (5 actions x 3 closed statuses) rc4 naming reopen via a python loop, done->dropped rc0 (correction between conclusions), reopen-no-reason rc2, reopen-on-open rc4, and the load-bearing one: Stop stays silent immediately after reopen (lands on open, not active) - watch-failed two ways (reopen forced to land on active: Stop wrongly nagged; the refusal condition disabled: start on a done task wrongly succeeded rc0). MCP path covered for both new actions over the real pipe. validate.sh: 81 sections (+4 banners; UNPROTECTED folded into existing ones), ~17.7s (was ~14.4s). Only scripts/validate.sh touched throughout both rounds - all watch-fails against scratch copies (cp/tempfile), never the real templates or a shared ledger.",
+        "Docs lane, second pass: corrected the two Known-gaps entries I'd added for retitle/reopen and the UNPROTECTED query-side path after the validation lane closed both (confirmed directly against scripts/validate.sh: 4 new sections for retitle/reopen incl. watch-fails, UNPROTECTED work folded into the existing unwritable-.gitignore section with a query assertion, an exactly-once count, a dedup watch-fail, and a healthy-fixture \"none\" check). Moved these into CLAUDE.md's Verify section as proven claims; replaced the stale gap entries with the two honest limits the validation lane volunteered (one representative watch-fail for the 15 reopen-refusal combinations rather than 15; no separate MCP-path watch-fail for retitle/reopen). Checked that second reasoning myself against tool_worklog in teamme_mcp.py (both actions forward through the same generic argv-building branch as block/defer/note, no per-action logic) and agreed with it. Files touched again: CLAUDE.md only (README.md/CONTRIBUTING.md/plugins README from the first pass were already correct and untouched this round).",
+        "RELEASE 0.9.0, sent back once for THREE FALSE CLAIMS - and the instructive part is that the identifiers-exist check shipped this morning PASSED all three, because ignore_guard, store.py and UNPROTECTED all exist. The check validates that a name is real, not that the sentence around it is. That limit was documented by the docs lane hours earlier and was then demonstrated on the first changelog entry written after it shipped, by a lane that had been told the check was watching it. The three: (1) ignore_guard placed in the config module when grep returns exactly one hit at store.py:139, with the fallback direction reversed (it gained import config, not import store) and store.py cited as the reference pattern when store.py IS the file that was fixed; (2) an invented trigger - git missing from PATH - when the block comes from ensure_ignored failing on file I/O only; (3) a Known-limitations entry claiming the tools do not report a successful protected write, contradicted by teamme_mcp.py:1163 printing \"protected: wrote\". PROCESS NOTE WORTH KEEPING: the lane report cited \"lines 139-160+ in config.py\". The LINE NUMBER WAS RIGHT and the file was wrong - it read store.py:139 and wrote down config.py, and the correct line number is what made the citation feel verified."
+      ],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-25T08:30:44+00:00",
+      "updated": "2026-09-25T09:25:52+00:00",
+      "status_changed": "2026-09-25T09:25:52+00:00"
+    },
+    {
+      "id": "T45",
+      "title": "Docs name fetch_with, a real cross.py row key the renderer never prints - it emits fetch:",
+      "status": "done",
+      "priority": "P2",
+      "lane": "",
+      "notes": [
+        "FIXED by the docs lane inside T44: both READMEs said a cross-index row carries a fetch_with for going deeper. It IS a real key in cross.py, but the renderer prints \"fetch:\" and the tool returns rendered prose, never raw JSON - so a reader never sees fetch_with. Same failure class as 0.6.0 has_data, phrased as a bare identifier instead of a key: value pair, which is exactly why it fell between the two new checks scopes: identifiers-exist resolved it (it exists) and rendered-labels-exist did not inspect it (not written in key: value shape). The docs now describe the printed label."
+      ],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-25T08:56:21+00:00",
+      "updated": "2026-09-25T09:25:52+00:00",
+      "status_changed": "2026-09-25T09:25:52+00:00"
     }
   ]
 }

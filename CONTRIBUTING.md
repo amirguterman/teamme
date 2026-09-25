@@ -39,6 +39,33 @@ same failure shape as a `REQUIRED_HOOKS` list that quietly covers less than its 
 `CLAUDE.md`'s T23 entry). A new subdirectory under `server/` is picked up automatically; the check
 fails loudly if the walk ever turns up nothing.
 
+## Keep the docs checked against the code
+
+Two more `validate.sh` sections compare `CHANGELOG.md`, `README.md` and `plugins/teamme/README.md`
+against the code directly, not just against each other:
+
+- **identifiers-exist** resolves every backticked lowercase identifier in those three files against the
+  live `TOOLS` registry, the three `QUERY_NAMES` tuples, every tool schema's parameter and enum values,
+  and a vocabulary of real-but-non-callable names derived mechanically (dict-key literals, `CREATE
+  TABLE` column names) — never a hand-typed allow-list, since that would be the next copied fact this
+  check exists to stop making. A narrow suffix rule accepts genuine shorthand (`configure` for
+  `teamme_librarian_configure`, matched only as an exact trailing word after an underscore) — a strict
+  full-names-only policy was tried first and rejected, since it flagged a real, already-released
+  shorthand sitting in the 0.7.0 `CHANGELOG.md` entry.
+- **rendered-labels-exist** checks every documented `` `key: value` `` output claim against
+  `teamme_mcp.py`'s own renderer source, catching a claim like 0.6.0's `` `has_data: false` `` — a real
+  internal dict key that the renderer never actually prints by that name (it prints `data:
+  yes`/`data: no`).
+
+**Neither check catches a bare value claim.** 0.6.0 also shipped "defaults to disabled" against
+`DEFAULT_ENABLED = True`; no identifier extraction sees a value written in prose. Until something
+checks that mechanically, the discipline is manual, and it is a rule, not a suggestion: **when a doc
+states a default, a cap or a count, name the constant that backs it** (`max_files` "defaults to 25
+(`DEFAULT_MAX_COMMIT_FILES`)", not just "defaults to 25"), so a reader can grep the real value instead
+of trusting the prose. Apply it to any new claim you add; you do not need to retrofit every existing
+one, but if you are already touching a paragraph that states a value, name the constant while you are
+there.
+
 ## Layout
 
 ```

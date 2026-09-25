@@ -119,6 +119,13 @@ it, and the `Stop` hook never nags about it, since nothing this session does can
 `SessionStart` report lists it separately from tasks that are `blocked` on your own input.
 Priorities: `P0` now, `P1` normal, `P2` someday.
 
+`retitle <id> "<new title>"` corrects a title whose scope has changed, keeping the old one as a note
+rather than discarding it. A `done`, `declined` or `dropped` task does not reopen by accident:
+`start`/`dispatch`/`block`/`unblock`/`defer` on one is refused, naming `reopen <id> "<why>"` — the
+one action that puts a closed task back, deliberately, with the reason recorded. It lands back on
+`open`, not `active`, so it re-enters the listing above without arming a `Stop` reminder for work
+nobody has picked up yet.
+
 ## The librarian substrate
 
 Three MCP tools work against a per-project store under `.claude/librarians/`, shared by two librarians
@@ -140,6 +147,11 @@ not a per-project choice.
 | `teamme_librarian_status` | What an index holds: for `history`, row counts, the last indexed commit and how far behind `HEAD` it is; for `sessions`, where this project's transcripts were found and how many bytes are indexed |
 | `teamme_librarian_refresh` | Brings an index up to date — incremental by default, `full=true` to reindex from scratch. `{"librarian": "history"}` (the default) or `{"librarian": "sessions"}` |
 | `teamme_librarian_query` | A bounded, named question, never arbitrary SQL. Nine names ask `history` (`recent`, `commits_touching`, `files_in_commit`, `commits_between`, `search_subjects`, `commit_detail`, `changes_with`, `coupling_between`, `hotspots` — see The history librarian below); four more (`sessions`, `search_turns`, `window`, `compaction`) ask `sessions` (see The session librarian below); four more (`around_path`, `around_commit`, `around_task`, `timeline`) are **cross-index** and read `history`, `sessions` and the work log together (see The cross-index queries below). None of the eight non-`history` names need a `librarian` argument — the query name alone says which index or indexes it belongs to |
+
+If teamme could not put its `.gitignore` protection in place before opening an index — an unwritable
+`.gitignore`, most commonly — any of the four tools' results carries an `UNPROTECTED` block naming the
+problem. This never blocks the call: the index is still written (or read) and the answer is still
+usable, but git can see it until that file is fixed and the librarian is refreshed again.
 
 These need only a git repository, not teamme's scaffolding, and work whether or not a project has run
 `/teamme:init-team`. Measured on this repository's own history (10 commits, 122 file rows): a first
@@ -167,8 +179,8 @@ recent shared commit), `coupling_between` (the commits where two specific paths 
 claimed edge can be inspected rather than believed), and `hotspots` (the most-changed paths,
 optionally under one directory). This is **correlation, not a call graph**: two files that always
 change together may share a cause rather than a dependency, so the librarian reports the edge as
-"changes with" — never "depends on" or "imports". A commit touching more than `max_files` (default 25)
-files is treated as a sweep and left out of every edge count, since one reformat or rename would
+"changes with" — never "depends on" or "imports". A commit touching more than `max_files` (default 25,
+`DEFAULT_MAX_COMMIT_FILES`) files is treated as a sweep and left out of every edge count, since one reformat or rename would
 otherwise couple everything it touched to everything else; every co-change answer says how many
 commits it considered and how many it skipped. Stable code that never changed has no edge here, so a
 thin or empty result means no evidence of coupling was found, not that nothing is related. The same
@@ -197,8 +209,8 @@ reads the same `enabled` flag as the tools below, so silencing it means disablin
 
 | Setting | Default | Effect |
 |---|---|---|
-| `enabled` (per librarian) | `true` | `false` makes `teamme_librarian_refresh` and `teamme_librarian_query` refuse for that librarian and name how to re-enable it; for `history`, it also silences `librarian-gate.py`'s push reminder, since the hook checks the same flag — there is no reminder-only switch. `teamme_librarian_status` keeps reporting the setting either way. The agent itself is always present — a plugin-shipped agent cannot be hidden per project — it is the tools behind it that refuse. |
-| `commit_record` | `false` | Whether `.claude/librarians/*/commits.jsonl` (the append-only record) is committed with the code or kept out of it. Flipping it **writes or removes the actual `.gitignore` entry**, inside a block teamme owns alone — it never removes an ignore line it did not write, and if a line outside that block is already ignoring the record, it says so rather than leaving `commit_record: true` silently without effect. `.claude/librarians/index.db`, the derived SQLite index, is always gitignored regardless — it is binary and cannot be merged. |
+| `enabled` (per librarian) | `true` (`DEFAULT_ENABLED`) | `false` makes `teamme_librarian_refresh` and `teamme_librarian_query` refuse for that librarian and name how to re-enable it; for `history`, it also silences `librarian-gate.py`'s push reminder, since the hook checks the same flag — there is no reminder-only switch. `teamme_librarian_status` keeps reporting the setting either way. The agent itself is always present — a plugin-shipped agent cannot be hidden per project — it is the tools behind it that refuse. |
+| `commit_record` | `false` (`DEFAULT_COMMIT_RECORD`) | Whether `.claude/librarians/*/commits.jsonl` (the append-only record) is committed with the code or kept out of it. Flipping it **writes or removes the actual `.gitignore` entry**, inside a block teamme owns alone — it never removes an ignore line it did not write, and if a line outside that block is already ignoring the record, it says so rather than leaving `commit_record: true` silently without effect. `.claude/librarians/index.db`, the derived SQLite index, is always gitignored regardless — it is binary and cannot be merged. |
 
 Both entries are re-derived from the current configuration every time an index is opened — including
 by a plain `teamme_librarian_refresh`, before `teamme_librarian_configure` has ever been called — not
@@ -277,13 +289,15 @@ time (every store has it, retroactively) and file paths (`files_changed` comes f
 association here is inference from overlap and says so on every row.
 
 A task's own active window is inferred, not recorded — the work log stamps only the current status and
-when it last changed — and is padded 15 minutes either side by default (`pad_minutes`, `0` for the
-exact window), because a status is typically recorded seconds before or after the commit or message it
-refers to; every answer reports the window it used and whether it was widened. Each row carries its own
-store and address (a commit hash, a session id and turn number, or a task id) plus a `fetch_with` for
-going deeper with `commit_detail` or `window` — this is a spine, it points rather than pastes. The row
-cap is applied per store, not per answer: a shared cap against this repository's 18 commits and 3,136
-turns would return turns and no commits at all.
+when it last changed — and is padded 15 minutes either side by default (`pad_minutes`,
+`DEFAULT_PAD_MINUTES`; `0` for the exact window), because a status is typically recorded seconds before
+or after the commit or message it refers to; every answer reports the window it used and whether it was
+widened. Each row carries its own store and address (a commit hash, a session id and turn number, or a
+task id) plus a pointer for going deeper with `commit_detail` or `window`, printed as `fetch:` in the
+rendered answer (the underlying row field is `fetch_with`, but the tool returns rendered prose, never
+raw JSON, so `fetch:` is what a caller actually sees) — this is a spine, it points rather than pastes.
+The row cap is applied per store, not per answer: a shared cap against this repository's 18 commits and
+3,136 turns would return turns and no commits at all.
 
 ## Install and verify
 

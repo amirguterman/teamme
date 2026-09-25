@@ -73,7 +73,8 @@ designer/asset. Do NOT propose a product/intake *agent* — intake is a command 
 not a lane. For EACH proposed agent specify:
 - **name** (kebab-case, project-prefixed), one-line **description** written so the orchestrator
   auto-delegates, recommended **model** (opus for judgment-heavy; sonnet for implementers;
-  haiku for mechanical), and a **restricted tool list** that keeps it in its lane.
+  haiku for mechanical), and a **restricted tool list** that keeps it in its lane. An agent you
+  would not give `Bash` still has to be able to write the work log — Phase 5, step 1 says how.
 - The **skills and/or MCP servers** that agent should use (from the Phase 2 inventory).
 - The **project-specific guardrails** to bake into its prompt (pulled from Phase 1's working
   rules — e.g. docs-first, codegen steps, migration flow, i18n source-of-truth, security model).
@@ -125,6 +126,29 @@ the paths must resolve.
    includes: the role, the shared project guardrails (a common block in every agent), the skills/
    MCP it should use, its workflow, and clear done-criteria. Reuse existing project conventions;
    don't invent commands that don't exist.
+   **Every agent needs exactly one sanctioned way to write the work log**, and which one depends on
+   its tool list. An agent with `Bash` uses the CLI: `python3 .claude/hooks/worklog.py note <id>
+   '<what happened>'` — single-quoted, because inside double quotes the shell eats backticks and
+   `$`, and the ledger is append-only, so a note mangled on the way in can only be superseded, never
+   repaired. An agent **without** `Bash` has no CLI at all, so give it the work-log MCP tool and name
+   it in that agent's `tools:` line. Leave that out and a text-only lane has no way in; what it does
+   instead is edit `.claude/intake/worklog.json` by hand, racing a writer that holds a lock.
+   Resolve that tool's name from this session rather than from memory. teamme's MCP tools appear as
+   `mcp__plugin_<plugin>_<server>__<tool>`, which for this plugin is
+   `mcp__plugin_teamme_teamme__teamme_worklog` — the plugin and its MCP server are both named
+   `teamme`, and neither the marketplace nor the install path is encoded, so that string is the same
+   in every install. Check it against the tool names actually available in this session before
+   writing it into a roster: a `tools:` entry naming a tool that does not exist grants nothing and
+   reports nothing, the same silent failure as a hook that never fires. If no such tool is visible
+   here, write no tool name at all — leave that agent with the fallback below, and tell me at
+   hand-over that the lane cannot write the ledger directly.
+   Two rules then go into the shared guardrail block, for every agent whatever its tools: the work
+   log is written through `worklog.py` or the work-log MCP tool and **never** by editing
+   `.claude/intake/worklog.json`, because both writers take a lock, concurrent writers are normal,
+   and the record is append-only; and an agent that can reach neither writer reports its note
+   verbatim in its hand-back, marked unrecorded, for whoever dispatched it to write. Name in the same
+   block which lanes have no `Bash` and therefore cannot run this project's own verification command
+   — they hand it back unrun and say so, rather than implying they ran it.
    The shared guardrail block must also carry the **librarian consultation contract**. teamme ships
    its own `history-librarian` agent — it is present in every project the plugin is installed in,
    not generated here and not part of this roster. Write into the block, in the team's own words:
@@ -167,7 +191,8 @@ the paths must resolve.
    team agent refreshes it itself, and editing anything under `.claude/librarians/` to quiet the
    prompt is never the answer.
    Do not give team agents the librarian MCP tools; the librarian is the intended caller of those,
-   and consulting the agent keeps every other tool list tight.
+   and consulting the agent keeps every other tool list tight. The work-log tool above is not one of
+   them — it has no librarian to consult in its place, which is exactly why it is granted directly.
 2. Create the project intake command at `<project>/.claude/commands/intake.md`. This is NOT
    optional and is created in every project. It is the **single entry point** for the team: all work
    requests go through `/intake <request>`. Tailor it to THIS project, and give it at minimum:

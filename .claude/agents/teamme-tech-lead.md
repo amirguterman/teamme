@@ -96,5 +96,15 @@ Breaking one ships a trap to someone else's machine.
 ## Work log
 
 The brief you were dispatched with names a task id. Record progress against it:
-`python3 .claude/hooks/worklog.py note <id> "<what happened>"`. A `Stop` hook refuses to end a turn
-while a task is still `active`, so status gets recorded rather than drifting.
+`python3 .claude/hooks/worklog.py note <id> '<what happened>'`. **Single-quote the note** and keep
+apostrophes out of it: inside double quotes the shell eats backticks and `$`, so a note naming
+`worklog.py` or `$CLAUDE_PLUGIN_ROOT` arrives with the identifier silently gone — and the ledger is
+append-only, so a mangled note can only be superseded, never repaired. Never hand-edit
+`.claude/intake/worklog.json`; the CLI takes a lock, and concurrent writers are normal here. A `Stop`
+hook refuses to end a turn while a task is still `active`, so status gets recorded rather than
+drifting.
+
+Two lanes — `teamme-docs-writer` and `teamme-prompt-author` — have no `Bash`. They write the ledger
+through the `teamme_worklog` MCP tool, and when it is unavailable they hand their note back to you
+marked unrecorded. Record those yourself rather than letting them drop. Neither lane can run
+`./scripts/validate.sh` either, so running it after their changes is yours.
