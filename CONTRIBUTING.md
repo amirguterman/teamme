@@ -24,7 +24,12 @@ concurrent refreshes, and hostile commit content — never against this repo's o
 transcripts under a fixture's own fake `$CLAUDE_CONFIG_DIR/projects/<slug>/` — never this repo's own
 conversations — including a real bug an earlier version of this coverage found: a record longer than
 `MAX_LINE_BYTES` came back from `readline()` without a trailing newline and was mistaken for a live
-tail, permanently parking the byte offset in front of it. CI runs exactly this. Please make it pass
+tail, permanently parking the byte offset in front of it. It also drives `librarian-gate.py` — the
+`PreToolUse` hook that asks (never denies) on a `git push` behind a stale history index — through a
+refresh-clears-the-gate proof, an ask/never-denies contract checked structurally against every
+`permissionDecision` literal the source can emit, a pinned push/non-push classification boundary, and
+seven fail-open branches, plus a `preflight.py` section proving a missing `librarian-gate.py` drives
+`installed-outdated` rather than a false "not-installed". CI runs exactly this. Please make it pass
 before opening a pull request.
 
 `server/` is compiled by walking `find -path '*/server/*' -name '*.py'`, not a shallow
@@ -64,6 +69,8 @@ plugins/teamme/
                                    existing teamme_librarian_query tool, not a new one
   templates/                      scaffolding copied into a target project
     hooks/*.py                    project-agnostic; do not hard-code a project name
+    hooks/librarian-gate.py       PreToolUse on `git push` - asks, never denies, when the history
+                                   index is behind HEAD; see Rules for the hook scripts below
     intake.md                     skeleton with {{PLACEHOLDER}}s the command fills in
     settings.hooks.json           the hooks block merged into the project's settings.json
 ```
@@ -74,6 +81,10 @@ These run on other people's machines, inside their editing loop. They must:
 
 - **Fail open.** Missing, malformed or stale state, an unparseable payload, a path outside the
   project — every one of these allows the write. A broken guard must never block someone's work.
+  `ask` is a narrower second verb, not a loophole in this: a hook may prompt instead of silently
+  allowing, but only on a well-formed state it is genuinely confident about, and only `ask`, never
+  `deny`. See `CLAUDE.md`'s invariant #1 for the exact carve-out and `librarian-gate.py` for the one
+  hook that uses it.
 - **Never loop.** An enforcement hook that can fire repeatedly on an unchanged condition will trap a
   session. The `Stop` reminder stamps itself against the task's `status_changed` time, not `updated`,
   for this reason: only a real status transition re-arms it, so a `worklog.py note` — which moves

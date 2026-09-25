@@ -28,7 +28,9 @@ Two properties matter more than anything this file does:
 The `.db` is a separate matter and is not a choice: it is always ignored,
 whatever `commit_record` says, because a binary index cannot be merged. So is
 `.claude/librarians/sessions/`, for a stronger reason - it indexes conversation
-text, and `commit_record` must not be able to put that in a repository.
+text, and `commit_record` must not be able to put that in a repository. And so
+is the `indexed_head` marker, which says what THIS machine has indexed: sharing
+it would hand a teammate a marker that is already behind the commit carrying it.
 
 Neither of those two depends on anyone calling the configure tool. `ensure_ignored()`
 is called from `store.connect_file()` - the one funnel every librarian index is
@@ -69,8 +71,8 @@ GITIGNORE_END = "# end teamme librarians"
 GITIGNORE_NOTE = ("# Written automatically when a librarian index is created. Everything between "
                   "these two markers is teamme's; nothing outside them is ever removed.")
 
-# Always ignored, regardless of commit_record - two entries, for two different
-# reasons, neither of them a fork the user gets to take:
+# Always ignored, regardless of commit_record - three entries, for three
+# different reasons, none of them a fork the user gets to take:
 #
 #   the .db     a SQLite file is binary and unmergeable, so two people indexing
 #               different commits produce irreconcilable files.
@@ -81,9 +83,16 @@ GITIGNORE_NOTE = ("# Written automatically when a librarian index is created. Ev
 #               it. The whole directory is ignored rather than a file inside it,
 #               so nothing a later release adds under there can leak by being
 #               forgotten here.
+#   indexed_head  machine-local derived state, like the .db: it says what THIS
+#               machine has indexed, which is not a fact about the project. And
+#               committing it is loop fuel for the freshness gate it feeds - the
+#               commit that carries a refreshed marker is itself unindexed, so
+#               the marker would arrive on a teammate's machine already behind
+#               the HEAD it was committed with.
 DB_IGNORE = ".claude/librarians/index.db"
 SESSIONS_IGNORE = ".claude/librarians/sessions/"
-ALWAYS_IGNORED = (DB_IGNORE, SESSIONS_IGNORE)
+MARKER_IGNORE = ".claude/librarians/*/indexed_head"
+ALWAYS_IGNORED = (DB_IGNORE, SESSIONS_IGNORE, MARKER_IGNORE)
 # The append-only record. Ignored only when commit_record is false.
 RECORD_IGNORE = ".claude/librarians/*/commits.jsonl"
 
@@ -92,6 +101,9 @@ IGNORE_REASONS = {
                 "so never committed whatever commit_record says"),
     SESSIONS_IGNORE: ("# the session index holds conversation text; machine-local always, and "
                       "commit_record does not apply to it"),
+    MARKER_IGNORE: ("# what this machine has indexed, not a fact about the project - derived like "
+                    "the .db, and committing it would re-arm the freshness gate that asked for "
+                    "the refresh"),
     RECORD_IGNORE: ("# commit_record is false: the librarian record stays out of git. "
                     "Flip it with teamme_librarian_configure, not by hand"),
 }

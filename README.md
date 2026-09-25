@@ -76,6 +76,7 @@ about whether the work should happen still waits for `/intake`, on the day it is
 | `worklog-enforce.py session` | `SessionStart` | Surfaces unfinished and deferred work so nothing is lost across sessions |
 | `worklog-enforce.py stop` | `Stop` | Refuses to end a turn while a task is still marked active, so status gets recorded |
 | `preflight.py heartbeat` | `SessionStart` | Stamps evidence that hooks are firing here. Never blocks; always exits 0 |
+| `librarian-gate.py` | `PreToolUse` (`git push`) | **Asks — never denies** — when this project's history index is confidently behind `HEAD`. Stays silent on no index, `history` disabled, or any state it cannot read with confidence |
 
 ### Why the read-only phase is not plan mode
 
@@ -86,6 +87,9 @@ lock and lifts it exactly at approval.
 Every guard **fails open** — missing, malformed or stale state, an unparseable payload, a path
 outside the project — and the phase expires on a timeout. A crashed session can never leave a
 repository write-locked. Edits under `.claude/` are always allowed so the flow can manage itself.
+One hook is allowed a narrower second verb instead of silence: `librarian-gate.py` **asks** before a
+`git push` when it is confidently able to say the history index is behind — never denies, and every
+degraded or unreadable state it meets still falls back to silent allow, the same as every other hook.
 
 The `Stop` hook reminds at most once per status change — recording a note does not itself count as
 one, so narrating progress never re-triggers the reminder — and it enforces without any possibility
@@ -121,8 +125,12 @@ project, your choice) and `.claude/librarians/index.db` (a SQLite index derived 
 always gitignored — the rule is written the moment an index is first created, whether or not
 `teamme_librarian_configure` has ever been called, not only when a project happens to change the
 setting — and rebuildable from it with no git access at all — never commit the `.db`, since a binary
-file cannot be merged). `sessions` indexes this project's own conversation transcripts instead —
-see The session librarian below, where the storage answer is different and is not a per-project choice.
+file cannot be merged) plus `.claude/librarians/history/indexed_head` — a one-line marker of what
+this machine has indexed, read by the `librarian-gate.py` push reminder below, always gitignored for
+its own reason: it says what *this machine* has indexed, and committing it would hand a teammate a
+marker already behind the commit that carries it. `sessions` indexes this project's own conversation
+transcripts instead — see The session librarian below, where the storage answer is different and is
+not a per-project choice.
 
 | Tool | Answers |
 |---|---|
@@ -172,11 +180,21 @@ both say so — but that is an instruction, not a gate: nothing blocks a brief t
 nothing but convention stops another agent with MCP access from calling the librarian's tools
 directly instead.
 
+A `PreToolUse` hook, `librarian-gate.py`, complements the tools: on `git push` it **asks — never
+denies** — when this project's history index is confidently behind `HEAD`, naming how many commits
+and how to refresh. It reads the `indexed_head` marker above rather than the SQLite index itself,
+because the hook is copied into a project's `.claude/hooks/` while the librarian modules are not —
+reading the database from there would mean carrying a second copy of its schema into a file that
+drifts from the first. It stays silent — never asks — with no index at all, with `history` disabled,
+or on any state it cannot confidently read: a missing or unparseable marker, one unreachable from
+`HEAD` after a rebase or force-push, or `git` missing. There is no reminder-only switch: the hook
+reads the same `enabled` flag as the tools below, so silencing it means disabling `history` itself.
+
 `teamme_librarian_configure` controls it per project:
 
 | Setting | Default | Effect |
 |---|---|---|
-| `enabled` (per librarian) | `true` | `false` makes `teamme_librarian_refresh` and `teamme_librarian_query` refuse for that librarian and name how to re-enable it; `teamme_librarian_status` keeps reporting the setting either way. The agent itself is always present — a plugin-shipped agent cannot be hidden per project — it is the tools behind it that refuse. |
+| `enabled` (per librarian) | `true` | `false` makes `teamme_librarian_refresh` and `teamme_librarian_query` refuse for that librarian and name how to re-enable it; for `history`, it also silences `librarian-gate.py`'s push reminder, since the hook checks the same flag — there is no reminder-only switch. `teamme_librarian_status` keeps reporting the setting either way. The agent itself is always present — a plugin-shipped agent cannot be hidden per project — it is the tools behind it that refuse. |
 | `commit_record` | `false` | Whether `.claude/librarians/*/commits.jsonl` (the append-only record) is committed with the code or kept out of it. Flipping it **writes or removes the actual `.gitignore` entry**, inside a block teamme owns alone — it never removes an ignore line it did not write, and if a line outside that block is already ignoring the record, it says so rather than leaving `commit_record: true` silently without effect. `.claude/librarians/index.db`, the derived SQLite index, is always gitignored regardless — it is binary and cannot be merged. |
 
 Both entries are re-derived from the current configuration every time an index is opened — including

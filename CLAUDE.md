@@ -45,6 +45,9 @@ plugins/teamme/
                                    existing teamme_librarian_query tool, not a new one
   templates/                      scaffolding the commands COPY into a target project
     hooks/*.py                    project-agnostic hook scripts, including preflight.py
+    hooks/librarian-gate.py       PreToolUse on `git push`: ASKS (never denies) when the history
+                                   index is behind HEAD, reading a one-line marker rather than the
+                                   database - see Design invariants #1 and Decisions already made
     intake.md                     skeleton with {{PLACEHOLDER}}s the command fills in
     settings.hooks.json           the hooks block merged into the project's settings.json
 scripts/validate.sh               manifests + hook/MCP syntax + preflight states + end-to-end smoke test
@@ -209,13 +212,46 @@ one. And the `pad_minutes` boundary is checked at the second: a commit that land
 task's `status_changed` is missed at `pad_minutes=0` and caught by the default 15-minute pad, with the
 widened window reported in the answer rather than applied silently.
 
+The freshness gate that closes the loop on the history librarian — `librarian-gate.py`, a `PreToolUse`
+hook on `git push` — gets five sections of its own against real git fixtures, the hook always run as a
+subprocess and never imported, plus a sixth under `preflight.py`'s own coverage: a refresh clears a
+proven-stale gate, and the pathspec exclusion that makes that possible is watch-failed by re-running a
+scratch copy with the exclusion removed, which re-arms on its own refresh commit and is asserted to
+count exactly one; the ask-and-never-deny contract is checked structurally, not by grepping for the
+word "deny" — the assertion enumerates every `permissionDecision` literal the source can emit and
+requires the set to be exactly `{"ask"}`; the push/non-push classification boundary is pinned with
+three matching and three non-matching commands against the same stale fixture; and seven fail-open
+branches are asserted silent — not a push, no index at all, the `history` librarian disabled, an
+unparseable `config.json`, a marker that is not a commit hash, a marker unreachable from `HEAD`
+(watch-failed by removing the reachability check on a scratch copy, which then wrongly asks on the
+rebase fixture), and `git` missing from `PATH`. Two of those seven — no index, and git missing — are
+each guarded by two independent mechanisms, so neither is watch-failable by one surgical break; the
+lane verified both by hand and said so rather than claiming a watch-fail it did not perform. The
+disabled-librarian and unparseable-config branches are proven by differential — the same stale fixture
+with one file changed — not by breaking `history_enabled()` itself. `preflight.py` gets the sixth
+section: `librarian-gate.py` missing from an otherwise-complete install drives `installed-outdated`,
+names the file in the `hooks` check's detail line, and is never told to run `init-team` — T23 surviving
+a seventh entry in `REQUIRED_HOOKS`. The marker's own gitignore status is proven under both
+`commit_record` values with `git check-ignore` as ground truth, the same style the rest of the
+librarian's privacy guarantee is checked. What none of this proves: the count is `HEAD`-relative, not
+push-relative — the hook never contacts a remote, and pinning that boundary would mean building a fake
+upstream for a property the code already makes structurally true by never calling one; and shallow
+clones remain unfixtured, as they already are for `history.py` generally (see Known gaps).
+
 ## Design invariants
 
 These are not style preferences. Breaking one ships a trap to someone else's machine.
 
-1. **Hooks fail open.** Missing, malformed or stale state, an unparseable payload, a path outside
-   the project — every one of these must ALLOW the write. A broken guard must never block work. The
-   phase lock also expires on a timeout so a crashed session cannot leave a repo write-locked.
+1. **Hooks fail open — with exactly one carve-out.** Missing, malformed or stale state, an
+   unparseable payload, a path outside the project — every one of these must ALLOW the write. A
+   broken guard must never block work. The phase lock also expires on a timeout so a crashed session
+   cannot leave a repo write-locked. The carve-out: a hook MAY **ask** instead of silently allowing,
+   but only on a well-formed state it is genuinely confident about — `librarian-gate.py`'s `git push`
+   reminder is the one hook that does this, and only when the history index exists, is enabled, and
+   its marker parses and is reachable from `HEAD` with a positive commit count behind it. Every other
+   branch, including every failure to read or parse that same state, still ALLOWs. `deny` remains
+   reserved for the intake write guard alone; no other hook denies anything, and `ask` is never a
+   license to add one.
 2. **Enforcement hooks cannot loop.** A `Stop` hook that re-fires on an unchanged condition traps
    the session. The reminder stamps itself against the task's `status_changed` time, never against
    `updated`: only a real status transition re-arms it, so recording a note — which moves `updated`
@@ -485,6 +521,35 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   scanning `projects/` for a directory whose transcripts declare this project as their own `cwd` —
   ground truth from the files themselves, not a second encoding guess — and only after that returns a
   named "nothing found" rather than ever guessing.
+- **The push reminder reads a text marker, never the database — and `ask` is a deliberately narrow
+  second verb, not a weakening of invariant #1.** `librarian-gate.py` is a `PreToolUse` hook on `git
+  push`: it prompts, never denies, when the project's history index is confidently behind `HEAD`. It
+  is *copied* into a project's `.claude/hooks/`; `server/librarian/` is not, so the hook cannot import
+  `history.py` and cannot query the SQLite index directly without carrying a second copy of its schema
+  into a file that will drift from the first — the exact shape of T22/T23/T26/T40. Instead
+  `history.index()` publishes `.claude/librarians/history/indexed_head`, one line, the indexed commit
+  hash, from the same statement that writes `META_LAST_INDEXED` to the database — a derivation with a
+  single writer, not a second copy. The residual risk is stated rather than hidden: the marker and the
+  database can still diverge if something outside the indexer touches one of them (a hand edit, a
+  restore from git, a half-finished write), so `teamme_librarian_status` reports the marker three ways
+  — published and agreeing, not yet published, or `MARKER DIVERGED` (naming both hashes and pointing at
+  `teamme_librarian_refresh`, which rewrites both together) — rather than trusting it silently.
+  `.claude/librarians/*/indexed_head` joins the always-gitignored set for a third, distinct reason: the
+  `.db` is excluded because binary cannot merge, `sessions/` because a transcript is a private surface,
+  the marker because it is a statement about what *this machine* has indexed, and committing it would
+  hand a teammate a marker already behind the commit that carries it — which is also loop fuel (next).
+  The gate is opt-in by construction, not by a separate switch: no index on disk means silence, so a
+  project that never asked for a librarian is never nagged, and there is no way to keep the reminder
+  while turning the rest of `history` off — disabling `history` (`teamme_librarian_configure`) silences
+  the gate along with `refresh` and `query`, on purpose, because the gate reads the same enabled flag.
+- **The gate's own remedy must not re-arm it, and that was measured, not argued.** With
+  `commit_record=true`, refreshing writes `commits.jsonl`, so the commit that carries the refreshed
+  record is itself unindexed the instant it lands. `librarian-gate.py`'s `rev-list` excludes
+  `.claude/librarians` by pathspec for exactly this reason: measured at the same marker, the count came
+  back 1 (the refresh's own commit) without the exclusion and 0 with it, and `validate.sh` turned that
+  measurement into a watch-fail — a scratch copy with the exclusion removed re-arms and is asserted to
+  count exactly that one commit. Same shape as invariant #2's `status_changed`-not-`updated` stamp: an
+  enforcement hook must never be able to react to its own effect.
 
 ## Known gaps
 
@@ -572,7 +637,10 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   in `hotspots` — the same word carrying two different thresholds, each documented correctly in
   isolation but not called out as differing between the two queries.
 - Shallow-clone behaviour is untested. `history.probe()` reports `shallow: true` and `index()` notes
-  it in the result, but no `validate.sh` fixture is an actual shallow clone.
+  it in the result, but no `validate.sh` fixture is an actual shallow clone. The same gap reaches
+  `librarian-gate.py`: its docstring says a shallow clone falls into the same silent branch as a
+  rebase or force-push (the marker reads as unreachable from `HEAD`), but no fixture proves that path
+  either.
 - Merge commits get `commit_parents` rows but no `files_changed` rows (`git log --numstat` reports no
   diff for a merge without `-m`/`-c`). Whether a merge needs file rows is a phase-2 decision, if the
   reasoning layer ends up needing merge diffs.
@@ -612,6 +680,17 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   index has ever been built here — `commits.jsonl` is this repo's only librarian file, and it is
   tracked by deliberate choice, unrelated to this fix. The first `teamme_librarian_refresh
   {"librarian": "sessions"}` run in this repo will write the rule itself; nothing needs doing by hand.
+- **Two of `librarian-gate.py`'s seven fail-open branches are proven only by hand, not by a
+  `validate.sh` watch-fail.** No-index and git-missing are each guarded by two independent mechanisms
+  inside the hook, so neither is watch-failable by a single surgical break; the validation lane
+  verified both manually and said so rather than claiming a watch-fail it did not perform. The
+  disabled-librarian and unparseable-config branches are proven by differential instead — the same
+  stale fixture with one file changed — rather than by breaking `history_enabled()` directly.
+- **The push reminder's commit count is `HEAD`-relative, not push-relative.** `librarian-gate.py`
+  never contacts a remote and contains no remote call, so what it counts is commits since the marker
+  on `HEAD`, not commits the push is actually about to transfer. Left unpinned deliberately: pinning
+  it against a real remote would mean building a fake upstream in `validate.sh` for a property the
+  code already makes structurally true by never calling one.
 
 ## Conventions
 

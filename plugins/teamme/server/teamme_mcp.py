@@ -1067,6 +1067,26 @@ def tool_librarian_status(root: pathlib.Path, args: dict) -> dict:
         if st.get("last_indexed_hash"):
             lines.append(f"  last indexed:    {st['last_indexed_hash'][:12]}"
                          + (f" at {st['last_refresh_at']}" if st.get("last_refresh_at") else ""))
+        # The marker the copied librarian-gate hook reads. It is written from the
+        # same statement that sets the database's own last-indexed hash, so the
+        # two can only disagree if something outside the indexer touched one of
+        # them - a hand edit, a restore from git, a half-finished write. That is
+        # the single failure this design has, so it is stated here rather than
+        # left to be discovered as a push reminder counting from the wrong commit.
+        if st.get("has_data") or st.get("marker_published"):
+            if st.get("marker_matches_index") is False:
+                lines.append(
+                    f"  MARKER DIVERGED: {st.get('marker')} says {str(st.get('marker_head'))[:12]}, "
+                    f"the index says {str(st.get('last_indexed_hash'))[:12]}. The push reminder "
+                    f"counts from the marker, so it is counting from the wrong commit. Run "
+                    f"teamme_librarian_refresh - it rewrites both together."
+                )
+            elif st.get("marker_published"):
+                lines.append(f"  indexed_head:    published, agrees with the index "
+                             f"(read by the librarian-gate hook; never committed)")
+            else:
+                lines.append("  indexed_head:    not published - the push reminder stays silent "
+                             "until the next refresh writes it")
         if st.get("head"):
             lines.append(f"  HEAD:            {st['head'][:12]}")
         behind = st.get("commits_behind_head")

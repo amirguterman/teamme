@@ -3,6 +3,16 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-09-25
+
+### Added
+- `librarian-gate` hook: fires on `git push` to ask when the project's history index is behind `HEAD`. It names how many commits are unindexed and suggests refreshing with `teamme_librarian_refresh {"librarian": "history"}`. This is a **reminder, never a block** — approving the prompt proceeds with the push exactly as it would if the hook did not exist. Silent when no index exists, the index is current, or the history librarian is disabled (disabling it also makes `teamme_librarian_refresh` and `teamme_librarian_query` refuse; there is no reminder-only switch).
+- `.claude/librarians/history/indexed_head` marker file: written by the indexer beside the append-only record, naming the commit hash that was last indexed. Read by `librarian-gate` to compare against `HEAD` without needing to open the SQLite database.
+
+### Changed
+- **Upgrade note: every existing install is now `installed-outdated`.** A seventh hook script (`librarian-gate.py`) now ships; a complete install from 0.7.0 has six. This is the designed behaviour — missing hook scripts are repair conditions, never install conditions (see CLAUDE.md, T23 for the reasoning). Repair with `/teamme:team-doctor` or the `teamme_install` MCP tool. **Never `/teamme:init-team`**, which re-runs the questionnaire and regenerates the roster over a team that already works.
+- `.gitignore` protection now covers `.claude/librarians/*/indexed_head` in addition to `index.db` and `sessions/`. The marker is always ignored, like the database — it is machine-local derived state (what this machine indexed) and sharing it would hand a teammate a marker already behind the commit carrying it.
+
 ## [0.7.0] - 2026-09-25
 
 ### Added

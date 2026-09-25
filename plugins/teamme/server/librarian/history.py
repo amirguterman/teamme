@@ -48,6 +48,14 @@ FORMAT = ("format:%x01%H%x1f%h%x1f%an%x1f%ae%x1f%aI%x1f%at%x1f%P%x1f%s%x1f%b%x02
 HEX = re.compile(r"^[0-9a-f]{7,64}$")
 GIT_TIMEOUT = 600
 
+# One line, the indexed commit hash, newline-terminated, beside the record.
+# It exists for readers that cannot open the database: the copied hook
+# `.claude/hooks/librarian-gate.py` runs inside a project where
+# `server/librarian/` was never copied, so it cannot import this module, and a
+# second copy of the schema in a file that drifts from it is the exact failure
+# this repo has paid for before. A text marker has no schema to drift.
+MARKER_NAME = "indexed_head"
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -114,6 +122,45 @@ def reachable(root, rev: str) -> bool:
         return False
     rc, _, _ = git(root, ["merge-base", "--is-ancestor", rev, "HEAD"])
     return rc == 0
+
+
+def marker_path(project_dir=None):
+    """Where the indexed-head marker lives: beside the record it describes."""
+    return store.history_dir(project_dir) / MARKER_NAME
+
+
+def write_marker(project_dir, head: str):
+    """Publish `head` as the indexed head. Returns a problem string, or None.
+
+    Atomic (temp + os.replace), so a reader never sees half a hash, and it NEVER
+    raises: an index that succeeded but could not publish its marker is still a
+    successful index. The caller records the failure in its result rather than
+    turning it into an indexing error.
+    """
+    if not head or not HEX.match(str(head)):
+        return f"refusing to publish {head!r} as the indexed head: not a commit hash"
+    path = marker_path(project_dir)
+    tmp = path.with_name(f".{MARKER_NAME}.{os.getpid()}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(str(head) + "\n", encoding="utf-8")
+        os.replace(str(tmp), str(path))
+        return None
+    except Exception as exc:
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
+        return f"could not write {path}: {exc}"
+
+
+def read_marker(project_dir=None):
+    """The published indexed head, or None. Never raises."""
+    try:
+        text = marker_path(project_dir).read_text(encoding="utf-8").strip()
+    except Exception:
+        return None
+    return text if HEX.match(text) else None
 
 
 def count_since(root, marker: str):
@@ -418,6 +465,20 @@ def index(project_dir=None, full: bool = False) -> dict:
             store.set_meta(conn, store.META_LAST_INDEXED, p["head"])
             store.set_meta(conn, store.META_LAST_REFRESH, _now())
 
+        # The same place, on purpose: the text marker and META_LAST_INDEXED are
+        # written from one statement about what "indexed" means, so there is one
+        # writer and the two cannot drift into disagreeing.
+        problem = write_marker(root, p["head"])
+        result["marker_path"] = str(marker_path(root))
+        result["marker_published"] = problem is None
+        if problem:
+            result["marker_problem"] = problem
+            result["notes"].append(
+                f"the index is up to date, but the indexed-head marker could not be published "
+                f"({problem}). Readers that cannot open the database - the librarian-gate hook - "
+                f"will stay silent rather than guess."
+            )
+
         result["ok"] = True
         result["head"] = p["head"]
         result["last_indexed_hash"] = p["head"]
@@ -454,6 +515,9 @@ def status(project_dir=None) -> dict:
     out["head"] = p["head"]
     if p.get("error"):
         out["error"] = p["error"]
+    out["marker"] = str(marker_path(root))
+    out["marker_head"] = read_marker(root)
+    out["marker_published"] = out["marker_head"] is not None
     rec = store.read_records(root)
     out["jsonl_records"] = len(rec["records"])
     out["jsonl_unparsable_lines"] = rec["skipped"]
@@ -477,6 +541,15 @@ def status(project_dir=None) -> dict:
         out["last_indexed_hash"] = store.get_meta(conn, store.META_LAST_INDEXED)
         out["last_refresh_at"] = store.get_meta(conn, store.META_LAST_REFRESH)
         out["has_data"] = bool(out.get("commits"))
+        # The one failure this design has: the marker and the database saying
+        # different things. They are written together, so a divergence means a
+        # marker was edited, restored from git, or a write failed - and the hook
+        # that reads the marker would then be counting from the wrong commit.
+        # Diagnosable here rather than invisible.
+        out["marker_matches_index"] = (
+            out["marker_head"] == out["last_indexed_hash"]
+            if (out["marker_head"] and out.get("last_indexed_hash")) else None
+        )
         if p["repo"] and out.get("last_indexed_hash"):
             if reachable(root, out["last_indexed_hash"]):
                 out["commits_behind_head"] = count_since(root, out["last_indexed_hash"])

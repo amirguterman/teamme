@@ -62,6 +62,7 @@ REQUIRED_HOOKS = (
     "worklog-enforce.py",
     "worklog.py",
     "preflight.py",
+    "librarian-gate.py",
 )
 REQUIRED_EVENTS = ("UserPromptSubmit", "PreToolUse", "SessionStart", "Stop")
 SETTINGS_FILES = ("settings.json", "settings.local.json")

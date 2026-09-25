@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "next_id": 41,
+  "next_id": 44,
   "tasks": [
     {
       "id": "T1",
@@ -204,7 +204,7 @@
     {
       "id": "T14",
       "title": "Ship 3 librarian agents + MCP servers: self-updating project indexes, selectable in /init-team, wired to the lanes that consult them",
-      "status": "open",
+      "status": "done",
       "priority": "P0",
       "lane": "teamme-prompt-author",
       "notes": [
@@ -235,12 +235,14 @@
         "PHASE 1 SCOPE (approved): the substrate only - no agents, no gate, no new project-copied files. Deliberate: the indexer and store live in the PLUGIN (server/librarian/), invoked by the MCP server, so nothing joins REQUIRED_HOOKS. That avoids T23's trap by construction rather than by remembering - a copied indexer would make every future librarian grow the required-hooks list again. Deliverables: SQLite schema + rebuild-from-text, incremental git indexer, MCP query/refresh/status tools, validate.sh coverage including 'a refresh clears the staleness signal' (the assertion that would have caught T10), and a MEASUREMENT on this repo of cold index, warm refresh and query latency. Phases 2-5 (librarian tier, remaining librarians, gate, session librarian T30) are specified but not dispatched; the measurement decides whether they proceed as designed.",
         "Phase 1 dispatched as T31 (librarian substrate). T14 stays open as the umbrella for phases 2-5.",
         "PHASE 1 VERIFIED LIVE UNDER THE REAL HARNESS, which nothing had done before - validate.sh drives the tools over a test pipe, not through Claude Code's own MCP client. teamme_status: live, 6/6 hooks matching the plugin's copies (freshness resolved via the MCP server's own path hint, the first resolution rung). teamme_librarian_status on an unindexed project: correctly reports no data and names the refresh tool rather than erroring. teamme_librarian_refresh: full index of this repo in 0.117s, 12 commits / 136 file changes. teamme_librarian_query commits_touching on preflight.py: 5 rows with subjects and +/- line counts, which read as the actual development story of that file. The tool descriptions carry the INTENDED CALLER convention and say plainly that phase 1 does not enforce it.",
-        "CORRECTION to note ~22 and to how I have been describing it: plugin-shipped agents do NOT have permissionMode/hooks/mcpServers ignored *silently* - the CLI prints a warn-level message naming the ignored key. The constraint is unchanged (a plugin agent still cannot carry its own hooks, which is why librarians are query-only), but the hazard is narrower than I stated: it is visible at load time, just not caught by anything in this repo."
+        "CORRECTION to note ~22 and to how I have been describing it: plugin-shipped agents do NOT have permissionMode/hooks/mcpServers ignored *silently* - the CLI prints a warn-level message naming the ignored key. The constraint is unchanged (a plugin agent still cannot carry its own hooks, which is why librarians are query-only), but the hazard is narrower than I stated: it is visible at load time, just not caught by anything in this repo.",
+        "PHASE 4 (the freshness gate) LANDED AS T41 - and that completes the umbrella. All five phases are now done: 1 substrate (T31), 2 the librarian tier (T33), 3 co-change (T34), 4 the gate (T41), 5 the session librarian (T30). Closing T14. Note that the TITLE was wrong for most of this task life - \"3 librarian agents, selectable in /init-team\" - corrected mid-flight to two tiers with librarians shipped by the plugin and never roster-selectable. Two librarians shipped, not three, and the third (compliance) was never built; the reasoning for absorbing co-change into history-librarian rather than adding a code librarian is in CLAUDE.md. T28 (worklog has no retitle action) is exactly the gap that let a wrong title ride this long."
       ],
       "blocked_on": "",
       "created": "2026-09-17T18:05:01+00:00",
-      "updated": "2026-09-24T17:50:37+00:00",
-      "status_changed": "2026-09-17T18:20:55+00:00"
+      "updated": "2026-09-25T08:24:30+00:00",
+      "status_changed": "2026-09-25T08:24:30+00:00",
+      "dispatched_to": ""
     },
     {
       "id": "T15",
@@ -550,12 +552,13 @@
       "lane": "teamme-hook-engineer",
       "notes": [
         "OBSERVED, not theoretical: during T31 the docs lane (teamme-docs-writer, tools Read/Edit/Write/Grep/Glob - no Bash) appended its note by editing .claude/intake/worklog.json with Edit, concurrently with the orchestrator writing notes through worklog.py's O_EXCL lock. It happened to survive - valid JSON, 31 tasks, all notes intact, no debris - but that is luck. The lock exists precisely because 3 of 24 notes were measurably lost before it was added. Two agents in the shipped roster template have no Bash, so they have no correct option: the ledger is the one file every lane must write and the only writer is a CLI. FIXES WORTH WEIGHING: (a) give every generated agent Bash scoped to worklog.py, (b) expose the worklog over the MCP server so a Bash-less agent can write it safely - teamme_worklog ALREADY EXISTS and does exactly this, so the real gap may just be that generated agents are never told to use it, (c) have the orchestrator record notes on the lane's behalf. (b) looks strongest and nearly free. Same defect class as the prompt-author lane being unable to git mv.",
-        "A THIRD failure mode for writing the ledger, distinct from the no-Bash one this task already records: writing a note THROUGH bash silently corrupts any backticked identifier, because the shell substitutes it as a command. It happened to me just now on T37 - the note recorded with its identifiers missing and no error, and only a re-read caught it. bash printed \"configure: command not found\" to stderr, which is easy to miss in a long output. The ledger is append-only, so a corrupted note cannot be repaired, only superseded. Relevant to this task because the proposed fix - route notes through the teamme_worklog MCP tool instead of the worklog.py CLI - removes the shell from the path entirely and fixes all three failure modes at once: no-Bash agents can write, the lockfile is respected, and no shell metacharacter can eat content."
+        "A THIRD failure mode for writing the ledger, distinct from the no-Bash one this task already records: writing a note THROUGH bash silently corrupts any backticked identifier, because the shell substitutes it as a command. It happened to me just now on T37 - the note recorded with its identifiers missing and no error, and only a re-read caught it. bash printed \"configure: command not found\" to stderr, which is easy to miss in a long output. The ledger is append-only, so a corrupted note cannot be repaired, only superseded. Relevant to this task because the proposed fix - route notes through the teamme_worklog MCP tool instead of the worklog.py CLI - removes the shell from the path entirely and fixes all three failure modes at once: no-Bash agents can write, the lockfile is respected, and no shell metacharacter can eat content.",
+        "THIRD DOCUMENTED INSTANCE, this time costing a lane its own bookkeeping: teamme-prompt-author has no Bash tool, so it could neither run ./scripts/validate.sh nor record its own worklog note. It reported both gaps honestly and handed them back rather than claiming verification it did not have - which is the good outcome, but it means every no-Bash lane silently depends on the dispatcher to close its ledger entry. The proposed fix (route notes through the existing teamme_worklog MCP tool) would close the note half; the validate.sh half is separate and may be unfixable for a no-Bash lane by design."
       ],
       "blocked_on": "",
       "dispatched_to": "",
       "created": "2026-09-24T15:57:49+00:00",
-      "updated": "2026-09-25T03:36:20+00:00",
+      "updated": "2026-09-25T08:02:59+00:00",
       "status_changed": "2026-09-24T15:57:49+00:00"
     },
     {
@@ -719,6 +722,63 @@
       "created": "2026-09-25T03:18:19+00:00",
       "updated": "2026-09-25T03:57:57+00:00",
       "status_changed": "2026-09-25T03:57:57+00:00"
+    },
+    {
+      "id": "T41",
+      "title": "Librarian freshness gate (T14 phase 4): ask on git push when the history index is behind HEAD",
+      "status": "done",
+      "priority": "P0",
+      "lane": "",
+      "notes": [
+        "DESIGN: the gate is a PreToolUse hook on Bash, narrowed to git push, that returns permissionDecision \"ask\" - never \"deny\". It fires only when a history index EXISTS and is behind HEAD. No index = allow (a project that never asked for a librarian is never nagged); librarian disabled = allow; git missing, unparseable payload, unresolvable project root, marker unreadable = allow. Invariant #1 is upheld in full: every degraded state allows.",
+        "HOW THE HOOK LEARNS WHAT IS INDEXED, and why not by reading the DB: the hook is COPIED into a project (.claude/hooks/) and server/librarian/ is NOT, so it cannot import history.py. Reading the SQLite meta table from the hook would put a second copy of the schema in the copied file - the exact drift class this repo has paid for four times. Instead history.index() writes a one-line text marker .claude/librarians/history/indexed_head on every successful index, from the same place that sets META_LAST_INDEXED. One writer, one derived publication. The hook reads that line and asks git; it needs no sqlite3 and no plugin resolution.",
+        "THE LOOP BUG, pre-empted: staleness must be counted with the librarians own store excluded - git rev-list --count MARKER..HEAD -- . :!.claude/librarians - or, when commit_record is true, the commit that carries the refreshed commits.jsonl is itself unindexed and re-arms the gate that demanded it. This is invariant #2 in another costume and is the same shape as T10 (stamp against status_changed, never updated). The marker file itself joins config.ALWAYS_IGNORED (.claude/librarians/*/indexed_head) - it is machine-local derived state like the .db, and committing it is loop fuel.",
+        "SCOPE: history only. The sessions librarian has no notion of being behind HEAD and is not consulted by this gate - say so in the docs rather than leaving a reader to wonder. Also: adding a hook script grows REQUIRED_HOOKS, so every existing install becomes installed-outdated on upgrade and is told to run /teamme:team-doctor, never /teamme:init-team. That is the designed path T23 paid a P0 for; the release notes must say it plainly.",
+        "hook-engineer: shipped the gate. history.py writes .claude/librarians/history/indexed_head atomically beside the META_LAST_INDEXED write (one writer); a failed marker write leaves ok=true plus marker_published=false and a note. config.py: MARKER_IGNORE .claude/librarians/*/indexed_head added to ALWAYS_IGNORED - verified protected at store.connect_file() -> ignore_guard -> config.ensure_ignored, with git check-ignore as ground truth. New templates/hooks/librarian-gate.py: PreToolUse/Bash, ask-only, silent on non-push, no index, disabled librarian, bad/unreachable marker, git missing, 4s git timeout, malformed payload. Count excludes ':!.claude/librarians' - measured: without it the commit carrying a refreshed commits.jsonl counts 1 and re-arms the gate forever; with it, 0. Registered as a second PreToolUse group; added to REQUIRED_HOOKS (missing = installed-outdated, 7/7); teamme_librarian_status now reports the marker and a marker/index divergence. validate.sh passes (no new assertions - validation lane next).",
+        "HOOK LANE LANDED. New templates/hooks/librarian-gate.py; marker written by history.index() beside the META_LAST_INDEXED set; MARKER_IGNORE joins ALWAYS_IGNORED; second PreToolUse group (matcher Bash); REQUIRED_HOOKS now 7; teamme_mcp status prints a three-way marker line including MARKER DIVERGED. Verified independently by me: exactly one \"deny\" in the hook (a docstring sentence), all 7 template/copy pairs byte-identical, the pathspec exclusion present with its reasoning at the call site. THE LOOP WAS MEASURED, NOT ARGUED: with commit_record=true, rev-list at the same marker returns 1 without the exclusion and 0 with it. _check_settings needed no change - it asserts REQUIRED_EVENTS has a truthy entry, never matchers, so a second PreToolUse group needs no list to grow.",
+        "PROMPT LANE LANDED. init-team.md names librarian-gate.py in the copy-verbatim list (invariant #5) and the shared guardrail block now tells team agents what to do when they MEET the ask - consult history-librarian, which refreshes - because team agents have no librarian tools and editing .claude/librarians/ to quiet a prompt is never the answer. team-doctor.md gained a \"My push started asking me something\" section. history-librarian.md now owns the stale-index contract: a librarian answering from an index behind HEAD says so IN the answer, plus a three-row table for the indexed_head line and a refusal bullet saying it cannot silence the reminder. templates/intake.md deliberately UNCHANGED - the contract is owned by the librarian prompt and restating it there would be a second copy of a fact owned elsewhere, in the one file that gets worse with every added line. Verified by me: frontmatter parses on all five prompt files, no FORBIDDEN_AGENT_KEYS.",
+        "PROMPT LANE FOUND, and it is a real gap in the product: configure() takes librarian/enable/commit_record and nothing else, so there is NO gate-only switch. Silencing the push reminder means disabling the history librarian entirely, which also makes refresh and query refuse. The lane wrote that cost in as its own bolded sentence rather than letting a reader assume a narrow opt-out exists. Whether a gate:off setting should exist is a real question this phase did not answer - see T43.",
+        "VALIDATION LANDED AND VERIFIED BY ME: ./scripts/validate.sh exit 0, 64 -> 70 sections, 13.5s (no measurable regression). The never-denies assertion is structural, not a grep for the word: it enumerates every decision literal the source can emit and requires the set to equal exactly {\"permissionDecision\": \"ask\"} - I re-ran that myself and it does. Two real watch-fails: deleting the pathspec exclusion made the broken hook re-arm on its own refresh commit and print an ask for 1 commit; deleting the reachability return made it wrongly ask on the rebase fixture.",
+        "HONEST LIMITS OF THE NEW COVERAGE, from the validation lane, for the docs lane to carry: (1) the git-missing and no-index fail-open branches are each guarded by TWO independent mechanisms, so neither is watch-failable by one surgical break - the lane verified both by hand and said so rather than claiming a watch-fail it did not perform. That is defense in depth, not a coverage gap, but those two assertions rest on differential proof. (2) the disabled-librarian and unparseable-config branches were proven by differential (same stale repo, one file changed) rather than by breaking history_enabled(). (3) HEAD-relative-not-push-relative is left unpinned: no fixture ever configures a remote and the hook contains no remote call, so pinning it would mean building a fake upstream for a property the code makes structurally true. (4) shallow clone still unfixtured, as it already is for history.py generally.",
+        "DOCS LANDED. Invariant #1 is now \"Hooks fail open - with exactly one carve-out\": a hook MAY ask instead of silently allowing, but only on a well-formed state it is genuinely confident about, and deny stays reserved for the intake write guard alone, with the explicit sentence that ask is never a license to add one. Two new Decisions entries (marker-not-DB with its residual divergence risk; the pathspec exclusion, framed as measured not argued). Three new Known-gaps entries. Verified by me: validate.sh exit 0 with the docs in, and the two READMEs diverge by exactly 20 lines both before and after this change - the docs lane introduced no new drift between them.",
+        "DOCS LANE MADE A GOOD REFUSAL: it declined to hardcode \"seven hooks\" into the install-and-verify section, because that section already says generically \"the release that adds the next hook script\". A number in prose is a copy that goes stale on the next release - the same instinct that drove the P0 fix to installed derivation. It also re-read the existing \"this repo has no sessions/ entry\" gap against the real .gitignore and confirmed it is still true rather than assuming it had gone stale - the right response to being told that gap entries outlive their gaps.",
+        "RELEASE CORRECTED AND VERIFIED. Two fixes sent back and applied: (1) a 0.7.0 fact was restated under 0.8.0 Changed - the clause \"written on every index open rather than only when configuration is called\" describes the 0.7.0 privacy fix documented directly below it, so a reader takes it as new. Accurate text, wrong thing implied - the same defect class as 0.6.0s stale identifiers. Clause dropped; the new fact (the marker joins the always-ignored set) now stands alone. (2) the no-opt-out cost was missing, and the lane reasoning that the entry never mentions configuration was broken by the entry itself: the Added bullet lists \"the history librarian is disabled\" as a silence condition, which teaches a reader the remedy without its price. Cost now stated inline. 0.8.0 verified by me: validate.sh exit 0, 70 sections."
+      ],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-25T07:46:15+00:00",
+      "updated": "2026-09-25T08:24:30+00:00",
+      "status_changed": "2026-09-25T08:24:30+00:00"
+    },
+    {
+      "id": "T42",
+      "title": "store.ignore_guard imports config without a loose-module fallback, so a loose import silently skips the gitignore protection",
+      "status": "open",
+      "priority": "P1",
+      "lane": "",
+      "notes": [
+        "Found by the hook lane while VERIFYING the connect_file -> ignore_guard -> ensure_ignored chain for T41, not by inspection. Every other cross-module import under server/librarian/ carries an except ImportError loose fallback; ignore_guard does \"from . import config\" with none. Import store as a loose module (sys.path.insert on server/librarian, then import store) and the ImportError is swallowed into a problem dict nobody inspects at connect_file - no .gitignore written, no error surfaced. NOT a live defect: both real callers import it as a package (teamme_mcp.py via importlib.import_module(\"librarian.store\"), validate.sh via \"from librarian import store\"), so neither production nor CI reaches it. The hazard is that the one code path carrying the privacy guarantee is also the one that degrades silently under an import style the rest of the package tolerates. Fix is one except ImportError away; the harder question is whether a swallowed problem dict at connect_file should be silent at all."
+      ],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-25T07:58:06+00:00",
+      "updated": "2026-09-25T07:58:06+00:00",
+      "status_changed": "2026-09-25T07:58:06+00:00"
+    },
+    {
+      "id": "T43",
+      "title": "No gate-only switch: silencing the push reminder means disabling the history librarian entirely, which also makes refresh and query refuse",
+      "status": "open",
+      "priority": "P2",
+      "lane": "",
+      "notes": [
+        "Surfaced by the prompt lane while writing team-doctor.md for T41: it went looking for the sanctioned way to silence the reminder and found configure() takes only librarian/enable/commit_record. So the answer to \"this prompt is annoying me\" is currently \"turn off the librarian\", which also costs you refresh and query - a blunt instrument for a narrow complaint. Deliberately NOT fixed in phase 4: a gate setting is new config surface, and the right time to add it is after someone has actually been annoyed by the gate, not before. If it is added, it belongs in config.json beside enabled/commit_record and must be enacted rather than merely recorded - the 0.7.0 lesson that a documented default nothing enacts is not a default."
+      ],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-25T08:03:07+00:00",
+      "updated": "2026-09-25T08:03:07+00:00",
+      "status_changed": "2026-09-25T08:03:07+00:00"
     }
   ]
 }

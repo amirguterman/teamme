@@ -108,8 +108,11 @@ anything risky to remove. Prefer reversible disables over deletion.
 **Do not re-author the scaffolding.** This command ships working, tested copies at
 `${CLAUDE_PLUGIN_ROOT}/templates/`. Copy them verbatim rather than writing them from memory:
 - `templates/hooks/*.py` → `<project>/.claude/hooks/` (the routing hook, the read-only guard, the
-  phase lock, the work log and its enforcement hooks, and the preflight check the installed
-  `/intake` runs). These are project-agnostic - do not edit them.
+  phase lock, the work log and its enforcement hooks, the preflight check the installed `/intake`
+  runs, and `librarian-gate.py` - the freshness reminder that, on a `git push`, asks for confirmation
+  when this project's history index is behind `HEAD`, and stays silent when there is no index, when
+  the `history` librarian is switched off, or in any state it cannot read confidently). Copy all of
+  them; these are project-agnostic - do not edit them.
 - `templates/settings.hooks.json` → merge its `hooks` block into `<project>/.claude/settings.json`,
   preserving anything already there.
 - `templates/intake.md` → `<project>/.claude/commands/intake.md`, replacing every `{{PLACEHOLDER}}`
@@ -157,6 +160,12 @@ the paths must resolve.
    project and can be switched off with `teamme_librarian_configure`, and that the honest response
    to a disabled librarian is to say so and name that call — never to go and read `git log` or a
    transcript some other way. Same register as everything above: an instruction, not a gate.
+   One line in the block is not an instruction but something the team will simply meet: on a `git
+   push`, `librarian-gate.py` asks for confirmation when the history index is behind `HEAD`. Say what
+   to do with it — approving proceeds with the push exactly as if the hook were not there, and the
+   way to clear it is to consult `history-librarian`, which refreshes the index when it is behind. No
+   team agent refreshes it itself, and editing anything under `.claude/librarians/` to quiet the
+   prompt is never the answer.
    Do not give team agents the librarian MCP tools; the librarian is the intended caller of those,
    and consulting the agent keeps every other tool list tight.
 2. Create the project intake command at `<project>/.claude/commands/intake.md`. This is NOT

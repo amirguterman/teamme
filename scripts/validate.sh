@@ -3001,6 +3001,7 @@ server = root / "plugins/teamme/server/teamme_mcp.py"
 gitignore = pathlib.Path(proj) / ".gitignore"
 DB = ".claude/librarians/index.db"
 SESSIONS = ".claude/librarians/sessions/"
+MARKER = ".claude/librarians/history/indexed_head"
 FOREIGN = "node_modules/"
 
 
@@ -3060,6 +3061,11 @@ try:
     if not ignored(SESSIONS):
         sys.exit("git check-ignore says .claude/librarians/sessions/ is NOT ignored after a "
                  "history-only refresh - both entries are written together, unconditionally")
+    if not ignored(MARKER):
+        sys.exit("git check-ignore says .claude/librarians/history/indexed_head is NOT ignored "
+                 "after refresh alone - the freshness marker is machine-local like the .db, and "
+                 "committing it would arm the librarian-gate hook with a marker already behind "
+                 "the commit that carries it")
     after_one = gitignore.read_text()
     if FOREIGN not in after_one:
         sys.exit(
@@ -3252,6 +3258,7 @@ server = root / "plugins/teamme/server/teamme_mcp.py"
 SESSIONS = ".claude/librarians/sessions/"
 RECORD = ".claude/librarians/history/commits.jsonl"
 DB = ".claude/librarians/index.db"
+MARKER = ".claude/librarians/history/indexed_head"
 
 
 def send(proc, obj):
@@ -3311,6 +3318,9 @@ try:
     if ignored(RECORD):
         sys.exit("commits.jsonl is STILL ignored under commit_record=true - it should be "
                  "committable")
+    if not ignored(MARKER):
+        sys.exit("indexed_head is NOT ignored under commit_record=true - the freshness marker is "
+                 "machine-local and must stay out of git regardless of commit_record")
 finally:
     try:
         proc.stdin.close()
@@ -3726,6 +3736,315 @@ print("  ok: pad_minutes=0 misses the commit that closed the task 30s after stat
       f"default pad ({qd.get('pad_minutes')} min) catches it and says the window was widened")
 PY
 
+
+echo "== librarian-gate: fixtures + helpers live under the throwaway project; the hook always runs as a real subprocess, never imported =="
+GATEPATH="$ROOT/plugins/teamme/templates/hooks/librarian-gate.py"
+GATE_SCRATCH="$PWD/gate-scratch"
+mkdir -p "$GATE_SCRATCH"
+cat > "$PWD/_gate_helpers.py" <<'PY'
+"""Throwaway helper for validate.sh's librarian-gate sections. Not part of the
+plugin; generated fresh under the throwaway project and never imported by the
+hook or any other teamme code."""
+import json
+import os
+import subprocess
+import sys
+
+
+def run_gate(hook, project_dir, command, path=None):
+    """Feed `command` to the hook exactly as PreToolUse would, as a real
+    subprocess (never imported - the hook must work standalone, the way the
+    harness runs it). Returns (returncode, stdout_text, stderr_text)."""
+    env = dict(os.environ)
+    env["CLAUDE_PROJECT_DIR"] = str(project_dir)
+    if path is not None:
+        env["PATH"] = path
+    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}})
+    proc = subprocess.run(
+        [sys.executable, str(hook)], input=payload, capture_output=True,
+        text=True, timeout=10, env=env,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+PY
+
+gate_run_out() {
+  # $1 = hook path, $2 = project dir, $3 = command, $4 = optional PATH override
+  python3 - "$1" "$2" "$3" "${4:-}" "$PWD" <<'PY'
+import sys
+hook, repo, cmd, path_override, helpers_dir = sys.argv[1:6]
+sys.path.insert(0, helpers_dir)
+from _gate_helpers import run_gate
+rc, out, err = run_gate(hook, repo, cmd, path=(path_override or None))
+if rc != 0:
+    sys.exit(f"librarian-gate.py exited {rc} for command {cmd!r} in project {repo!r}: stderr={err!r}")
+sys.stdout.write(out.strip())
+PY
+}
+echo "  ok: gate-test helpers and the gate_run_out() wrapper are in place"
+
+echo "== librarian-gate: [watch-fail] a refresh clears the gate - the T10-shaped assertion an enforcement hook must satisfy its own remedy =="
+LIB_GATE_CLEAR="$PWD/lib-gate-clear"
+mkdir -p "$LIB_GATE_CLEAR"
+gitc -C "$LIB_GATE_CLEAR" init -q
+echo one > "$LIB_GATE_CLEAR/f.txt"; gitc -C "$LIB_GATE_CLEAR" add f.txt; gitc -C "$LIB_GATE_CLEAR" commit -qm "c1"
+echo two >> "$LIB_GATE_CLEAR/f.txt"; gitc -C "$LIB_GATE_CLEAR" add f.txt; gitc -C "$LIB_GATE_CLEAR" commit -qm "c2"
+python3 - "$LIBPATH" "$LIB_GATE_CLEAR" <<'PY'
+# Build a fixture that reproduces the exact loop risk: commit_record=true, so
+# the refreshed commits.jsonl is itself committed - and THAT commit is the one
+# and only thing HEAD has that the marker (stamped before the commit existed)
+# does not.
+import subprocess, sys
+libpath, repo = sys.argv[1], sys.argv[2]
+sys.path.insert(0, libpath)
+from librarian import config, history
+
+
+def gitc(repo, *args):
+    subprocess.run(
+        ["git", "-c", "user.name=teamme-fixture", "-c", "user.email=teamme-fixture@example.invalid",
+         "-c", "commit.gpgsign=false"] + list(args),
+        cwd=repo, check=True, capture_output=True,
+    )
+
+
+cfg = config.configure(repo, commit_record=True)
+if not cfg.get("commit_record"):
+    sys.exit(f"could not enable commit_record on the gate-clear fixture: {cfg}")
+gitc(repo, "add", "-A")
+gitc(repo, "commit", "-qm", "enable commit_record")
+
+r = history.index(repo, full=True)
+if not r.get("ok"):
+    sys.exit(f"initial index of the gate-clear fixture failed: {r}")
+
+gitc(repo, "add", "-A")
+gitc(repo, "commit", "-qm", "refresh: index history")
+
+marker = history.read_marker(repo)
+head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True,
+                       text=True, check=True).stdout.strip()
+if marker == head:
+    sys.exit(f"fixture is wrong: marker ({marker}) already equals HEAD ({head}) before the hook "
+              f"even runs - there is no commit left for the pathspec exclusion to prove anything about")
+touched = subprocess.run(["git", "show", "--stat", "--format=", "HEAD"], cwd=repo,
+                          capture_output=True, text=True, check=True).stdout
+if "commits.jsonl" not in touched:
+    sys.exit(f"fixture is wrong: the unindexed HEAD commit does not even touch commits.jsonl: {touched!r}")
+PY
+GATE_CLEAR_OUT=$(gate_run_out "$GATEPATH" "$LIB_GATE_CLEAR" "git push")
+[ -z "$GATE_CLEAR_OUT" ] || fail "librarian-gate.py asked after a refresh whose only unindexed commit carries the refreshed commits.jsonl itself - the gate re-armed on its own remedy: $GATE_CLEAR_OUT"
+echo "  ok: the real hook stays silent - refreshing (and committing the refresh) clears the gate"
+
+# watch-fail: a scratch copy with the pathspec exclusion removed must re-arm on
+# exactly the commit that carries its own refresh - the hook lane measured
+# rev-list returning 1 without the exclusion and 0 with it; this is that
+# measurement, made permanent.
+python3 - "$GATEPATH" "$GATE_SCRATCH/no-pathspec.py" <<'PY'
+import pathlib, sys
+src, dst = sys.argv[1], sys.argv[2]
+text = pathlib.Path(src).read_text()
+needle = '"--", ".", ":!.claude/librarians"'
+if needle not in text:
+    sys.exit(f"could not find the pathspec exclusion to break in {src} - has the hook source moved?")
+broken = text.replace(needle, '"--", "."')
+if broken == text:
+    sys.exit("substitution did not change anything - refusing to run a watch-fail against unmodified code")
+pathlib.Path(dst).write_text(broken)
+PY
+GATE_BROKEN_OUT=$(gate_run_out "$GATE_SCRATCH/no-pathspec.py" "$LIB_GATE_CLEAR" "git push")
+[ -n "$GATE_BROKEN_OUT" ] || fail "[watch-fail] removing the pathspec exclusion did NOT re-arm the gate on its own refresh commit - this assertion would not have caught a regression here"
+echo "$GATE_BROKEN_OUT" | grep -q '"1 commit(s)' || fail "[watch-fail] expected the broken hook to count exactly 1 commit (its own refresh) once the exclusion was removed, got: $GATE_BROKEN_OUT"
+echo "  ok: [watch-fail] broken hook (pathspec exclusion removed) re-armed and counted its own refresh commit ($GATE_BROKEN_OUT) - confirming the real hook's silence above is not vacuous"
+
+echo "== librarian-gate: asks when it should - parsed JSON permissionDecision, reason names the count, and the source's only decision literal is \"ask\" =="
+LIB_GATE_STALE="$PWD/lib-gate-stale"
+mkdir -p "$LIB_GATE_STALE"
+gitc -C "$LIB_GATE_STALE" init -q
+echo one > "$LIB_GATE_STALE/f.txt"; gitc -C "$LIB_GATE_STALE" add f.txt; gitc -C "$LIB_GATE_STALE" commit -qm "c1"
+python3 - "$LIBPATH" "$LIB_GATE_STALE" <<'PY'
+import sys
+libpath, repo = sys.argv[1], sys.argv[2]
+sys.path.insert(0, libpath)
+from librarian import history
+r = history.index(repo, full=True)
+if not r.get("ok"):
+    sys.exit(f"initial index of the gate-stale fixture failed: {r}")
+PY
+for i in 2 3 4; do
+  echo "line-$i" >> "$LIB_GATE_STALE/f.txt"
+  gitc -C "$LIB_GATE_STALE" add f.txt
+  gitc -C "$LIB_GATE_STALE" commit -qm "c$i (unindexed)"
+done
+
+# Structural, not a grep for the word "deny" (which the docstring itself
+# contains on purpose): enumerate every permissionDecision string LITERAL the
+# hook's source can ever emit, and require the set to be exactly {"ask"}.
+DECISION_LITERALS=$(grep -oE '"permissionDecision":[[:space:]]*"[a-zA-Z]+"' "$GATEPATH" | sort -u)
+[ "$DECISION_LITERALS" = '"permissionDecision": "ask"' ] || fail "librarian-gate.py's source contains a permissionDecision value other than \"ask\": $DECISION_LITERALS"
+
+GATE_STALE_OUT=$(gate_run_out "$GATEPATH" "$LIB_GATE_STALE" "git push")
+[ -n "$GATE_STALE_OUT" ] || fail "librarian-gate.py stayed silent on a repo 3 commits behind its own index"
+GATE_STALE_JSON="$PWD/gate-stale.json"
+printf '%s' "$GATE_STALE_OUT" > "$GATE_STALE_JSON"
+python3 -c "
+import json
+d = json.load(open('$GATE_STALE_JSON'))
+if set(d.keys()) != {'hookSpecificOutput'}:
+    raise SystemExit(f'unexpected top-level key(s) in the hook JSON: {sorted(d.keys())}')
+hso = d['hookSpecificOutput']
+if set(hso.keys()) != {'hookEventName', 'permissionDecision', 'permissionDecisionReason'}:
+    raise SystemExit(f'unexpected key(s) in hookSpecificOutput: {sorted(hso.keys())}')
+if hso['hookEventName'] != 'PreToolUse':
+    raise SystemExit(f\"wrong hookEventName: {hso['hookEventName']!r}\")
+if hso['permissionDecision'] != 'ask':
+    raise SystemExit(f\"expected permissionDecision ask for a stale push, got: {hso['permissionDecision']!r}\")
+reason = hso['permissionDecisionReason']
+if '3 commit(s)' not in reason:
+    raise SystemExit(f'the reason did not name the count of 3 unindexed commits: {reason!r}')
+"
+echo "  ok: a 3-behind push produces parsed JSON with permissionDecision=ask and the reason names the count"
+
+echo "== librarian-gate: push/non-push classification boundary (3 match, 3 non-match, on the same proven-stale fixture) =="
+for cmd in "git push" "cd x && git push" "git -C /tmp/x push"; do
+  OUT=$(gate_run_out "$GATEPATH" "$LIB_GATE_STALE" "$cmd")
+  [ -n "$OUT" ] || fail "librarian-gate.py did not classify as a push (expected 'ask'): $cmd"
+done
+for cmd in 'echo "git push"' "git commit -m 'git push'" "git pull"; do
+  OUT=$(gate_run_out "$GATEPATH" "$LIB_GATE_STALE" "$cmd")
+  [ -z "$OUT" ] || fail "librarian-gate.py misclassified as a push: $cmd -> $OUT"
+done
+echo "  ok: 3/3 match classified as a push (asked), 3/3 non-match stayed silent - a constant-true or constant-false classifier would fail one of these two loops"
+
+echo "== librarian-gate: seven distinct fail-open branches, each on a fixture that is deliberately stale so silence proves the branch, not the fixture =="
+# (a) a non-push Bash command against this exact proven-stale fixture is
+# already covered above by the non-match half of the classification loop.
+
+# (b) push with NO index on disk at all - history.index() is never run here.
+LIB_GATE_NOINDEX="$PWD/lib-gate-noindex"
+mkdir -p "$LIB_GATE_NOINDEX"
+gitc -C "$LIB_GATE_NOINDEX" init -q
+echo one > "$LIB_GATE_NOINDEX/f.txt"; gitc -C "$LIB_GATE_NOINDEX" add f.txt; gitc -C "$LIB_GATE_NOINDEX" commit -qm "c1"
+test ! -e "$LIB_GATE_NOINDEX/.claude/librarians/history/indexed_head" || fail "fixture is wrong: a marker exists where none should for the no-index case"
+OUT=$(gate_run_out "$GATEPATH" "$LIB_GATE_NOINDEX" "git push")
+[ -z "$OUT" ] || fail "librarian-gate.py asked on a project with no history index at all: $OUT"
+
+# (c) the history librarian disabled - a COPY of the already-proven-stale fixture.
+LIB_GATE_DISABLED="$PWD/lib-gate-disabled"
+cp -r "$LIB_GATE_STALE" "$LIB_GATE_DISABLED"
+mkdir -p "$LIB_GATE_DISABLED/.claude/librarians"
+printf '{"librarians": {"history": {"enabled": false}}}' > "$LIB_GATE_DISABLED/.claude/librarians/config.json"
+OUT=$(gate_run_out "$GATEPATH" "$LIB_GATE_DISABLED" "git push")
+[ -z "$OUT" ] || fail "librarian-gate.py asked with the history librarian disabled in config.json (the same repo asks when enabled): $OUT"
+
+# (d) an unparseable config.json - a COPY of the same proven-stale fixture.
+LIB_GATE_BADCFG="$PWD/lib-gate-badcfg"
+cp -r "$LIB_GATE_STALE" "$LIB_GATE_BADCFG"
+mkdir -p "$LIB_GATE_BADCFG/.claude/librarians"
+printf '{ not valid json' > "$LIB_GATE_BADCFG/.claude/librarians/config.json"
+OUT=$(gate_run_out "$GATEPATH" "$LIB_GATE_BADCFG" "git push")
+[ -z "$OUT" ] || fail "librarian-gate.py asked with an unparseable config.json (the same repo asks with none): $OUT"
+
+# (e) a marker that is not a hash - a COPY of the same proven-stale fixture.
+LIB_GATE_BADMARKER="$PWD/lib-gate-badmarker"
+cp -r "$LIB_GATE_STALE" "$LIB_GATE_BADMARKER"
+echo "not-a-commit-hash" > "$LIB_GATE_BADMARKER/.claude/librarians/history/indexed_head"
+OUT=$(gate_run_out "$GATEPATH" "$LIB_GATE_BADMARKER" "git push")
+[ -z "$OUT" ] || fail "librarian-gate.py asked with a marker file that is not a commit hash: $OUT"
+
+# (f) a marker unreachable from HEAD - rebase/force-push. Ground-truthed with
+# plain git merge-base, independent of the hook, before the hook is ever asked.
+LIB_GATE_REBASE="$PWD/lib-gate-rebase"
+mkdir -p "$LIB_GATE_REBASE"
+gitc -C "$LIB_GATE_REBASE" init -q
+echo one > "$LIB_GATE_REBASE/f.txt"; gitc -C "$LIB_GATE_REBASE" add f.txt; gitc -C "$LIB_GATE_REBASE" commit -qm "c1"
+echo two >> "$LIB_GATE_REBASE/f.txt"; gitc -C "$LIB_GATE_REBASE" add f.txt; gitc -C "$LIB_GATE_REBASE" commit -qm "c2"
+python3 - "$LIBPATH" "$LIB_GATE_REBASE" <<'PY'
+import sys
+libpath, repo = sys.argv[1], sys.argv[2]
+sys.path.insert(0, libpath)
+from librarian import history
+r = history.index(repo, full=True)
+if not r.get("ok"):
+    sys.exit(f"initial index of the gate-rebase fixture failed: {r}")
+PY
+GATE_REBASE_MARKER=$(cat "$LIB_GATE_REBASE/.claude/librarians/history/indexed_head")
+gitc -C "$LIB_GATE_REBASE" reset --hard HEAD~1 -q
+echo three > "$LIB_GATE_REBASE/g.txt"; gitc -C "$LIB_GATE_REBASE" add g.txt; gitc -C "$LIB_GATE_REBASE" commit -qm "c2-alt (history rewritten)"
+git -C "$LIB_GATE_REBASE" merge-base --is-ancestor "$GATE_REBASE_MARKER" HEAD \
+  && fail "fixture is wrong: the marker is still reachable from HEAD after the rewrite - git's own merge-base disagrees"
+OUT=$(gate_run_out "$GATEPATH" "$LIB_GATE_REBASE" "git push")
+[ -z "$OUT" ] || fail "librarian-gate.py asked with a marker unreachable from HEAD (rebase/force-push): $OUT"
+
+# watch-fail: a scratch copy with the reachability check removed must wrongly
+# ASK on this exact rebase fixture - proving the branch above is load-bearing,
+# not a fixture that would have been silent regardless.
+python3 - "$GATEPATH" "$GATE_SCRATCH/no-reachability-check.py" <<'PY'
+import pathlib, sys
+src, dst = sys.argv[1], sys.argv[2]
+text = pathlib.Path(src).read_text()
+needle = (
+    '        rc, _ = git(root, ["merge-base", "--is-ancestor", marker, "HEAD"])\n'
+    '        if rc != 0:\n'
+    '            return\n'
+)
+if needle not in text:
+    sys.exit(f"could not find the reachability check to break in {src} - has the hook source moved?")
+broken = text.replace(
+    needle,
+    '        rc, _ = git(root, ["merge-base", "--is-ancestor", marker, "HEAD"])  # check removed\n',
+)
+if broken == text:
+    sys.exit("substitution did not change anything - refusing to run a watch-fail against unmodified code")
+pathlib.Path(dst).write_text(broken)
+PY
+GATE_REACH_BROKEN_OUT=$(gate_run_out "$GATE_SCRATCH/no-reachability-check.py" "$LIB_GATE_REBASE" "git push")
+[ -n "$GATE_REACH_BROKEN_OUT" ] || fail "[watch-fail] removing the reachability check did NOT make the broken hook ask on an unreachable marker - this assertion would not have caught a regression here"
+echo "  ok: [watch-fail] broken hook (reachability check removed) wrongly asked on the rebase fixture (${GATE_REACH_BROKEN_OUT:0:90}...) - confirming the real hook's silence above is not vacuous"
+
+# (g) git genuinely absent from PATH - the SAME proven-stale fixture as the
+# classification section, only PATH changed: a pure before/after differential
+# rather than a fresh, unproven fixture.
+OUT=$(gate_run_out "$GATEPATH" "$LIB_GATE_STALE" "git push" "/nonexistent-so-git-cannot-be-found")
+[ -z "$OUT" ] || fail "librarian-gate.py asked with git genuinely missing from PATH (the same repo asks with git present): $OUT"
+
+echo "  ok: 7 distinct fail-open branches (non-push, no-index, disabled, unparseable-config, non-hash-marker, unreachable-marker, git-missing) all stay silent on fixtures that are otherwise stale"
+
+echo "== preflight: librarian-gate.py missing from an otherwise-complete install drives installed-outdated, never init-team - T23 survives a seventh hook =="
+python3 - "$PF" "$PWD/pf-full" <<'PY'
+import json, pathlib, shutil, subprocess, sys
+
+pf, full_dir = sys.argv[1], pathlib.Path(sys.argv[2])
+dst = full_dir.parent / "pf-no-librarian-gate"
+if dst.exists():
+    shutil.rmtree(dst)
+shutil.copytree(full_dir, dst)
+(dst / ".claude" / "hooks" / "librarian-gate.py").unlink()
+
+proc = subprocess.run(
+    ["python3", pf, "check", "--json", "--project-dir", str(dst)],
+    capture_output=True, text=True, timeout=10,
+)
+if proc.returncode == 0:
+    sys.exit("preflight exited 0 with librarian-gate.py missing from an otherwise-complete install")
+try:
+    data = json.loads(proc.stdout)
+except Exception as exc:
+    sys.exit(f"unparseable preflight output: {exc}\n{proc.stdout}")
+if data.get("state") != "installed-outdated":
+    sys.exit(f"expected installed-outdated with librarian-gate.py missing, got {data.get('state')!r}: {data}")
+hooks_check = next(c for c in data["checks"] if c["id"] == "hooks")
+if hooks_check.get("ok"):
+    sys.exit(f"the hooks check still reported ok=true with librarian-gate.py missing: {hooks_check}")
+if "librarian-gate.py" not in hooks_check.get("detail", ""):
+    sys.exit(f"the missing file was not named in the hooks check detail: {hooks_check}")
+blob = json.dumps(data)
+if "init-team" in blob:
+    sys.exit(
+        "an installed-outdated project (missing only librarian-gate.py) was told to run "
+        f"/teamme:init-team - the exact T23 regression, now with a seventh hook: {blob}"
+    )
+print("  ok: librarian-gate.py missing drives installed-outdated, names the file, never suggests init-team")
+PY
 
 cd "$ROOT"
 echo "ALL CHECKS PASSED"
