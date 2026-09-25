@@ -88,9 +88,21 @@ non-zero exit on an empty project, `installed-outdated` on a synthetic pre-upgra
 `fix:` line that never once names `init-team` (watched failing first, by reverting `installed` to
 the old hook-count definition and confirming the fixture flipped back to `not-installed`),
 `installed-not-live`, and `live` on a scaffolded-and-heartbeated one — plus the `hooks`, `settings`
-and `intake_dir` checks each failing independently with a `fix:` line, and the install-evidence
-probe asserted to have no false positive against a stranger's repo carrying its own unrelated
-`SessionStart` hook. `heartbeat` is proven silent and always exit-0, even with no `.claude/` and
+and `intake_dir` checks each failing independently with a `fix:` line, and both halves of the
+install-evidence probe asserted to have no false positive: a stranger's repo carrying its own
+unrelated `SessionStart` hook, and — sharpened in T46, after a probe that tested existence but
+reported generation misread a project's own unrelated `.claude/commands/intake.md` as a teamme
+install and pointed it at a repair that writes teamme scaffolding into a repo that never asked —
+a stranger's own `intake.md`, checked in both directions: the bare file (no teamme hook named in its
+text) still reads `not-installed`, and the same file with one line added naming `worklog.py` moves
+off it. A `[watch-fail]` confirms the probe matches on `any()` of `REQUIRED_HOOKS`, not `all()`: the
+first-ever `templates/intake.md` (`6582ed4`) names only `intake-state.py` and `worklog.py`, since
+`preflight.py` did not exist yet, so `all()` would regress every pre-`preflight.py` install to
+`not-installed` — the same trap `installed` derivation paid a P0 for, reintroduced through a
+different probe. Four fail-open cases for that same text probe — an unreadable file, a directory
+sitting at that exact path, non-UTF-8 content, and a hook name that only appears past the probe's
+1 MiB read cap — are each proven to degrade silently to `not-installed`, never to raise or to wrongly
+claim evidence. `heartbeat` is proven silent and always exit-0, even with no `.claude/` and
 stdin closed. The MCP repair path is covered too: `teamme_install` repairs an `installed-outdated`
 fixture over the real JSON-RPC pipe and leaves its `intake.md` byte-identical.
 
@@ -317,8 +329,10 @@ own watch-fail in both directions: a fully scaffolded, heartbeated (`live`) fixt
 drifted roster leaves `check`'s exit code, `state:` line and exact six-item check set untouched, and
 the string `roster` never appears in `check --json`'s own output — while `roster` itself, run against
 the same fixture, exits non-zero; and, in reverse, a project whose roster genuinely agrees but was
-never scaffolded at all gets a non-zero `check` and a zero-exit `roster`, so neither verdict can drag
-the other down. A scratch copy that folds `roster()`'s checks into `diagnose()` confirms the property
+never scaffolded at all gets `check` pinned exactly to `not-installed` — tightened by T46 from
+accepting either non-installed state, since that fixture's own `intake.md` names no teamme hook and
+can no longer read as evidence — and a zero-exit `roster`, so neither verdict can drag the other
+down. A scratch copy that folds `roster()`'s checks into `diagnose()` confirms the property
 is not vacuous: the same drifted-but-live fixture immediately flips `check`'s exit code, state and id
 set once the separation is removed.
 
@@ -399,8 +413,14 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   re-runs the questionnaire and regenerates the roster over a team that already works. That would
   have hit every existing user on the release that added `preflight.py` itself to the list. The fix
   is structural: existence is now evidence-based — a `settings.json` hooks block naming one of
-  teamme's own scripts, and/or a generated `.claude/commands/intake.md` — and neither probe changes
-  when a release adds a hook script. A missing hook *script* became a **repair** condition
+  teamme's own scripts, and/or a `.claude/commands/intake.md` whose own text names one of those same
+  scripts — and neither probe changes when a release adds a hook script. The second probe used to test
+  only the file's existence while its reason string claimed generation; T46 (see Verify above)
+  tightened it to what the reason string always claimed, after that gap let a project's own unrelated
+  `intake.md` read as a teamme install and get pointed at a repair that writes teamme scaffolding into
+  a repo that never asked for it — the mirror image of the T23 P0: that one told installed users they
+  were not installed and offered a destructive reinstall; this one told never-installed users they
+  were installed and offered a write. A missing hook *script* became a **repair** condition
   (`installed-outdated`), never an existence condition. States are now four, not three:
   `not-installed` (no evidence teamme was ever set up here — the only state where the installer is
   right), `installed-outdated` (evidence of an install exists, but a hook script or the `hooks`
@@ -466,6 +486,23 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   git access at all — verified with `PATH` stripped, so git was genuinely unavailable. This is what
   makes the user's storage fork real: commit the `.jsonl` or gitignore it, per project; the `.db` is
   never committed either way.
+- **This repo's own `commits.jsonl` stays gitignored, deliberately — the freshness gate existing does
+  not by itself change that (T47).** `.gitignore`'s comment above that rule used to read as a
+  deferral: track it once `librarian-gate.py` exists, because until then a committed index just goes
+  stale on every commit that does not refresh it. `librarian-gate.py` shipped in 0.8.0, its
+  precondition was met, and nothing brought anyone back to reopen the decision it was gating — the
+  comment kept naming a condition that had already come true, and `CLAUDE.md`'s Known gaps kept saying
+  the opposite of what the comment said. Decided now: keep it ignored. teamme ships `commit_record:
+  false` as its default (`DEFAULT_COMMIT_RECORD`), and this repo is the main place that default gets
+  dogfooded — committing our own record here would mean the project never exercises the default it
+  ships. The `.gitignore` comment at that line now states this as a standing reason, not a precondition
+  that has since come true; never remove the rule itself, only rewrite the reasoning above it, and only
+  teamme's own reasoning — this project's standing discipline is to never remove a `.gitignore` line it
+  did not write. This is a different failure shape from a stale claim drifting away from the code
+  (T22/T26) or a gap entry outliving its gap (`retitle`/`reopen`, above): here the doc did not rot on
+  its own — the world moved past a condition it named, and nothing was watching to reopen the
+  deferral. Watch for the shape again: a comment that says "until X happens" is a debt that needs a
+  trigger to revisit it, not just a memory of having written it.
 - **Queries are a bounded named set, not arbitrary SQL.** Arbitrary SQL from a model is an injection
   surface, and at 9-11ms for `commits_touching` over 53,000 file rows there is no performance
   argument buying it either. A later dependency-tree query (a recursive CTE) should be added as
@@ -739,6 +776,13 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   `/intake`'s step 0a deferral short-circuit are all prompt text, not enforced behaviour.
 - `templates/intake.md` has been exercised on one real project (a Minecraft Fabric mod). The
   `{{PLACEHOLDER}}` set may not fit stacks with very different doc conventions.
+- **Whether a real, user-edited `intake.md` can drift far enough to stop naming any teamme hook is
+  unmeasured.** T46's `_text_names_a_teamme_hook()` (see Verify above) was checked against every
+  version of this repo's own `templates/intake.md` across its history — 22 to 27 references, never
+  zero — but that is this repo's own template, not a generated file a user has since hand-edited.
+  Nobody has a corpus of those to check against; the probe's fail-open behaviour (degrading to
+  `not-installed` rather than raising or guessing) is what a genuinely bare file falls back to, and
+  that path is proven, but whether real edited files ever reach it is not.
 - **`plugins/teamme/agents/history-librarian.md`'s frontmatter is validated; what it instructs is
   not.** `validate.sh`'s manifest check no longer globs `commands/*.md` only — that glob repeated the
   exact `REQUIRED_HOOKS`-style mistake (see T23 below) and would have let `agents/` ship unchecked. It
@@ -878,9 +922,11 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   matches a bare filename (e.g. `worklog.py`) when the full repo-relative path misses a task's title
   or notes has no assertion of its own.
 - **This repo's own `.gitignore` has no `sessions/` entry.** Nothing has leaked, because no session
-  index has ever been built here — `commits.jsonl` is this repo's only librarian file, and it is
-  tracked by deliberate choice, unrelated to this fix. The first `teamme_librarian_refresh
-  {"librarian": "sessions"}` run in this repo will write the rule itself; nothing needs doing by hand.
+  index has ever been built here. `commits.jsonl` is this repo's only librarian file on disk, and — see
+  the "stays gitignored, deliberately" entry above (T47) — it is *not* tracked; an earlier version of
+  this entry said the opposite, which was itself stale by the time it was corrected. The first
+  `teamme_librarian_refresh {"librarian": "sessions"}` run in this repo will write the `sessions/` rule
+  itself; nothing needs doing by hand.
 - **Two of `librarian-gate.py`'s seven fail-open branches are proven only by hand, not by a
   `validate.sh` watch-fail.** No-index and git-missing are each guarded by two independent mechanisms
   inside the hook, so neither is watch-failable by a single surgical break; the validation lane

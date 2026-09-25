@@ -587,6 +587,18 @@ def _install_evidence(root: pathlib.Path) -> list:
     when a release adds a hook script, so an install can never age out of being
     an install. Every probe is individually failure-tolerant - an unreadable
     settings file just contributes no evidence.
+
+    Both probes also look for teamme's OWN filenames, never for a word a project
+    might use for its own reasons: "intake" is not a teamme-only word, so the
+    mere existence of .claude/commands/intake.md proves nothing - a project that
+    wrote its own would otherwise be reported as installed and pointed at a
+    repair that writes teamme scaffolding into a repo that never asked for it.
+    A confidently wrong verdict driving a write is worse than no evidence.
+
+    The two probes are independent, which is what makes the stricter test safe:
+    a real install would have to lose BOTH its settings hooks block AND every
+    reference to a teamme script in its intake.md before it read as
+    not-installed.
     """
     reasons = []
     try:
@@ -601,11 +613,35 @@ def _install_evidence(root: pathlib.Path) -> list:
     except Exception:
         pass
     try:
-        if (root / ".claude" / "commands" / "intake.md").is_file():
-            reasons.append(".claude/commands/intake.md was generated here")
+        cmd = root / ".claude" / "commands" / "intake.md"
+        if cmd.is_file() and _text_names_a_teamme_hook(cmd):
+            reasons.append(".claude/commands/intake.md names teamme's hooks")
     except Exception:
         pass
     return reasons
+
+
+def _text_names_a_teamme_hook(path: pathlib.Path) -> bool:
+    """True if this file's text mentions one of teamme's own hook scripts.
+
+    `any`, not `all`, for the same reason _names_a_teamme_hook uses it: a
+    release that adds a hook only ever adds another way to match, so an older
+    install can never age out of matching. Read with `all` this would be the
+    exact trap that made `installed` derivation a P0.
+
+    Safe because a generated /intake command names these scripts by
+    construction - its own steps invoke them. Measured across every version of
+    the plugin's intake.md template in this repo's history rather than assumed:
+    22 to 27 references, at least two distinct scripts, never zero.
+    """
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            # A command file is a few KB. Cap the read so an unrelated giant
+            # file at that path costs a page, not a whole disk.
+            text = fh.read(1 << 20)
+    except Exception:
+        return False
+    return any(n in text for n in REQUIRED_HOOKS)
 
 
 def _names_a_teamme_hook(groups) -> bool:

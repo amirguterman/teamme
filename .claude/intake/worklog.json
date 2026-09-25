@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "next_id": 48,
+  "next_id": 50,
   "tasks": [
     {
       "id": "T1",
@@ -859,35 +859,74 @@
     {
       "id": "T46",
       "title": "The intake.md install-evidence probe keys on mere existence but reports 'was generated here' - a stranger's repo with its own intake.md is misread as a teamme install",
-      "status": "open",
+      "status": "done",
       "priority": "P1",
       "lane": "teamme-hook-engineer",
       "notes": [
         "Found while asserting the roster check (T3), reasoned away by the docs lane as an already-documented consequence of evidence-based existence. It is not. preflight.py _install_evidence() does: if (root/\".claude\"/\"commands\"/\"intake.md\").is_file(): reasons.append(\".claude/commands/intake.md was generated here\") - the probe tests EXISTENCE and the reason string claims GENERATION, which the probe cannot know. \"intake\" is not a teamme-only word, so a project with its own hand-written .claude/commands/intake.md is reported as evidence teamme was installed there.",
-        "Consequence: that project gets installed-outdated rather than not-installed, and is told to REPAIR - which writes teamme scaffolding into a repo that never asked for it - instead of being told to install. The mirror image of the T23 P0: T23 told installed users they were not installed and pointed them at a destructive reinstall; this tells never-installed users they ARE installed and points them at a write. Milder (it needs an unrelated intake.md to exist, and the repair asks first), hence P1 not P0. Note also that CLAUDE.md-s validate.sh no-false-positive assertion covers the HOOKS probe only - a stranger-s repo carrying an unrelated SessionStart hook - and there is no equivalent fixture for the intake.md probe. The Decisions-already-made entry also says \"a GENERATED .claude/commands/intake.md\", which is the same over-claim as the reason string."
+        "Consequence: that project gets installed-outdated rather than not-installed, and is told to REPAIR - which writes teamme scaffolding into a repo that never asked for it - instead of being told to install. The mirror image of the T23 P0: T23 told installed users they were not installed and pointed them at a destructive reinstall; this tells never-installed users they ARE installed and points them at a write. Milder (it needs an unrelated intake.md to exist, and the repair asks first), hence P1 not P0. Note also that CLAUDE.md-s validate.sh no-false-positive assertion covers the HOOKS probe only - a stranger-s repo carrying an unrelated SessionStart hook - and there is no equivalent fixture for the intake.md probe. The Decisions-already-made entry also says \"a GENERATED .claude/commands/intake.md\", which is the same over-claim as the reason string.",
+        "MEASURED before designing the fix: every version of templates/intake.md in this repo-s history names a teamme hook script - 8 at first commit 6582ed4, 9 at d767f28, 10 from 7c92047 onward, never zero. So gating the intake.md probe on a teamme marker cannot regress any install teamme has ever produced, and the settings-hooks-block probe stands independently, so both would have to miss simultaneously. The fix is safe by measurement, not by argument.",
+        "Tightened the intake.md install-evidence probe to require a teamme hook-script name (any, not all), reworded the reason to what is observed, re-copied to .claude/hooks; validate.sh exit 0, 109 ok lines across 89 sections",
+        "VERIFIED the fix on my own fixture, independent of the lane-s: a project whose .claude/commands/intake.md reads \"Our own ticket intake process\" reported installed-outdated under HEAD-s preflight.py (telling a stranger to REPAIR, which writes teamme scaffolding into a repo that never asked) and reports not-installed after. validate.sh still exits 0 at 109 ok lines / 89 sections, and template and .claude copy are byte-identical.",
+        "The hook lane found a concrete witness for why any() rather than all() is load-bearing here, which my brief had only argued: the FIRST-EVER templates/intake.md (6582ed4) names no preflight.py at all - only intake-state.py and worklog.py. So all() over REQUIRED_HOOKS would regress every pre-preflight.py install to not-installed and point it at the installer, reintroducing the exact T23 P0 through a different door. Briefed to validation as a watch-fail on a scratch copy.",
+        "Residual limit the lane stated rather than hid: an intake.md larger than 1 MiB whose first teamme script reference falls past the read cap contributes no evidence. No generated intake.md is near that (a few KB, 22+ references starting early) and the settings probe is independent, so it cannot regress a real install on its own - but it is a real edge, called real rather than proven-impossible.",
+        "Added validate.sh coverage for the tightened intake.md probe: false positive both directions pinned beside the SessionStart section, an any-not-all watch-fail using the measured 0.1.0-era fixture (worklog.py plus intake-state.py only), and a fail-open sweep (unreadable, directory, non-UTF-8, past-cap) that never crashes or wrongly contributes evidence. Corrected the stale roster direction-2 comment and pinned its state to not-installed. validate.sh now prints ALL CHECKS PASSED at 114 ok lines across 92 sections, up from 109/89.",
+        "Docs updated for the sharpened install-evidence probe: CLAUDE.md's Verify section now describes both false-positive checks (SessionStart hook, and the intake.md text probe in both directions), the any()-not-all() watch-fail, and the 4-case fail-open sweep (unreadable/directory/non-UTF-8/past-1MiB-cap); the roster direction-2 sentence now says check pins exactly to not-installed (tightened by T46); the \"Decisions already made\" entry for installed-derivation now describes the sharper text-matching probe instead of \"generated\"; added a Known gaps bullet noting real-world intake.md drift is unmeasured. Also judged README.md and plugins/teamme/README.md's install-state tables: no change needed, they describe evidence at \"no evidence teamme was ever set up here\" abstraction level which stays true. No Bash tool - did not run validate.sh myself; relied on the dispatcher's reported 114 ok:/92 sections and read the relevant validate.sh sections directly to confirm the prose matches.",
+        "FINAL: validate.sh exits 0 at 114 ok lines / 92 sections (109/89 at 0.10.0). plugin.json reads 0.10.1. The changelog entry carries the Known limitations section for the 1 MiB cap, which the first draft omitted - naming a mechanism without its cost, the same shape 0.8.0 was sent back twice for and 0.10.0 once. Also independently re-measured the 22-27 reference claim the lane shipped unverified: 6582ed4 total=22 distinct=2, d767f28 total=25 distinct=3, 7c92047..a6cf0c8 total=27 distinct=3. Correct - but the lane had attributed it to the any()/all() watch-fail, which proves a different property entirely. A right number resting on the wrong proof, which is the 0.9.0 citation failure in its purest form."
       ],
       "blocked_on": "",
       "dispatched_to": "",
       "created": "2026-09-25T10:43:22+00:00",
-      "updated": "2026-09-25T10:52:31+00:00",
-      "status_changed": "2026-09-25T10:43:22+00:00"
+      "updated": "2026-09-25T11:53:35+00:00",
+      "status_changed": "2026-09-25T11:53:35+00:00"
     },
     {
       "id": "T47",
       "title": "Two stale, mutually contradictory claims about whether this repo commits its own commits.jsonl - and the .gitignore comment's stated precondition was met by 0.8.0",
-      "status": "open",
+      "status": "done",
       "priority": "P2",
       "lane": "teamme-docs-writer",
       "notes": [
         "Ground truth measured before the 0.10.0 merge: git ls-files .claude/librarians/ returns ZERO files, git ls-files --error-unmatch on commits.jsonl errors with \"did not match any file(s) known to git\", and git check-ignore -v names .gitignore:23 as an exact-path rule. So the file is untracked and ignored.",
         "CLAUDE.md Known gaps says: \"commits.jsonl is this repo only librarian file, and it is tracked by deliberate choice, unrelated to this fix.\" That is flatly false - it is not tracked. Fourth instance in this repo of a gap entry outliving its gap.",
-        "The second half is more interesting than the first. The .gitignore comment at lines 19-22 reads \"untracked for now... until the freshness gate exists, a committed index just goes stale on every commit that does not refresh it.\" The freshness gate SHIPPED in 0.8.0 as librarian-gate.py. So the comment states a precondition that has since been met and nobody went back to revisit the decision it was gating. A conditional deferral with no trigger to re-open it - a new variant of the documented-thing-that-drifts family, where the doc was accurate when written and the WORLD moved instead of the code. Decide deliberately whether this repo now commits its own record, then make the comment and CLAUDE.md agree with whatever is chosen."
+        "The second half is more interesting than the first. The .gitignore comment at lines 19-22 reads \"untracked for now... until the freshness gate exists, a committed index just goes stale on every commit that does not refresh it.\" The freshness gate SHIPPED in 0.8.0 as librarian-gate.py. So the comment states a precondition that has since been met and nobody went back to revisit the decision it was gating. A conditional deferral with no trigger to re-open it - a new variant of the documented-thing-that-drifts family, where the doc was accurate when written and the WORLD moved instead of the code. Decide deliberately whether this repo now commits its own record, then make the comment and CLAUDE.md agree with whatever is chosen.",
+        "DECIDED by the user: keep commits.jsonl ignored and fix both stale statements. Reason recorded for the next reader - teamme ships commit_record: false as its default (DEFAULT_COMMIT_RECORD), and this repo is the main place that default is dogfooded, so committing our own record here would mean the project never exercises the default it ships. CLAUDE.md stops claiming the file is tracked; the .gitignore comment stops naming a precondition (the freshness gate) that has since been met.",
+        "Fixed the contradiction: CLAUDE.md's Known gaps said commits.jsonl \"is tracked by deliberate choice\" - it is not (git ls-files/check-ignore confirmed by dispatcher; I have no Bash to re-verify). Added a new \"Decisions already made\" entry explaining the user's decision to keep it gitignored (dogfooding commit_record: false, the shipped default) and correcting the record of why - the old .gitignore comment was a conditional deferral (\"until the freshness gate exists\") whose precondition (librarian-gate.py, 0.8.0) had already shipped with nobody reopening it. Rewrote the .gitignore comment at .claude/librarians/history/commits.jsonl to state a standing reason instead of a precondition - touched only the comment, left the ignore rule itself byte-identical. Updated the stale Known gaps bullet (\"this repo's own .gitignore has no sessions/ entry\") to stop repeating the false tracked claim and point at the new Decisions entry instead."
       ],
       "blocked_on": "",
       "dispatched_to": "",
       "created": "2026-09-25T10:53:54+00:00",
-      "updated": "2026-09-25T10:54:04+00:00",
-      "status_changed": "2026-09-25T10:53:54+00:00"
+      "updated": "2026-09-25T11:53:35+00:00",
+      "status_changed": "2026-09-25T11:53:35+00:00"
+    },
+    {
+      "id": "T48",
+      "title": "validate.sh dies silently under set -e: an unexpected non-zero command stops the run with no FAIL: line, so the only signal is a shorter ok: count",
+      "status": "open",
+      "priority": "P2",
+      "lane": "teamme-validation-engineer",
+      "notes": [
+        "Hit for real while adding T46 coverage: preflight.py check exits non-zero on not-installed, which under set -euo pipefail killed the run mid-way with no FAIL: message - just an unexplained stop after the last ok: line. The lane only noticed because it diffed the ok-line count before and after rather than trusting the tail of the output. Fixed in place by wrapping those invocations in set +e / set -e, the pattern already used elsewhere in the file.",
+        "The residual gap: scripts/validate.sh has set -euo pipefail at line 4 and a trap for tmpdir cleanup at 416, but NO trap ... ERR. CI still catches an early death (the script exits non-zero and ALL CHECKS PASSED never prints), so this is diagnosability, not a false green - but the one proof this repo has should say why it stopped rather than just stopping. An ERR trap naming the failing line and command, plus asserting the final ok: count against an expected minimum, would turn a confusing early exit into a readable one."
+      ],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-25T11:40:35+00:00",
+      "updated": "2026-09-25T11:40:35+00:00",
+      "status_changed": "2026-09-25T11:40:35+00:00"
+    },
+    {
+      "id": "T49",
+      "title": "add additional team agent to propose upon building the team, that its purpose is to try to find all the reasons from all aspects why a proposed plan is wrong, has holes, not optimal, inefficient, bad practice, has better alternatives, etc. which utilizes the other agents' specialization/profession/familiarity by questioning them from a higher level rather than knowing everything. this is the role of the troublemaker and not a compliance officer. its job is to push the other agents to the limit and prevent them from going with the first default path to provide solutions. this agent should be able to provoke them for raising questions yet the orchestrator is the one to decide whether to choose an alternative or pass it to the user to decide. it should also be able to communicate with them, or alternatively let the orchestrator pass to it instead, your call for the hierarchy design.",
+      "status": "open",
+      "priority": "P1",
+      "lane": "",
+      "notes": [],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-25T11:44:04+00:00",
+      "updated": "2026-09-25T11:44:04+00:00",
+      "status_changed": "2026-09-25T11:44:04+00:00"
     }
   ]
 }

@@ -1624,6 +1624,169 @@ if data.get("state") != "not-installed":
 print("  ok: an unrelated SessionStart hook does not count as teamme install evidence")
 PY
 
+echo "== preflight: the intake.md text probe has no false positives either - a stranger's own intake.md, both directions =="
+# Mirrors the SessionStart section above, for _install_evidence()'s OTHER probe:
+# a project with its own unrelated .claude/commands/intake.md (mere existence,
+# any text) must not be mistaken for a teamme install. T46: this probe used to
+# key on is_file() alone while its reason string claimed generation - a bare
+# "we have our own ticket intake process" file used to read installed-outdated
+# and be told to REPAIR, writing teamme scaffolding into a repo that never
+# asked. It now requires the text to name one of teamme's own hook scripts.
+mkdir -p intake-fp-proj/.claude/commands
+cat > intake-fp-proj/.claude/commands/intake.md <<'FPEOF'
+---
+description: our own ticket intake process
+---
+Our own ticket intake process. File a ticket, assign an owner, done.
+FPEOF
+python3 - "$PF" "$PWD/intake-fp-proj" <<'PY'
+import json, subprocess, sys
+
+pf, proj = sys.argv[1], sys.argv[2]
+proc = subprocess.run(
+    ["python3", pf, "check", "--json", "--project-dir", proj],
+    capture_output=True, text=True, timeout=10,
+)
+data = json.loads(proc.stdout)
+if data.get("state") != "not-installed":
+    sys.exit(
+        f"a project with its own unrelated intake.md (no teamme hook names) reported state "
+        f"{data.get('state')!r} instead of not-installed: {data}"
+    )
+blob = json.dumps(data)
+if "init-team" not in blob:
+    sys.exit(
+        f"not-installed is the one state where /teamme:init-team IS the right advice, but no "
+        f"fix line mentioned it: {blob}"
+    )
+print("  ok: a stranger's own intake.md (no teamme hook names) reads not-installed, and its fix line still offers /teamme:init-team")
+PY
+# Now the reverse: the SAME file, plus one line naming a teamme script, goes
+# back to contributing evidence - proving the probe is not simply "always say
+# not-installed for any intake.md", but genuinely text-sensitive.
+echo "Runs worklog.py under the hood." >> intake-fp-proj/.claude/commands/intake.md
+python3 - "$PF" "$PWD/intake-fp-proj" <<'PY'
+import json, subprocess, sys
+
+pf, proj = sys.argv[1], sys.argv[2]
+proc = subprocess.run(
+    ["python3", pf, "check", "--json", "--project-dir", proj],
+    capture_output=True, text=True, timeout=10,
+)
+data = json.loads(proc.stdout)
+if data.get("state") == "not-installed":
+    sys.exit(
+        f"appending a line naming worklog.py (one of teamme's own hooks) to the same file did "
+        f"not change the verdict away from not-installed: {data}"
+    )
+print("  ok: the same file, plus one line naming a teamme script, goes back to contributing evidence (state moves off not-installed)")
+PY
+
+echo "== preflight: [watch-fail] the intake.md text probe matches with any(), not all() - a 0.1.0-era intake.md naming only worklog.py still counts =="
+# Measured, not assumed: the first-ever templates/intake.md (6582ed4) names
+# only intake-state.py and worklog.py - zero references to preflight.py, which
+# did not exist yet. If this probe required ALL of REQUIRED_HOOKS to appear,
+# every pre-preflight.py install would regress to not-installed and be pointed
+# at the installer - the exact T23 P0 (a working install told to reinstall
+# over itself), reintroduced through a different probe.
+mkdir -p intake-any-proj/.claude/commands
+cat > intake-any-proj/.claude/commands/intake.md <<'ANYEOF'
+---
+description: 0.1.0-era intake, shaped like 6582ed4's template
+---
+Uses intake-state.py to check the lock, then records progress with worklog.py.
+ANYEOF
+python3 - "$PF" "$PWD/intake-any-proj" <<'PY'
+import json, subprocess, sys
+
+pf, proj = sys.argv[1], sys.argv[2]
+proc = subprocess.run(
+    ["python3", pf, "check", "--json", "--project-dir", proj],
+    capture_output=True, text=True, timeout=10,
+)
+data = json.loads(proc.stdout)
+if data.get("state") == "not-installed":
+    sys.exit(
+        f"a fixture naming only 2 of REQUIRED_HOOKS (intake-state.py, worklog.py - the exact "
+        f"shape of the first-ever intake.md) read not-installed instead of contributing "
+        f"evidence: {data}"
+    )
+print("  ok: naming only intake-state.py and worklog.py (a 0.1.0-era intake.md) still contributes evidence")
+PY
+# [watch-fail] scratch copy only - preflight.py belongs to teamme-hook-engineer;
+# CONTRIBUTING.md's standing rule is to break a copy, never the file in place.
+# Mechanism: flip _text_names_a_teamme_hook's any() to all() and run the SAME
+# 0.1.0-shaped fixture proven to contribute evidence above.
+python3 - "$PF" "$PWD/pf-any-not-all-broken.py" <<'PY'
+import pathlib, sys
+
+src_path, dst_path = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+text = src_path.read_text()
+needle = "    return any(n in text for n in REQUIRED_HOOKS)\n"
+if text.count(needle) != 1:
+    sys.exit("could not find the single any()-over-REQUIRED_HOOKS line in "
+              "_text_names_a_teamme_hook - preflight.py's shape has changed; update this watch-fail")
+dst_path.write_text(text.replace(needle, "    return all(n in text for n in REQUIRED_HOOKS)\n", 1))
+PY
+BROKEN_ANY_OUT="$PWD/intake-any-broken-check.json"
+set +e
+python3 "$PWD/pf-any-not-all-broken.py" check --json --project-dir "$PWD/intake-any-proj" > "$BROKEN_ANY_OUT"
+set -e
+BROKEN_ANY_STATE=$(python3 -c "import json; print(json.load(open('$BROKEN_ANY_OUT'))['state'])")
+[ "$BROKEN_ANY_STATE" = "not-installed" ] || fail "[watch-fail] flipping any() to all() did not regress the 0.1.0-shaped fixture to not-installed (got $BROKEN_ANY_STATE) - the PASS proven above is vacuous"
+echo "  ok: [watch-fail] with a scratch copy requiring all() of REQUIRED_HOOKS instead of any(), the SAME 0.1.0-shaped fixture regresses to not-installed - confirming the any()-not-all() property proven above is not vacuous"
+
+echo "== preflight: the intake.md text probe fails open - an unreadable file, a directory, non-UTF-8 bytes, and a hook name past the 1 MiB read cap all degrade silently, never crash and never wrongly claim evidence =="
+# None of these fixtures carries any OTHER evidence (no settings.json hooks
+# block), so the only way any of the four could wrongly contribute evidence is
+# via a crash escaping the probe's own try/except and corrupting check's JSON
+# output, or a swallowed exception somehow still appending a reason. Asserting
+# clean, valid JSON with state == not-installed and empty stderr covers both.
+FAILOPEN_DIR="$PWD/intake-failopen-proj"
+mkdir -p "$FAILOPEN_DIR/.claude/commands"
+
+assert_failopen_intake() {  # label
+  local label="$1"
+  local out="$PWD/intake-failopen-$label.json"
+  local err="$PWD/intake-failopen-$label.err"
+  set +e
+  python3 "$PF" check --json --project-dir "$FAILOPEN_DIR" > "$out" 2> "$err"
+  set -e
+  [ -s "$err" ] && fail "the $label fixture wrote to stderr instead of degrading silently: $(cat "$err")"
+  local state
+  state=$(python3 -c "import json; print(json.load(open('$out'))['state'])" 2>&1) \
+    || fail "the $label fixture did not produce parseable check --json output: $state"
+  [ "$state" = "not-installed" ] || fail "the $label fixture wrongly moved state to $state (expected not-installed - no other evidence exists in this fixture)"
+}
+
+# a) unreadable file (permission denied on open())
+printf 'names worklog.py\n' > "$FAILOPEN_DIR/.claude/commands/intake.md"
+chmod 000 "$FAILOPEN_DIR/.claude/commands/intake.md"
+assert_failopen_intake unreadable
+chmod 644 "$FAILOPEN_DIR/.claude/commands/intake.md"
+rm "$FAILOPEN_DIR/.claude/commands/intake.md"
+
+# b) a directory sitting at that exact path (is_file() must say no, not raise)
+mkdir -p "$FAILOPEN_DIR/.claude/commands/intake.md"
+assert_failopen_intake directory
+rmdir "$FAILOPEN_DIR/.claude/commands/intake.md"
+
+# c) non-UTF-8 binary content (opened with errors="replace", must not raise)
+python3 -c "open('$FAILOPEN_DIR/.claude/commands/intake.md', 'wb').write(bytes(range(256)) * 10)"
+assert_failopen_intake binary
+
+# d) a hook name that only appears past the 1 MiB read cap - the probe must
+# not raise, and (a real, documented limit, not proven impossible in general)
+# is not expected to find it either: this fixture's only reason a real install
+# would ever look like this is a pathological giant file at this exact path.
+python3 -c "
+open('$FAILOPEN_DIR/.claude/commands/intake.md', 'w').write(('x' * (1 << 20)) + 'worklog.py')
+"
+assert_failopen_intake past-cap
+rm "$FAILOPEN_DIR/.claude/commands/intake.md"
+
+echo "  ok: unreadable, directory, non-UTF-8, and past-the-1MiB-cap all degrade silently to not-installed - no crash, no wrongly-claimed evidence"
+
 echo "== preflight roster: helpers, and a clean fixture where all three checks PASS =="
 # Everything below lives under this throwaway project ($T, mktemp -d, trap-cleaned)
 # or a fresh copy of pf-full built above - never this repo's own .claude/, and no
@@ -2024,15 +2187,14 @@ set -e
 [ "$CLEAN_CHECK_RC" -ne 0 ] || fail "check exited 0 for roster-clean, which was never scaffolded (no .claude/hooks, no settings.json)"
 CLEAN_CHECK_STATE=$(python3 -c "import json; print(json.load(open('$CLEAN_CHECK_OUT'))['state'])")
 # roster-clean has a real .claude/commands/intake.md (roster_command needs one to
-# check), and a bare intake.md's mere existence is itself install evidence (see
-# _install_evidence()) - so this fixture lands on installed-outdated, not
-# not-installed, with none of .claude/hooks/settings.json/.claude/intake present.
-# Either way it is a non-zero check() exit, which is the property under test; the
-# exact state string is not.
-case "$CLEAN_CHECK_STATE" in
-  not-installed|installed-outdated) : ;;
-  *) fail "expected not-installed or installed-outdated for the unscaffolded clean-roster project, got $CLEAN_CHECK_STATE" ;;
-esac
+# check), but T46 tightened _install_evidence()'s second probe: mere existence is
+# no longer evidence, the text has to name one of teamme's own hook scripts, and
+# roster_write_intake's body ("Dispatch history questions to agent-a...") names
+# none. With none of .claude/hooks/settings.json/.claude/intake present either,
+# this fixture now deterministically reads not-installed - pinned exactly, not
+# accepted as one of two states, since the whole point of T46 is that this
+# fixture's outcome is no longer ambiguous.
+[ "$CLEAN_CHECK_STATE" = "not-installed" ] || fail "expected not-installed for the unscaffolded clean-roster project (its intake.md names no teamme hook), got $CLEAN_CHECK_STATE"
 [ "$CLEAN_RC" -eq 0 ] || fail "roster's own exit code for roster-clean regressed to $CLEAN_RC (was asserted 0 above)"
 echo "  ok: direction 2 - a genuinely agreeing roster in a project that was never scaffolded: check is non-zero ($CLEAN_CHECK_STATE), roster is still exit 0"
 
