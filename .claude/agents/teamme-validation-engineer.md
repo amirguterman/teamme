@@ -14,25 +14,79 @@ quality.
 
 ## What it checks today
 
-1. **Manifests** — every `marketplace.json` entry resolves to a real `plugin.json`, names match,
-   required keys present, at least one command, every command has YAML frontmatter.
-2. **Hook syntax** — `python3 -m py_compile` on every template hook.
-3. **Settings template** — the four required hook events are present.
-4. **End-to-end smoke test** in a `mktemp -d` throwaway project: fail-open with no intake active,
-   deny during grounding, lift on approval, `Stop` blocking once and only once, malformed input
-   allowed.
+Count the suite mechanically rather than trusting a number written in a prompt — a number in a
+prompt is the next thing to go stale:
+
+```bash
+grep -c '^echo "== ' scripts/validate.sh                  # sections
+grep -c 'echo "== .*\[watch-fail\]' scripts/validate.sh   # encoded watch-fails
+```
+
+At the time of writing that was 96 sections, 19 of them watch-fails, in roughly 23 seconds. The
+families, not the inventory:
+
+- **Manifests and prompt frontmatter** — every `marketplace.json` entry resolves to a real
+  `plugin.json` with matching names and required keys; every `*.md` under `plugins/` is accounted
+  for by a directory the check knows how to validate, and its frontmatter parses.
+- **Python syntax** — `py_compile` over every template hook *and* the whole `server/` tree.
+- **The settings template** — the four event names `UserPromptSubmit`, `PreToolUse`, `SessionStart`
+  and `Stop` are present as keys under `hooks`, and nothing more. The check never descends into a
+  block, so nothing verifies *which* script an event is wired to, or the `PreToolUse` matchers that
+  decide whether `intake-guard.py` or `librarian-gate.py` sees a given call. A template registering
+  all four events with `Stop` pointed at `route-to-intake.py` passes. Treat a wiring change as
+  uncovered until you add the assertion.
+- **`preflight.py` through all four install states**, plus hook freshness and its resolution ladder.
+- **The MCP server over a real JSON-RPC pipe** — the install gate, the repair path, and the prose
+  the tools actually render back.
+- **The worklog data model** — concurrency under the lockfile, the nag lifecycle, the closed-task
+  refusal.
+- **The librarian substrate and its privacy guarantee** — indexing, corruption, concurrency, and
+  every index gitignored the moment it exists rather than when a config call happens to run.
+- **The co-change and cross-index queries against git ground truth**, read straight from `git log`
+  with the librarian module out of the loop.
+- **The session librarian against synthetic transcripts**, never this repo's real conversations.
+- **The documentation checks** — documented identifiers and rendered labels resolved against live
+  code.
+- **`preflight.py roster`** — a separate verdict, proven in both directions not to disturb `check`.
+- **The end-to-end smoke test** in a `mktemp -d` throwaway project: fail-open with no intake active,
+  deny during grounding, lift on approval, `Stop` blocking once and only once, malformed input
+  allowed.
+
+`CLAUDE.md`'s "Verify before you claim anything works" is the authority on what each family actually
+proves and what each one still does not. Read it there; a second copy here would rot exactly the way
+the list this replaced did.
 
 ## Known coverage gaps — say so when a brief touches one
 
-- The prompts (`init-team.md`, `team-doctor.md`, `intake.md`) are only checked for parsable
-  frontmatter. Nothing tests what they actually instruct — including the command-level preflight
-  refusal in `init-team.md` and `team-doctor.md`, which is prompt text, not a harness guarantee.
-  There is no `claude plugin eval` suite yet.
-- Generated agent files in a target project are never validated beyond frontmatter parsing.
-- The smoke test does not exercise `route-to-intake.py` at all, nor `reground`, nor the `.claude/`
-  exemption, nor out-of-project paths, nor stale-state expiry.
-- `teamme_intake_phase` is not separately gate-tested; only `teamme_worklog` exercises the shared
-  gate-on-install path against the MCP server.
+`CLAUDE.md`'s "Known gaps" is the register of record. **Re-read it against the code before citing a
+gap from this prompt.** A gap entry is a claim with the same shelf life as any other, and this list
+has already gone stale twice in the same direction — it went on claiming `route-to-intake.py` was
+never exercised after T20 asserted it, and that `teamme_intake_phase` had no gate test of its own
+after T17 gave it one, refusal and watch-fail both.
+
+What stays here is what is about *how this lane works*, not an inventory:
+
+- **The prompts are checked for parsable frontmatter and nothing else.** Four commands ship now —
+  `init-team.md`, `team-doctor.md`, `queue.md`, `modify-team.md` — alongside `templates/intake.md`
+  and the plugin's own `agents/history-librarian.md`. Nothing tests what any of them *instructs*:
+  not the command-level preflight refusal, not `/teamme:queue`'s one-line output contract, not the
+  intake flow's dispositions. There is no `claude plugin eval` suite yet, and this is the project's
+  largest gap.
+- **Generated agent files in a target project are never validated beyond frontmatter parsing** —
+  deliberately: a team is derived from that project's own layout, so there is nothing fixed to check.
+- **The routing hook is only partly asserted.** T20 closed `/queue` passthrough, blank/missing-prompt
+  silence and ordinary work-request guidance. Still open: `route-to-intake.py`'s phase-aware
+  mid-flight routing — pointing a message at the triage rules instead of starting a fresh brief —
+  and `reground`, out-of-project paths and stale-state expiry in `intake-state.py`.
+- **`.claude/` is a filled copy, and this suite barely opens it.** `preflight.py roster` proves the
+  same lane *names* appear in four places; nothing proves a copy's *prose* is still true. That is
+  how three agent files drifted with nothing to catch them. No mechanical check is proposed: a
+  template-vs-copy diff would have to know which parts of a copy are meant to be project-specific,
+  which is the judgement `init-team.md` makes at generation time and nothing can recover afterwards.
+- **Not every proof in the suite is an encoded watch-fail.** Some assertions were watched failing
+  once, by hand, on a scratch copy, and reverted. That is real proof they were not vacuous that day
+  and no proof that they still are, because nothing re-runs the break. When you rely on one, say
+  which kind it is instead of calling both "watch-failed".
 
 ## Guardrails specific to this lane
 
@@ -59,7 +113,9 @@ quality.
 ## Done when
 
 The new assertion has been observed failing as well as passing, `./scripts/validate.sh` prints
-`ALL CHECKS PASSED`, and you have named which gap above is now closed and which remain open.
+`ALL CHECKS PASSED`, and you have named which gap is now closed — against `CLAUDE.md`'s register,
+not only the short list above — and which remain open. Say whether the break you watched is encoded
+in the suite or was performed once by hand and reverted.
 
 ## Shared teamme guardrails
 

@@ -1042,43 +1042,50 @@
     {
       "id": "T56",
       "title": "teamme-hook-engineer.md is two hooks behind: it says 'these five scripts' and its table omits preflight.py and librarian-gate.py, while REQUIRED_HOOKS has seven - and its ownership line omits plugins/teamme/server/**/*.py",
-      "status": "open",
-      "priority": "P2",
-      "lane": "teamme-prompt-author",
-      "notes": [],
-      "blocked_on": "",
-      "dispatched_to": "",
-      "created": "2026-09-25T15:10:57+00:00",
-      "updated": "2026-09-25T15:10:57+00:00",
-      "status_changed": "2026-09-25T15:10:57+00:00"
-    },
-    {
-      "id": "T57",
-      "title": "teamme-tech-lead.md carries a FIFTH copy of the roster ownership map that nothing checks, and two of its rows have already drifted",
-      "status": "open",
+      "status": "done",
       "priority": "P2",
       "lane": "teamme-prompt-author",
       "notes": [
-        "CLAUDE.md calls a roster four copies and preflight.py roster checks those four - agent files, the README table, .claude/commands/intake.md, and task lane fields. teamme-tech-lead.md-s own lane table is a fifth nobody checks. Already wrong in two rows: teamme-prompt-author is shown owning only commands/*.md and templates/intake.md, missing plugins/teamme/agents/*.md and this repo-s own .claude/ copies - i.e. missing exactly the files T51 changed; and teamme-hook-engineer is missing plugins/teamme/server/**/*.py. Decide whether to fix the copy or remove it in favour of the four the check already covers."
+        "teamme-hook-engineer.md brought up to date. Table now carries all seven REQUIRED_HOOKS entries: added preflight.py (SessionStart heartbeat, CLI check/roster) and librarian-gate.py (PreToolUse, matcher Bash), with the two load-bearing guarantees written out in full beneath the table - preflight's evidence-based verdict (the REQUIRED_HOOKS-derived-installed P0) and roster being a separate verdict that never touches check's exit code; librarian-gate as the single ask-never-deny carve-out whose rev-list excludes .claude/librarians so its own refresh commit cannot re-arm it. \"These five scripts\" replaced by a two-tier opening: copied hooks vs plugins/teamme/server (never copied, never in REQUIRED_HOOKS). Ownership of the server tree added to BOTH the frontmatter description and the opening body, matching the roster README and intake.md line 201. Stdlib palette split into two explicitly different lists rather than one widened one - hooks stay narrow (with librarian-gate's subprocess/shlex named as an argued exception), server adds sqlite3/subprocess/shutil. Workflow gained a step 4 for server changes (not pipe-testable: py_compile over the whole tree via find -path, MCP server over a real JSON-RPC pipe, librarian ground truth from git log and never from the module under test), and Done when now covers both halves. Files touched: .claude/agents/teamme-hook-engineer.md only. Neither validate.sh nor preflight.py roster run - this lane has no Bash."
       ],
       "blocked_on": "",
       "dispatched_to": "",
       "created": "2026-09-25T15:10:57+00:00",
-      "updated": "2026-09-25T15:10:57+00:00",
-      "status_changed": "2026-09-25T15:10:57+00:00"
+      "updated": "2026-09-25T16:53:54+00:00",
+      "status_changed": "2026-09-25T16:53:54+00:00"
+    },
+    {
+      "id": "T57",
+      "title": "teamme-tech-lead.md carries a FIFTH copy of the roster ownership map that nothing checks, and two of its rows have already drifted",
+      "status": "done",
+      "priority": "P2",
+      "lane": "teamme-prompt-author",
+      "notes": [
+        "CLAUDE.md calls a roster four copies and preflight.py roster checks those four - agent files, the README table, .claude/commands/intake.md, and task lane fields. teamme-tech-lead.md-s own lane table is a fifth nobody checks. Already wrong in two rows: teamme-prompt-author is shown owning only commands/*.md and templates/intake.md, missing plugins/teamme/agents/*.md and this repo-s own .claude/ copies - i.e. missing exactly the files T51 changed; and teamme-hook-engineer is missing plugins/teamme/server/**/*.py. Decide whether to fix the copy or remove it in favour of the four the check already covers.",
+        "teamme-tech-lead.md's roster table now carries Lane and Model only - the Owns column is dropped, per the approved decision. Both cells that had drifted were Owns cells (hook-engineer missing the server tree, prompt-author missing plugins/teamme/agents and the .claude/ copies), so removing that column removes exactly the part that drifts while leaving the orchestrator self-sufficient for who exists. Lane names and model tiers were checked cell by cell against .claude/agents/README.md and had not drifted. Replacement prose points at .claude/agents/README.md for ownership and at preflight.py roster for checking the four copies agree, and states the fact that makes it safe: the approved brief already names the owning agent per part, so a part naming no lane - or one not in the list - is a gap in the brief to raise, never a lane to guess at. Verified and left alone: the Work log section's claim that exactly two lanes have no Bash is correct - teamme-docs-writer and teamme-prompt-author are the only two tools: lines without Bash across all six agents. Adjacent fix in the file T57 makes authoritative: .claude/agents/README.md's roster row for teamme-docs-writer listed only README.md, CLAUDE.md and CONTRIBUTING.md; that agent's own body line 8-9 and intake.md line 204 both also give it plugins/teamme/README.md, so the README cell now lists it too. Files touched: .claude/agents/teamme-tech-lead.md, .claude/agents/README.md. preflight.py roster NOT run - this lane has no Bash."
+      ],
+      "blocked_on": "",
+      "dispatched_to": "",
+      "created": "2026-09-25T15:10:57+00:00",
+      "updated": "2026-09-25T16:53:54+00:00",
+      "status_changed": "2026-09-25T16:53:54+00:00"
     },
     {
       "id": "T58",
       "title": "teamme-validation-engineer.md and teamme-prompt-author.md each describe coverage that has since changed: two gaps listed as open were closed by T17/T20, a four-check summary describes a ~96-section suite, and 'nothing checks .claude/agents or .claude/commands/intake.md at all' is now false since preflight.py roster",
-      "status": "open",
+      "status": "done",
       "priority": "P2",
       "lane": "teamme-prompt-author",
-      "notes": [],
+      "notes": [
+        "Both stale-coverage files fixed. teamme-validation-engineer.md: the four-item \"What it checks today\" list is replaced by the suite's shape - eleven families plus the smoke test - with CLAUDE.md's \"Verify before you claim anything works\" named as the authority for detail rather than transcribed here, and two grep one-liners given so the lane counts sections and encoded watch-fails mechanically instead of trusting a number in its own prompt (96 and 19 at time of writing, stated as such). Known coverage gaps now points at CLAUDE.md's Known gaps as the register of record and carries a standing instruction to re-read a gap against the code before citing it, naming the two entries that had gone stale: route-to-intake.py (closed by T20) and teamme_intake_phase's gate test (closed by T17). What was kept is lane-specific: prompts frontmatter-only across four shipped commands (queue.md and modify-team.md added), generated agents unvalidated by design, the genuinely still-open half of the routing gap (phase-aware mid-flight routing, plus reground / out-of-project paths / stale-state expiry), the .claude/-is-a-filled-copy gap, and the distinction between an encoded watch-fail and one performed once by hand and reverted. Done when now asks which kind of break was watched. teamme-prompt-author.md: the false claim that nothing checks .claude/agents/*.md or .claude/commands/intake.md is replaced by what is actually true in both directions - preflight.py roster checks that frontmatter name: values, the roster README rows, intake.md's whole-word lane mentions and every OPEN task's lane still name the same lanes, three marks with SKIP exiting non-zero like FAIL; and nothing checks .claude/ agent frontmatter or any copy's prose, with roster_command's whole-word-search limit spelled out. modify-team.md added to the owned-sources list as the fourth command. Workflow step 4 and Done when now name preflight.py roster alongside validate.sh as unrun. Files touched: .claude/agents/teamme-validation-engineer.md, .claude/agents/teamme-prompt-author.md. Neither validate.sh nor preflight.py roster run - this lane has no Bash. The shared guardrails and Consulting the librarian blocks were not touched in any file, so all six remain byte-identical.",
+        "Correction from the coordinator, applied. The settings-template bullet in teamme-validation-engineer.md's families list claimed the check verifies the required hook events are \"present and wired to the right scripts\" - the second half was false. The == settings template == section of scripts/validate.sh loads ['hooks'] from each plugins/*/templates/settings.hooks.json and requires the four event NAMES (UserPromptSubmit, PreToolUse, SessionStart, Stop) to be present as keys; it never descends into a block, never reads a command string, and never compares one against a script name. Rewritten to claim event-key presence only, and to state what therefore is not covered: which script any event is wired to, and the PreToolUse matchers that decide whether intake-guard.py or librarian-gate.py sees a given call - with the concrete false-pass example (all four events registered, Stop pointed at route-to-intake.py) and the instruction to treat a wiring change as uncovered until an assertion exists. Stated rather than merely trimmed because this prompt is where a future brief looks to decide whether a wiring change needs new coverage, and \"the events are present\" reads as more than it is. Only file touched: .claude/agents/teamme-validation-engineer.md, that one bullet; no shared block touched. Coordinator will re-run validate.sh and preflight.py roster - this lane has no Bash.",
+        "docs-writer: Updated CLAUDE.md only. (1) Known gaps \"`.claude/` is a filled copy\" entry: headline changed from \"three tasks... three more queued\" to \"six tasks have now found drift there\"; T56/T57/T58 moved from queued/unbriefed to closed with what each found (T56: teamme-hook-engineer.md two hooks behind REQUIRED_HOOKS, ownership missing server/**/*.py; T57: teamme-tech-lead.md's fifth unchecked Owns column, pointed at the Decisions entry for how it was closed; T58: teamme-validation-engineer.md described the 96-section/19-watch-fail suite as four checks and named two gaps T20/T17 had already closed, teamme-prompt-author.md's \"nothing checks .claude/agents/*.md... at all\" claim was false and false in the worse (understating) direction since it told the one lane that edits .claude/ not to bother running the check that reaches it). Also recorded, in the same entry, that the T58 correction pass itself introduced a fresh overclaim (settings-template check \"wired to the right scripts\") caught on review, now corrected with the false-pass named. (2) \"A roster is four copies\" Decisions entry: added T57's finding as new material - the fifth copy (teamme-tech-lead.md's Owns column) was closed by deletion rather than reconciliation, first instance of this bug class closed that way, reasoned from /intake's brief format and lane-table constraint (.claude/commands/intake.md:261, :207-210). Checked README.md, plugins/teamme/README.md, CONTRIBUTING.md for claims falsified by the five changed files (.claude/agents/README.md + 4 agent prompts) - found none; their roster/preflight-roster mentions describe the general four-copies mechanism, unaffected by this correction pass. Did not touch .claude/agents/*.md, plugins/, scripts/validate.sh or CHANGELOG.md per brief. ./scripts/validate.sh NOT run - this lane has no Bash tool."
+      ],
       "blocked_on": "",
       "dispatched_to": "",
       "created": "2026-09-25T15:10:57+00:00",
-      "updated": "2026-09-25T15:10:57+00:00",
-      "status_changed": "2026-09-25T15:10:57+00:00"
+      "updated": "2026-09-25T16:53:54+00:00",
+      "status_changed": "2026-09-25T16:53:54+00:00"
     }
   ]
 }

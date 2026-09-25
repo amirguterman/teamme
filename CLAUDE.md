@@ -803,7 +803,14 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   stale roster README costs a reader a wrong document, not a broken team, and letting it halt `/intake`
   would repeat the exact over-reach deriving `installed` from a growing hook list already paid a P0 to
   unlearn (see the `installed` entry above). The separation is proven both directions with its own
-  watch-fail — see Verify above.
+  watch-fail — see Verify above. T57 (Known gaps, below) later found a fifth copy —
+  `teamme-tech-lead.md`'s own `Owns` column, tracking the same map by hand — already drifted, and
+  closed it by deleting the column rather than reconciling it: the orchestrator does not route from
+  scratch, since the approved brief `/intake` hands it already names the owning agent per part
+  (`.claude/commands/intake.md:261`), and `/intake` may only name a lane from its own table
+  (`.claude/commands/intake.md:207-210`). So the fifth copy was load-bearing for nothing, and a copy
+  with no job left to do is better deleted than kept correct-for-now — the first time this bug class
+  was closed by deletion rather than reconciliation.
 - **A minimum `ok:` count for `validate.sh` was proposed (T50) and rejected.** The idea: assert the
   script prints at least N `ok:` lines, so a run that silently does less than it should is visible.
   Rejected for two reasons, not one. First, a hardcoded floor needs bumping on every brief that adds a
@@ -1044,30 +1051,46 @@ These are not style preferences. Breaking one ships a trap to someone else's mac
   and Phase 5 tell the operator this in the same words, so the limit is stated at the point someone
   would otherwise mistake a `PASS` for more than it is.
 - **`.claude/` is a filled copy of what `plugins/teamme/` generates, and `validate.sh` never opens
-  it — three tasks have now found drift there, with three more queued.** The suite walks `plugins/`
-  for manifests, hook syntax and prompt frontmatter; the one thing under `.claude/` it touches at all
-  is `preflight.py roster` (see above), and that check is narrower than it sounds — it proves the
-  agent files, `.claude/agents/README.md`'s table, `.claude/commands/intake.md`'s lane mentions and
-  the work log's `lane` fields still name the same lanes. It says nothing about whether a `.claude/`
-  copy's *prose* still matches the template or instruction it was filled from; that is a different
-  question with no check of its own, mechanical or otherwise. Three instances, all closed: T24
-  (`.claude/commands/intake.md` missing `intake-state.py release` on three of six step-2b
-  dispositions — see the entry above); T50 (a stale session-librarian claim duplicated in `CLAUDE.md`
-  and both READMEs — not a `.claude/` copy, but the identical shape, caught the same pass); and T51
-  (zero of six `.claude/agents/*.md` files carried the `## Consulting the librarian` contract
-  `init-team.md` has required of every generated roster since 0.6.0, and all six separately stated
-  design invariant #2 backwards — "stamps itself against the task's `updated` time" where it must
-  read `status_changed` — teaching exactly the trap the guardrail exists to prevent). The contract
-  itself now lives in `.claude/agents/README.md`'s "Consulting the librarian" section and identically
-  in all six agent files; it is not restated here, and should not be — a second copy in this file is
-  exactly the class of drift this entry exists to name. Three more instances are queued, open at
-  P2, and named rather than detailed here since they are unbriefed: T56 (`teamme-hook-engineer.md`
-  is two hooks behind `REQUIRED_HOOKS`), T57 (`teamme-tech-lead.md` carries a fifth, unchecked copy
-  of the roster's ownership map, already drifted), T58 (stale coverage claims in
-  `teamme-validation-engineer.md` and `teamme-prompt-author.md`). Nothing here proposes a check for
-  this — a template-vs-copy diff would need to know which parts of a `.claude/` file are supposed to
-  be filled-in and project-specific versus carried verbatim, which is exactly the judgement
-  `init-team.md` itself makes at generation time and no mechanical diff can recover after the fact.
+  it — six tasks have now found drift there.** The suite walks `plugins/` for manifests, hook syntax
+  and prompt frontmatter; the one thing under `.claude/` it touches at all is `preflight.py roster`
+  (see above), and that check is narrower than it sounds — it proves the agent files,
+  `.claude/agents/README.md`'s table, `.claude/commands/intake.md`'s lane mentions and the work log's
+  `lane` fields still name the same lanes. It says nothing about whether a `.claude/` copy's *prose*
+  still matches the template or instruction it was filled from; that is a different question with no
+  check of its own, mechanical or otherwise. Six instances, all closed: T24 (`.claude/commands/
+  intake.md` missing `intake-state.py release` on three of six step-2b dispositions — see the entry
+  above); T50 (a stale session-librarian claim duplicated in `CLAUDE.md` and both READMEs — not a
+  `.claude/` copy, but the identical shape, caught the same pass); T51 (zero of six
+  `.claude/agents/*.md` files carried the `## Consulting the librarian` contract `init-team.md` has
+  required of every generated roster since 0.6.0, and all six separately stated design invariant #2
+  backwards — "stamps itself against the task's `updated` time" where it must read `status_changed` —
+  teaching exactly the trap the guardrail exists to prevent); T56 (`teamme-hook-engineer.md` described
+  five hooks against a `REQUIRED_HOOKS` of seven, naming neither `preflight.py` nor
+  `librarian-gate.py`, and its ownership — frontmatter `description:` and body alike — omitted
+  `plugins/teamme/server/**/*.py`, which `.claude/agents/README.md`'s own roster row and
+  `.claude/commands/intake.md:201` both already assign to that lane); T57 (`teamme-tech-lead.md`
+  carried a fifth, unchecked copy of the roster's ownership map, with two of its cells already
+  drifted — see "A roster is four copies" above for how this one was closed, and why that closure
+  differs from the other five); and T58 (`teamme-validation-engineer.md` described a 96-section,
+  19-watch-fail suite as four checks, and named two gaps as still open that T20 and T17 had already
+  closed; `teamme-prompt-author.md` claimed "nothing checks `.claude/agents/*.md` or
+  `.claude/commands/intake.md` at all" — false since `preflight.py roster` shipped, and false in the
+  *worse* direction: an overstated coverage claim gets caught the next time someone relies on it, but
+  an understated one removes the very step that would have caught it — it told the one lane that edits
+  `.claude/` not to bother running the one check that reaches it). The T58 correction pass wrote a
+  fresh overclaim of its own, caught on review rather than by any check: a draft said the
+  settings-template check verifies the four hook events "and wired to the right scripts", when the
+  check only requires the four event names as keys and never reads a `command` string — all four
+  events present with `Stop` pointed at the wrong script would still pass it. Fixed to say exactly
+  that and to name the false-pass case; worth recording because a pass whose entire purpose was
+  removing overstated claims produced one of its own, the honest measure of how easily this class of
+  mistake happens. The contract itself now lives in `.claude/agents/README.md`'s "Consulting the
+  librarian" section and identically in all six agent files; it is not restated here, and should not
+  be — a second copy in this file is exactly the class of drift this entry exists to name. Nothing
+  here proposes a check for this — a template-vs-copy diff would need to know which parts of a
+  `.claude/` file are supposed to be filled-in and project-specific versus carried verbatim, which is
+  exactly the judgement `init-team.md` itself makes at generation time and no mechanical diff can
+  recover after the fact.
 
 ## Conventions
 

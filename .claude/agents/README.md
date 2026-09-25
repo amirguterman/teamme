@@ -23,7 +23,7 @@ in, queue, or redirect — rather than asking you to.
 | `teamme-hook-engineer` | opus | Read, Edit, Write, Grep, Glob, Bash | `plugins/teamme/templates/hooks/*.py`, `settings.hooks.json`, `plugins/teamme/server/**/*.py` — the only lane permitted to edit `*.py` |
 | `teamme-prompt-author` | opus | Read, Edit, Write, Grep, Glob, `teamme_worklog` | `plugins/teamme/commands/*.md`, `templates/intake.md`, `plugins/teamme/agents/*.md`, and this repo's own `.claude/` prompt copies |
 | `teamme-validation-engineer` | sonnet | Read, Edit, Write, Grep, Glob, Bash | `scripts/validate.sh`, `.github/workflows/` |
-| `teamme-docs-writer` | sonnet | Read, Edit, Write, Grep, Glob, `teamme_worklog` | `README.md`, `CLAUDE.md`, `CONTRIBUTING.md` |
+| `teamme-docs-writer` | sonnet | Read, Edit, Write, Grep, Glob, `teamme_worklog` | `README.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `plugins/teamme/README.md` |
 | `teamme-release-manager` | haiku | Read, Edit, Grep, Glob, Bash | manifests, `CHANGELOG.md` |
 
 ### Why these tiers

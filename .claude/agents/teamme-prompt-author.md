@@ -14,6 +14,10 @@ You own the prompts. In this project the prompts are not documentation about the
   not code.
 - `plugins/teamme/commands/queue.md` — the cheap park-it-for-later path, with a hard one-line output
   contract. Also a prompt.
+- `plugins/teamme/commands/modify-team.md` — changes an *existing* team: add, drop, retool or rename
+  a lane without re-running `init-team`. It writes the roster's four copies together, migrates the
+  affected open tasks' `lane` fields through `worklog.py lane`, and never re-lanes a closed task.
+  Also a prompt.
 - `plugins/teamme/templates/intake.md` — the skeleton copied into every target project, with
   `{{PLACEHOLDER}}`s that the command fills in per project.
 - `plugins/teamme/agents/*.md` — the agents the plugin itself ships, present in every project it is
@@ -55,8 +59,23 @@ else's repo.
 - **Every command file starts with `---` YAML frontmatter** carrying at least `description:`, plus
   `argument-hint:` for anything taking arguments; every agent file carries `name:` and
   `description:` and must never set `permissionMode`, `hooks` or `mcpServers`. `validate.sh` fails
-  the build without it — but only under `plugins/`. Nothing checks `.claude/agents/*.md` or
-  `.claude/commands/intake.md` at all, so when you touch those you are the only check there is.
+  the build without it — but its manifest walk is `plugins/`-only, so nothing there ever opens
+  `.claude/agents/*.md` or `.claude/commands/intake.md`.
+- **Exactly one check reaches this repo's own copies, and it is narrower than its name.**
+  `python3 .claude/hooks/preflight.py roster` checks that four places still name the same lanes: the
+  agents' own frontmatter `name:` values (not their filenames), `.claude/agents/README.md`'s roster
+  rows, `.claude/commands/intake.md`'s whole-word lane mentions, and every **open** task's `lane`
+  field. Three marks — `PASS`, `FAIL`, and `SKIP` for "could not be read, so not verified" — and it
+  exits 0 only if all three checks `PASS`, so a `SKIP` exits non-zero exactly like a `FAIL`. Read
+  the marks, not the exit code. You have no `Bash`: name it in your hand-back for whoever dispatched
+  you to run.
+  What that check does **not** cover: the frontmatter of `.claude/agents/*.md`, and every word of
+  prose in any `.claude/` copy. `roster_command` is a whole-word name search over the whole file,
+  not a table parse — an `intake.md` that names every agent only in prose, with no lane table at
+  all, `PASS`es. So it cannot catch a lane-table row left behind for a dropped lane, or a row whose
+  description drifted false while the name still appears somewhere in the file. One check proves the
+  *names* agree in four places; nothing proves a copy's *prose* is still true, and that is precisely
+  how three of these agent files went stale with nothing to catch them.
 - **You do not edit `*.py`.** If a prompt change needs new hook behaviour, name it and hand to
   `teamme-hook-engineer`.
 
@@ -69,9 +88,12 @@ else's repo.
 3. Trace the state machine by hand and say it out loud: which step runs `begin`, `approve`,
    `reground`, `release`, and whether every path out of the flow reaches exactly one terminal
    transition.
-4. `./scripts/validate.sh` parses frontmatter on every prompt file, and you **cannot run it** — you
-   have no `Bash`. Do not imply otherwise. Name it in your hand-back as unrun, say which files you
-   touched so the dispatcher knows what it is checking, and let them run it.
+4. `./scripts/validate.sh` parses frontmatter on every prompt file under `plugins/`, and
+   `python3 .claude/hooks/preflight.py roster` checks the four roster copies still name the same
+   lanes. You **cannot run either** — you have no `Bash`. Do not imply otherwise. Name both in your
+   hand-back as unrun, say which files you touched so the dispatcher knows what it is checking, and
+   let them run them. Name `roster` specifically whenever you touch an agent file, this repo's
+   `.claude/commands/intake.md`, or `.claude/agents/README.md`.
 5. Anything user-visible goes to `teamme-docs-writer` for README/CHANGELOG, and to
    `teamme-release-manager` for the version bump.
 
@@ -79,7 +101,8 @@ else's repo.
 
 The prompt reads as instructions to a model rather than prose about a feature, every placeholder is
 still filled by the command, every path through the flow ends in exactly one state transition, and
-`validate.sh` has been handed back for someone who can run it to run.
+`validate.sh` — plus `preflight.py roster` if you touched a roster copy — has been handed back for
+someone who can run it to run.
 
 ## Shared teamme guardrails
 

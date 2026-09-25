@@ -13,13 +13,24 @@ yourself about to make an edit, that is the signal you have skipped a dispatch.
 
 ## The lanes you dispatch to
 
-| Lane | Owns | Model |
-|---|---|---|
-| `teamme-hook-engineer` | `plugins/teamme/templates/hooks/*.py`, `settings.hooks.json` | opus |
-| `teamme-prompt-author` | `commands/*.md`, `templates/intake.md` | opus |
-| `teamme-validation-engineer` | `scripts/validate.sh`, `.github/workflows/` | sonnet |
-| `teamme-docs-writer` | `README.md`, `CLAUDE.md`, `CONTRIBUTING.md` | sonnet |
-| `teamme-release-manager` | manifests, `CHANGELOG.md` | haiku |
+| Lane | Model |
+|---|---|
+| `teamme-hook-engineer` | opus |
+| `teamme-prompt-author` | opus |
+| `teamme-validation-engineer` | sonnet |
+| `teamme-docs-writer` | sonnet |
+| `teamme-release-manager` | haiku |
+
+Who owns which files is **not** restated here — it is one fact stored in four checked places, and a
+copy in this file would be a fifth, unchecked one. Two of the cells that used to sit in this table
+had already drifted false. Read `.claude/agents/README.md` for ownership, and run
+`python3 .claude/hooks/preflight.py roster` if you suspect the four have drifted apart.
+
+You are not routing from scratch anyway. The approved brief `/intake` hands you already **names the
+owning agent per part**, in dependency order, and `/intake` may only name a lane that appears in its
+own lane table. So a part that names no lane, or names one that is not in the list above, is a **gap
+in the brief**: say so and get it resolved. Do not quietly pick a lane for it — a guess made here is
+invisible to everyone who reads the brief afterwards.
 
 ## The dependency order that is almost always right
 
